@@ -49,7 +49,7 @@ enum Merger {
         var componentPlatforms: [String: Platform] = [:]
         for facts in extractions.flatMap(\.gradeComponents) {
             let key = Normalize.key(facts.name)
-            guard !key.isEmpty else { continue }
+            guard key.filter(\.isLetter).count >= 3 else { continue }   // "5.3-4": a section number from a schedule, not a component
             if source.hasText, !source.contains(facts.name) { warnings.append("Ignored component '\(facts.name)': not in the document"); continue }
             let weight = (source.percentage(onLineMentioning: facts.name) ?? facts.weightPercent.flatMap { $0 > 0 ? $0 : nil }).map { $0 / 100 }   // the row's own figure first; 0% is no figure
             if let i = components.firstIndex(where: { Normalize.key($0.name) == key }) {
@@ -72,7 +72,10 @@ enum Merger {
         if components.compactMap(\.weight).reduce(0, +) < 0.99 {
             for row in source.gradeRows(preferring: components.map(\.name)) {
                 if let i = components.firstIndex(where: { Source.sameComponent($0.name, row.name) }) {
-                    if components[i].weight == nil { components[i].weight = row.weight / 100 }
+                    if let w = components[i].weight, abs(w - row.weight / 100) > 0.001 {
+                        warnings.append("Component '\(components[i].name)': the grade table says \(Int(row.weight))%, not \(Int(w * 100))%")
+                    }
+                    components[i].weight = row.weight / 100
                 } else {
                     components.append(ParsedGradeComponent(name: row.name, weight: row.weight / 100))
                     warnings.append("Component '\(row.name)' read from the grade table; the model skipped it")
@@ -97,7 +100,7 @@ enum Merger {
 
         // Obligations.
         var obligations: [ParsedObligation] = []
-        var merged = 0, dropped = 0
+        var merged = 0, dropped = 0, skippedTopics = 0
         for outcome in outcomes {
             // Text chunks are checked strictly against the document text. Image pages are checked against Vision OCR
             // text, which can misread a date, so failures there downgrade to review instead of dropping.
@@ -106,6 +109,7 @@ enum Merger {
             for facts in outcome.extraction.obligations {
                 var title = Self.ownName(Normalize.collapseWhitespace(facts.title))
                 guard !title.isEmpty else { continue }
+                if strict, Self.isTopicOrSession(title) { skippedTopics += 1; continue }   // a lecture topic, a reading, a class session
                 let resolution = resolver.resolve(iso: facts.dueDate, asWritten: facts.dateAsWritten)
                 var flags = resolution.flags
                 let tbd = resolution.date == nil && (DateResolver.isTBD(facts.dateAsWritten) || facts.dueDate == nil)
@@ -124,7 +128,9 @@ enum Merger {
                         else if dateInSource { confidence += 0.05 }
                         else if strict { dropped += 1; continue }            // nothing in the document supports this date
                         else { flags.append(.dateNotInSource); confidence -= 0.3 }
-                        if !resolution.resolvedFromText, !dateInSource {         // the model computed a date the document never states
+                        // The model computed a date the document never states, or supplied one for wording that names no
+                        // day at all ("weekly, due Sundays" with the third week's Sunday): review either way.
+                        if !resolution.resolvedFromText, !dateInSource || (strict && spans.isEmpty && !DateResolver.isTBD(facts.dateAsWritten)) {
                             flags.append(.dateNotInSource); confidence = min(confidence, options.reviewThreshold - 0.05)
                         }
                     } else if strict {
@@ -183,6 +189,11 @@ enum Merger {
                     }
                     // A screenshot with a Released/Opens column whose row OCR could not reassemble: the wrong column is easy to pick.
                     if outcome.kind == .image, !rowFound, source.hasReleaseColumn { ambiguous = true }
+                    // The wording is a span of days ("Sept 14-18", "30 - Dec 4"): the deadline is somewhere inside it, not at its end.
+                    if !facts.dateAsWritten.localizedCaseInsensitiveContains("due") {
+                        if let rest = Source.withoutDaySpan(facts.dateAsWritten), !Source.hasDate(rest) { ambiguous = true }
+                        else if spans.contains(where: { $0.start != $0.end }), !spans.contains(where: { $0.start == $0.end }) { ambiguous = true }
+                    }
                     if ambiguous { flags.append(.dateAmbiguous); confidence = min(confidence, options.reviewThreshold - 0.05) }
                 }
                 // A model/wording disagreement is ignored when it is a year slip or the model's date appears nowhere in the
@@ -200,6 +211,10 @@ enum Merger {
                     if !yearSlip, modelOnRow || !(writtenInSource && spans.count == 1) { confidence -= 0.3 }
                 }
                 if flags.contains(.dateOutsideTerm) { confidence -= 0.15 }
+                // The document names the item and the date, but never together: the date was lifted from another line.
+                if strict, !spans.isEmpty, let date = resolution.date, source.titleShares(title, dateForms: resolver.mentions(date)) == false {
+                    flags.append(.dateNotOnRow); confidence = min(confidence, options.reviewThreshold - 0.05)
+                }
                 // No wording to check, or an image Vision could not read: the model is on its own, so review.
                 if Self.isNoWording(facts.dateAsWritten) || (outcome.kind == .image && !source.hasText) {
                     if !flags.contains(.dateNotInSource) { flags.append(.dateNotInSource) }
@@ -241,6 +256,7 @@ enum Merger {
         if merged > 0 { warnings.append("\(merged) duplicate obligation(s) merged across chunks") }
         if superseded > 0 { warnings.append("\(superseded) undated obligation(s) superseded by a dated copy") }
         if dropped > 0 { warnings.append("\(dropped) obligation(s) dropped as unsupported by the document text") }
+        if skippedTopics > 0 { warnings.append("\(skippedTopics) lecture topic, reading or session line(s) skipped") }
 
         // Points at stake: component weight ÷ expected item count (stated count, else cadence-implied, else items on file).
         for (i, ob) in obligations.enumerated() {
@@ -363,6 +379,16 @@ enum Merger {
             return nil
         }
 
+        /// The wording with its span of days removed ("Sept 14-18" → "Sept ", "Nov 30-Dec 4, Thu Dec 3" → "Nov , Thu Dec 3"), or nil
+        /// when it holds no span. A time range like "2:00–3:50" is not a span of days.
+        static func withoutDaySpan(_ wording: String) -> String? {
+            // "17 Dec 21-25": a schedule's week number in front of the month.
+            let wording = wording.replacingOccurrences(of: #"(?i)^\s*\d{1,2}\s+(?=(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\s*[-–—])"#, with: "", options: .regularExpression)
+            guard wording.range(of: #"(?i)\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b"#, options: .regularExpression) != nil,
+                  let span = wording.range(of: #"(?i)(?<![:\d/])\d{1,2}\s*[-–—]\s*(?:[a-z]{3,9}\.?\s+)?\d{1,2}(?![:\d/])"#, options: .regularExpression) else { return nil }
+            return wording.replacingCharacters(in: span, with: " ")
+        }
+
         /// A wrapped line holding nothing but a date, e.g. "Oct 30", "Fri Oct 30, 11:59 PM", "9/16.".
         static func isDateFragment(_ line: String) -> Bool {
             line.range(of: #"(?i)^\s*(?:(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)[a-z]*\.?,?\s*)?(?:(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?|\d{1,2}/\d{1,2})(?:,?\s*\d{4})?(?:,?\s*(?:at\s*)?\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?)?[.;]?\s*$"#, options: .regularExpression) != nil
@@ -409,7 +435,8 @@ enum Merger {
                 head = head.replacingOccurrences(of: #"(?i)^\W*(?:(?:you|students|all students|everyone)\s+)?(?:must|should|need to|have to|are required to|are expected to|please)\s+"#, with: "", options: .regularExpression)
                 head = head.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters))
                 let words = head.split(separator: " ")
-                guard (1...6).contains(words.count), !head.contains("%"), head.first?.isLetter == true, !otherTitles.contains(Normalize.key(head)) else { continue }
+                guard (1...6).contains(words.count), !head.contains("%"), head.first?.isLetter == true, !otherTitles.contains(Normalize.key(head)),
+                      !["due", "date", "due date", "deadline", "by", "on", "submit", "submission"].contains(Normalize.key(head)) else { continue }   // "DUE DATE: Monday, November 9" labels nothing
                 if words.count > 3, head.first?.isLowercase == true { prose = true }
                 return (head.prefix(1).uppercased() + head.dropFirst(), prose)
             }
@@ -425,6 +452,22 @@ enum Merger {
             }
             return #"(?i)\b"# + pieces.joined(separator: #"[\s./,\-]+"#) + #"\b"#
         }
+        /// Whether a line naming the item also names one of the date forms (a date on the following line counts, as a
+        /// wrapped row); nil when no line names the item.
+        func titleShares(_ title: String, dateForms: [String]) -> Bool? {
+            let needle = " " + Normalize.key(title) + " "
+            var found = false
+            for (i, raw) in lines.enumerated() where (" " + Normalize.key(raw) + " ").contains(needle) {
+                found = true
+                var text = Source.normalize(raw)
+                if i + 1 < lines.count, Source.isDateFragment(lines[i + 1]) { text += " " + Source.normalize(lines[i + 1]) }
+                if i > 0, Source.isDateFragment(lines[i - 1]) { text = Source.normalize(lines[i - 1]) + " " + text }
+                let k = " " + text + " "
+                if dateForms.contains(where: { k.contains(" \($0) ") }) { return true }
+            }
+            return found ? false : nil
+        }
+
         /// Two names for the same grade component: similar wording, or one contained in the other.
         static func sameComponent(_ a: String, _ b: String) -> Bool {
             Normalize.similarity(a, b) >= 0.5 || Normalize.key(a).contains(Normalize.key(b)) || Normalize.key(b).contains(Normalize.key(a))
@@ -544,29 +587,49 @@ enum Merger {
         name = name.replacingOccurrences(of: #"(?i)^\s*\d{1,2}\s+[a-z]{3,9}\.?\s+\d{1,2}(?:\s*[-–]\s*(?:[a-z]{3,9}\.?\s+)?\d{1,2})?\s+"#, with: "", options: .regularExpression)
         name = name.trimmingCharacters(in: CharacterSet.whitespaces.union(.punctuationCharacters))
         let words = name.split(separator: " ").map(String.init)
-        guard words.count > 3, let numberAt = words.lastIndex(where: { $0.trimmingCharacters(in: .punctuationCharacters).allSatisfy(\.isNumber) && !$0.isEmpty }) else { return name }
+        func isNumber(_ w: String) -> Bool { let digits = w.trimmingCharacters(in: .punctuationCharacters); return !digits.isEmpty && digits.allSatisfy(\.isNumber) }   // "&" and "—" are not numbers
+        guard words.count > 3, let numberAt = words.lastIndex(where: isNumber) else { return name }
         func componentWord(_ w: String) -> Bool {
             let key = stem(Normalize.key(w))
             return synonyms[key] != nil || synonyms.values.contains { $0.contains(key) } || ["report", "set", "sheet"].contains(key)
-                || (w.count <= 3 && w == w.uppercased() && w.allSatisfy(\.isLetter))   // "MP", "PS"
+                || (w.count <= 5 && w == w.uppercased() && w.allSatisfy(\.isLetter))   // "MP", "PS", "UNIT"
         }
         var start = numberAt, end = numberAt
         while start > 0, componentWord(words[start - 1]) { start -= 1 }
         while end + 1 < words.count, componentWord(words[end + 1]) { end += 1 }
         guard start < numberAt else { return name }   // no component word next to the number: not a name we can shorten safely
-        return words[start...end].joined(separator: " ").trimmingCharacters(in: .punctuationCharacters)
+        var own = words[start...end].joined(separator: " ").trimmingCharacters(in: CharacterSet(charactersIn: " .,;:-–—"))
+        if own.filter({ $0 == "(" }).count > own.filter({ $0 == ")" }).count { own += ")" }   // "UNIT TEST 2 (MIDTERM)" keeps its bracket
+        return own
+    }
+
+    /// A lecture topic, a reading, or a class session the model listed as an obligation: "Chapter 2, Diversity…",
+    /// "Read Chapter 4", "SHARK TANK GROUP WORK SESSION #1", "Course synthesis and final examination preparation".
+    /// A title naming a deliverable (quiz, exam, homework, paper…) is kept.
+    static func isTopicOrSession(_ title: String) -> Bool {
+        let key = " " + Normalize.key(title) + " "
+        if key.range(of: #"\b(work session|review session|planning time|in class|in person|online session|class meeting|group work|office hours|no class|no classes|holiday|reading day|finals week|exam preparation|examination preparation|exam review|review for the|review for)\b"#, options: .regularExpression) != nil { return true }
+        let deliverable = #"\b(quiz|quizzes|test|tests|exam|exams|midterm|midterms|final|finals|homework|hw|assignment|assignments|project|paper|essay|lab|labs|report|presentation|presentations|problem set|problem sets|pset|ps\d+|due|submit|submission|worksheet|discussion post|response|proposal|draft|portfolio|deadline)\b"#
+        guard key.range(of: deliverable, options: .regularExpression) == nil else { return false }
+        return key.range(of: #"^ (chapter|chapters|ch|lecture|lectures|topic|topics|module|modules|reading|readings|read|review|introduction|course synthesis|syllabus|welcome|overview)\b"#, options: .regularExpression) != nil
     }
 
     /// "", "null", "none", "n/a": the model had no wording to copy, whatever date it then chose.
     static func isNoWording(_ s: String) -> Bool { ["", "null", "none", "nil", "n a", "na", "tbd null"].contains(Normalize.key(s)) }
 
     static func isDuplicate(_ a: ParsedObligation, _ b: ParsedObligation, calendar: Calendar) -> Bool {
-        guard Normalize.key(a.title) == Normalize.key(b.title) else { return false }
-        switch (a.due, b.due) {
-        case (nil, nil): return true
-        case (let x?, let y?): return calendar.isDate(x, inSameDayAs: y)
-        default: return false
+        let sameDay: Bool = switch (a.due, b.due) {
+        case (nil, nil): true
+        case (let x?, let y?): calendar.isDate(x, inSameDayAs: y)
+        default: false
         }
+        guard sameDay else { return false }
+        if Normalize.similarity(a.title, b.title) >= 0.5 { return true }
+        // "Election 2026 assignment" and "ELECTION 2026: POWER & POLITICS IN ACTION — DUE" on one day are one item.
+        let filler: Set<String> = ["assignment", "due", "the", "of", "and", "a", "an", "deadline", "in"]
+        let ta = Normalize.tokens(a.title).subtracting(filler), tb = Normalize.tokens(b.title).subtracting(filler)
+        guard !ta.isEmpty, !tb.isEmpty else { return false }
+        return ta.isSubset(of: tb) || tb.isSubset(of: ta)
     }
 
     /// "quizzes" → "quiz", "classes" → "class", "labs" → "lab".

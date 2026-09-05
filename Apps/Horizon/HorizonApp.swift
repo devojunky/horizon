@@ -28,7 +28,7 @@ struct HorizonApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView()
+            MainTabs()
                 .environment(model)
                 .modelContainer(model.container)
                 .tint(Design.accent)

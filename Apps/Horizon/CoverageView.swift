@@ -7,15 +7,25 @@ import HorizonCore
 struct CoverageList: View {
     /// A read is in progress: the empty-state invitation would contradict the live section above it.
     var reading = false
-    @Query private var courses: [Course]
+    @Environment(AppModel.self) private var model
+    @Query(filter: #Predicate<Course> { $0.deletedAt == nil }) private var courses: [Course]
     @Query(filter: #Predicate<Obligation> { $0.deletedAt == nil }) private var obligations: [Obligation]
     @Query private var documents: [SourceDocument]
+    @State private var deleting: CourseCoverage?
 
+    /// The user's own order first; courses without one follow, most suspicious first.
     private var stories: [CourseCoverage] {
         let live = obligations.map(ObligationSnapshot.init)
         let docs = documents.map(DocumentSnapshot.init)
-        return courses.map { Coverage.assess(course: CourseSnapshot($0), obligations: live, documents: docs) }
-            .sorted { $0.suspicion > $1.suspicion }
+        let assessed = courses.map { Coverage.assess(course: CourseSnapshot($0), obligations: live, documents: docs) }
+        return assessed.sorted { a, b in
+            switch (a.course.sortOrder, b.course.sortOrder) {
+            case (let x?, let y?): x < y
+            case (.some, nil): true
+            case (nil, .some): false
+            case (nil, nil): a.suspicion > b.suspicion
+            }
+        }
     }
 
     var body: some View {
@@ -25,11 +35,22 @@ struct CoverageList: View {
                 .listRowSeparator(.hidden)
         }
         ForEach(stories) { story in
-            NavigationLink { CourseView(course: courses.first { $0.id == story.course.id }!) } label: {
+            NavigationLink(value: courses.first { $0.id == story.course.id }!) {
                 CoverageStory(story: story)
             }
             .listRowSeparator(.hidden)
             .listRowInsets(EdgeInsets(top: 20, leading: 20, bottom: 20, trailing: 20))
+        }
+        .onMove { from, to in
+            var order = stories.map(\.course.id)
+            order.move(fromOffsets: from, toOffset: to)
+            Task { await model.reorderCourses(order) }
+        }
+        .onDelete { offsets in deleting = offsets.first.map { stories[$0] } }
+        .confirmationDialog("Delete \(deleting?.displayName ?? "this course")?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
+            Button("Delete Course", role: .destructive) { if let course = deleting { Task { await model.deleteCourse(course.course.id) } } }
+        } message: {
+            Text("Its items and their reminders are removed as well. Reading its syllabus again brings it back.")
         }
     }
 }
@@ -42,7 +63,7 @@ struct CoverageStory: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if !story.course.title.isEmpty, !story.course.code.isEmpty {
-                Text(story.course.title).font(.caption).foregroundStyle(.secondary).textCase(.uppercase).kerning(0.8)   // the kicker
+                Text(story.course.code).font(.caption).foregroundStyle(.secondary).textCase(.uppercase).kerning(0.8)   // the kicker; the sentence names the course
             }
             Text(story.headline)
                 .font(.system(.title2, design: .serif, weight: .semibold))

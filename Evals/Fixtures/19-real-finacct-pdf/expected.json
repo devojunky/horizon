@@ -1,0 +1,56 @@
+{
+  "note": "Real NYU Tandon syllabus shared by the user (2026-09-05). Twelve pages: four exams (three dated, final TBD) stated twice (a grade table and an IMPORTANT DEADLINES table whose cells wrap one per line), a BryteWave opt-out deadline, and weekly preparation lists without dates.",
+  "course": {
+    "code": "MG-UY 2204",
+    "title": "Financial Accounting"
+  },
+  "gradeComponents": [
+    {
+      "name": "Test 1",
+      "weight": 0.2
+    },
+    {
+      "name": "Midterm Exam",
+      "weight": 0.3
+    },
+    {
+      "name": "Test 2",
+      "weight": 0.2
+    },
+    {
+      "name": "Final Exam",
+      "weight": 0.3
+    }
+  ],
+  "obligations": [
+    {
+      "title": "Opt out of the program",
+      "due": "2026-09-17",
+      "platform": "syllabusOnly"
+    },
+    {
+      "title": "Test 1",
+      "due": "2026-09-30",
+      "platform": "syllabusOnly",
+      "component": "Test 1"
+    },
+    {
+      "title": "Midterm Exam",
+      "due": "2026-10-28",
+      "platform": "syllabusOnly",
+      "component": "Midterm Exam"
+    },
+    {
+      "title": "Test 2",
+      "due": "2026-11-18",
+      "platform": "syllabusOnly",
+      "component": "Test 2"
+    },
+    {
+      "title": "Final Exam",
+      "due": null,
+      "platform": "syllabusOnly",
+      "component": "Final Exam"
+    }
+  ]
+}

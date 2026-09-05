@@ -41,6 +41,9 @@ public actor Ingestor {
         try await ingest(document: DocumentNormalizer.normalize(image: image, name: name))
     }
 
+    /// Why Private Cloud Compute cannot be used on this device right now, or nil when it can.
+    public static func cloudAvailability() -> String? { Extractor.cloudAvailability() }
+
     func ingest(document: NormalizedDocument) async throws -> IngestResult {
         guard !document.pages.isEmpty else { throw IngestError.emptyDocument }
         let log = options.log

@@ -153,6 +153,13 @@ struct MergerTests {
         #expect(r.obligations.map(\.title) == ["Lab 1", "Lab 2"])
     }
 
+    @Test func aFrequencyStatementWithAModelDateNeedsReview() {
+        let text = "Mastering Physics Homework 15% weekly, due Sundays 11:59 PM on Mastering Physics.\n3 Sep 14-18 Newton's laws MP HW 2 due Sun Sep 20"
+        let r = Self.merge([Self.outcome(0, obligations: [Self.ob("Mastering Physics Homework", "weekly, due Sundays", iso: "2026-09-14")])], text: text)
+        let item = try! #require(r.obligations.first)
+        #expect(item.status == .needsReview && item.flags.contains(.dateNotInSource))
+    }
+
     @Test func nullWordingIsNoWording() {
         let r = Self.merge([Self.outcome(0, obligations: [Self.ob("Weekly Labs", "null", iso: "2026-09-02")])])   // Sep 2 is in the document, as the first day of class
         let item = try! #require(r.obligations.first)
@@ -165,8 +172,79 @@ struct MergerTests {
         ("14 Nov 30-Dec 4 Exam 3 (Thu Dec 3) Lab 6 report", "Lab 6 report"), ("Lab 1: Measurement and density", "Lab 1"),
         ("Homework 1 (Sections 1.1-1.3)", "Homework 1"), ("Reading response 3 on Kant", "Reading response 3"),
         ("Project 1 Proposal", "Project 1 Proposal"), ("Final Exam", "Final Exam"), ("Essay on the French Revolution", "Essay on the French Revolution"),
+        ("ELECTION 2026: POWER & POLITICS IN ACTION LIVE OB CASE STUDY", "ELECTION 2026: POWER & POLITICS IN ACTION LIVE OB CASE STUDY"),
+        ("UNIT TEST 2 (MIDTERM)", "UNIT TEST 2 (MIDTERM)"), ("Week 9: Motivation cases. UNIT TEST 2 (MIDTERM)", "UNIT TEST 2 (MIDTERM)"),
     ]) func ownNameOutOfACopiedRow(title: String, expected: String) {
         #expect(Merger.ownName(title) == expected)
+    }
+
+    @Test func sectionNumbersAreNotComponents() {
+        let r = Self.merge([Self.outcome(0, components: [Self.component("5.3-4", nil), Self.component("11.8-9", nil), Self.component("Quizzes", 12)])], text: "Week 1 Aug 31 - Sept 4 no classes 5.3-4 11.8-9. Quizzes 12%.")
+        #expect(r.gradeComponents.map(\.name) == ["Quizzes"])
+    }
+
+    @Test func aSpanOfDaysIsNotADeadline() {
+        let text = """
+        Week Dates Monday Wednesday (Fri)
+        3 Sept 14-18 7.1-2 PS0 due 7.3
+        14 Nov 30 - Dec 4 11.10 PS5 due 11.11
+        Quiz 1: Thu 9/17.
+        """
+        let r = Self.merge([Self.outcome(0, obligations: [
+            Self.ob("PS0", "Sept 14-18", iso: "2026-09-18"), Self.ob("PS5", "30 - Dec 4", iso: "2026-12-04"), Self.ob("Quiz 1", "Thu 9/17", iso: "2026-09-17"),
+        ])], text: text)
+        let byTitle = Dictionary(uniqueKeysWithValues: r.obligations.map { ($0.title, $0) })
+        #expect(byTitle["PS0"]?.status == .needsReview && byTitle["PS0"]?.flags.contains(.dateAmbiguous) == true)
+        #expect(byTitle["PS5"]?.status == .needsReview && byTitle["PS5"]?.flags.contains(.dateAmbiguous) == true)
+        #expect(byTitle["Quiz 1"]?.status == .ready)
+    }
+
+    @Test func topicListingsAndSessionsAreNotObligations() {
+        let text = """
+        Week 3: Monday, September 14 and Wednesday, September 16: Monday: Chapter 1. Wednesday: Chapter 2, Diversity, Equity & Inclusion in Organizations.
+        Oct 7 UNIT TEST 1 Chapters 1–4
+        Oct 21 SHARK TANK GROUP WORK SESSION #1 In-class planning
+        Dec 14 Course synthesis and final examination preparation
+        """
+        let r = Self.merge([Self.outcome(0, obligations: [
+            Self.ob("Chapter 2, Diversity, Equity & Inclusion in Organizations", "Wednesday, September 16", iso: "2026-09-16"),
+            Self.ob("UNIT TEST 1", "Oct 7", iso: "2026-10-07"), Self.ob("SHARK TANK GROUP WORK SESSION #1", "Oct 21", iso: "2026-10-21"),
+            Self.ob("Course synthesis and final examination preparation", "Dec 14", iso: "2026-12-14"),
+        ])], text: text)
+        #expect(r.obligations.map(\.title) == ["UNIT TEST 1"] && r.obligations[0].status == .ready)
+        #expect(r.warnings.contains { $0.contains("topic, reading or session") })
+    }
+
+    @Test func aDateLiftedFromAnotherLineNeedsReview() {
+        let text = """
+        Students complete required MyLab work as directed before class.
+        You must opt out of the program by September 17th.
+        Exam 1 Tuesday, October 6th, 2026
+        """
+        let r = Self.merge([Self.outcome(0, obligations: [Self.ob("MyLab work", "September 17th", iso: "2026-09-17"), Self.ob("Exam 1", "Tuesday, October 6th, 2026", iso: "2026-10-06")])], text: text)
+        let byTitle = Dictionary(uniqueKeysWithValues: r.obligations.map { ($0.title, $0) })
+        #expect(byTitle["MyLab work"]?.status == .needsReview && byTitle["MyLab work"]?.flags.contains(.dateNotOnRow) == true)
+        #expect(byTitle["Exam 1"]?.status == .ready)
+    }
+
+    @Test func aWeekNumberBeforeTheMonthIsNotADay() {
+        let r = Self.merge([Self.outcome(0, obligations: [Self.ob("Finals", "17 Dec 21-25", iso: "2026-12-17")])], text: "16 Dec 14-18 review Reading Day\n17 Dec 21-25- Finals Week")
+        #expect(r.obligations.first?.status == .needsReview && r.obligations.first?.flags.contains(.dateAmbiguous) == true)
+    }
+
+    @Test func theGradeTablesFigureWinsOverTheModels() {
+        let text = "WebAssign 4%\nProblem Sets 4%\nQuizzes 12%\nExam 1 25%\nExam 2 25%\nFinal Exam 30%\nTotal 100%"
+        let r = Self.merge([Self.outcome(0, components: [Self.component("Problem sets (written)", 10)])], text: text)
+        #expect(r.gradeComponents.first { $0.name.hasPrefix("Problem") }?.weight == 0.04)
+    }
+
+    @Test func sameDayTitlesNestedInEachOtherAreOneItem() {
+        let text = "Election 2026: Power & Politics in Action — due Monday, November 9, 2026. The Election 2026 assignment is due Monday, November 9."
+        let r = Self.merge([Self.outcome(0, obligations: [
+            Self.ob("ELECTION 2026: POWER & POLITICS IN ACTION — DUE", "Monday, November 9, 2026", iso: "2026-11-09"),
+            Self.ob("Election 2026 assignment", "Monday, November 9", iso: "2026-11-09"),
+        ])], text: text)
+        #expect(r.obligations.count == 1)
     }
 
     @Test func missingWeightIsRecoveredFromTheSourceLine() {
@@ -401,7 +479,7 @@ struct MergerTests {
         [70,73) C−
         Total 100%
         """
-        let r = Self.merge([Self.outcome(0, components: [Self.component("HW 1", 10)])], text: text)   // "HW 1" is invented: not in the document
+        let r = Self.merge([Self.outcome(0, components: [Self.component("Labs", 10)])], text: text)   // "Labs" is invented: not in the document
         #expect(r.gradeComponents.map(\.name) == ["WebAssign", "Problem Sets", "Quizzes", "Exam 1", "Exam 2", "Final Exam"])
         #expect(r.gradeComponents.map { Int(($0.weight ?? 0) * 100) } == [4, 4, 12, 25, 25, 30])
         #expect(r.warnings.contains { $0.contains("not in the document") })

@@ -72,20 +72,22 @@ public actor HorizonStore {
         let course = all.first { !code.isEmpty && Normalize.key($0.code) == Normalize.key(code) }
             ?? all.first { (code.isEmpty || $0.code.isEmpty) && !title.isEmpty && Normalize.similarity($0.title, title) >= 0.6 }
             ?? { let c = Course(code: code, title: title); modelContext.insert(c); return c }()
-        if course.code.isEmpty { course.code = code }
-        if course.title.isEmpty || (!title.isEmpty && Normalize.key(course.title) != Normalize.key(title) && course.title.count < title.count) { course.title = title }
+        course.deletedAt = nil   // a document naming a retired course brings it back
+        let kept = Set(course.userOverrides)   // hand-edited fields stay
+        if course.code.isEmpty, !kept.contains("code") { course.code = code }
+        if !kept.contains("title"), course.title.isEmpty || (!title.isEmpty && Normalize.key(course.title) != Normalize.key(title) && course.title.count < title.count) { course.title = title }
         if let p = parsed {
-            course.instructor = p.instructor ?? course.instructor
-            course.term = p.term ?? course.term
-            course.termStart = p.termStart ?? course.termStart
-            course.termEnd = p.termEnd ?? course.termEnd
-            course.room = p.room ?? course.room
-            if !p.meetings.isEmpty { course.meetings = p.meetings }
+            if !kept.contains("instructor") { course.instructor = p.instructor ?? course.instructor }
+            if !kept.contains("term") { course.term = p.term ?? course.term }
+            if !kept.contains("termStart") { course.termStart = p.termStart ?? course.termStart }
+            if !kept.contains("termEnd") { course.termEnd = p.termEnd ?? course.termEnd }
+            if !kept.contains("room") { course.room = p.room ?? course.room }
+            if !kept.contains("meetings"), !p.meetings.isEmpty { course.meetings = p.meetings }
         }
-        if !result.gradeComponents.isEmpty {
+        if !kept.contains("gradeComponents"), !result.gradeComponents.isEmpty {
             course.gradeComponents = result.gradeComponents.map { GradeComponent(name: $0.name, weight: $0.weight, expectedCount: $0.expectedCount, cadence: $0.cadence, dropLowest: $0.dropLowest) }
         }
-        if !result.noClassDates.isEmpty {
+        if !kept.contains("noClassDates"), !result.noClassDates.isEmpty {
             course.noClassDates = result.noClassDates.map { ClosedDateRange(start: $0.start, end: $0.end ?? $0.start, label: $0.dateAsWritten) }
         }
         for platform in Set(result.obligations.map(\.platform.rawValue)) where !course.platforms.contains(platform) { course.platforms.append(platform) }
@@ -175,7 +177,7 @@ public actor HorizonStore {
     /// Records a document by content hash. The same file again is the same record; a failed one is queued again.
     public func enqueueDocument(filename: String, sha256: String, kind: String, deviceName: String) throws -> DocumentSnapshot {
         if let existing = try fetchDocuments().first(where: { $0.sha256 == sha256 }) {
-            if existing.status == .failed { existing.status = .queued; existing.failure = nil; try modelContext.save() }
+            if existing.status == .failed || existing.status == .cancelled { existing.status = .queued; existing.failure = nil; try modelContext.save() }
             return snapshot(existing)
         }
         let doc = SourceDocument(filename: filename, sha256: sha256, kind: kind, deviceName: deviceName)
@@ -268,6 +270,54 @@ public actor HorizonStore {
         return snapshot(item)
     }
 
+    /// Hand edits to a course; each edited field becomes an override a later document leaves alone.
+    public func updateCourse(id: UUID, edits: CourseEdits) throws {
+        guard let course = try fetchCourse(id: id) else { return }
+        Self.apply(edits, to: course)
+        try modelContext.save()
+    }
+
+    /// A course entered by hand (the fallback for a course with no document yet). Every field given is an override.
+    public func addCourse(_ edits: CourseEdits) throws -> CourseSnapshot {
+        let course = Course(code: edits.code ?? "", title: edits.title ?? "")
+        course.userOverrides = ["title", "code"]
+        Self.apply(edits, to: course)
+        modelContext.insert(course)
+        try modelContext.save()
+        return CourseSnapshot(course)
+    }
+
+    private static func apply(_ edits: CourseEdits, to course: Course) {
+        func keep(_ field: String) { if !course.userOverrides.contains(field) { course.userOverrides.append(field) } }
+        if let title = edits.title, title != course.title { course.title = title; keep("title") }
+        if let code = edits.code, code != course.code { course.code = code; keep("code") }
+        if let term = edits.term { course.term = term; keep("term") }
+        if let start = edits.termStart { course.termStart = start; keep("termStart") }
+        if let end = edits.termEnd { course.termEnd = end; keep("termEnd") }
+        if let instructor = edits.instructor { course.instructor = instructor; keep("instructor") }
+        if let room = edits.room { course.room = room; keep("room") }
+        if let meetings = edits.meetings { course.meetings = meetings; keep("meetings") }
+        if let components = edits.gradeComponents { course.gradeComponents = components; keep("gradeComponents") }
+        if let breaks = edits.noClassDates { course.noClassDates = breaks; keep("noClassDates") }
+    }
+
+    /// Retires a course: it and its items leave every screen, and the items' reminders go on the next sync.
+    public func deleteCourse(id: UUID) throws {
+        guard let course = try fetchCourse(id: id) else { return }
+        let now = Date()
+        course.deletedAt = now
+        course.sortOrder = nil
+        for item in course.obligations ?? [] where item.deletedAt == nil { item.deletedAt = now; item.updatedAt = now }
+        try modelContext.save()
+    }
+
+    /// The user's order for the Coverage screen; every course listed gets its position, the rest keep none.
+    public func reorderCourses(_ ids: [UUID]) throws {
+        let all = try modelContext.fetch(FetchDescriptor<Course>())
+        for course in all { course.sortOrder = ids.firstIndex(of: course.id) }
+        try modelContext.save()
+    }
+
     public func softDelete(id: UUID) throws {
         guard let item = try fetchObligation(id: id) else { return }
         item.deletedAt = Date()
@@ -333,7 +383,7 @@ public actor HorizonStore {
     // MARK: Courses
 
     public func courses() throws -> [CourseSnapshot] {
-        try modelContext.fetch(FetchDescriptor<Course>(sortBy: [SortDescriptor(\.code)])).map(CourseSnapshot.init)
+        try modelContext.fetch(FetchDescriptor<Course>(predicate: #Predicate { $0.deletedAt == nil }, sortBy: [SortDescriptor(\.code)])).map(CourseSnapshot.init)
     }
 
     /// Where the app is probably blind, per course, most suspicious first (SPEC §6.1).

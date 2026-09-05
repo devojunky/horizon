@@ -1,4 +1,7 @@
 // Shared build settings. Local.xcconfig (git-ignored) may set DEVELOPMENT_TEAM.
 #include? "Local.xcconfig"
+// iOS entitlements. Once Apple grants the managed Private Cloud Compute entitlement to the team, set this in
+// Local.xcconfig to Apps/Horizon/Horizon-PCC.entitlements so the "Read in Private Cloud Compute" setting works.
+HORIZON_IOS_ENTITLEMENTS = Apps/Horizon/Horizon.entitlements
 SWIFT_VERSION = 6.0
 SWIFT_STRICT_CONCURRENCY = complete

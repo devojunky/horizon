@@ -28,7 +28,7 @@ struct ImportMenu: View {
             }
             #endif
         } label: {
-            Label("Ingest document", systemImage: "doc.badge.plus")
+            Label("Add Document", systemImage: "doc.badge.plus")
         }
         .fileImporter(isPresented: $files, allowedContentTypes: Self.readable, allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { Task { await model.importFiles(urls) } }

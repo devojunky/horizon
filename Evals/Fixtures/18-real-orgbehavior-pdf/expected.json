@@ -1,0 +1,82 @@
+{
+  "note": "Real NYU Tandon syllabus shared by the user (2026-09-05). Eight pages: a Key Dates table, a grade breakdown, a Follett opt-out deadline, an election assignment with a due date, an extra-credit deadline, two-day final presentations (first day listed), and a final exam in finals week (TBD).",
+  "course": {
+    "code": "MG-UY 2104",
+    "title": "Organizational Behavior"
+  },
+  "gradeComponents": [
+    {
+      "name": "Unit Tests",
+      "weight": 0.4
+    },
+    {
+      "name": "Pearson MyLab Readings, Assessments & Assignments",
+      "weight": 0.15
+    },
+    {
+      "name": "Class Participation & Group Discussions",
+      "weight": 0.1
+    },
+    {
+      "name": "Election 2026: Power & Politics in Action",
+      "weight": 0.05
+    },
+    {
+      "name": "Organizational Shark Tank",
+      "weight": 0.3
+    }
+  ],
+  "obligations": [
+    {
+      "title": "Opt out of the Follett ACCESS program",
+      "due": "2026-09-17",
+      "platform": "syllabusOnly"
+    },
+    {
+      "title": "Shark Tank groups confirmed",
+      "due": "2026-09-30",
+      "platform": "syllabusOnly"
+    },
+    {
+      "title": "Unit Test 1",
+      "due": "2026-10-07",
+      "platform": "syllabusOnly",
+      "component": "Unit Tests"
+    },
+    {
+      "title": "Unit Test 2 (Midterm)",
+      "due": "2026-10-28",
+      "platform": "syllabusOnly",
+      "component": "Unit Tests"
+    },
+    {
+      "title": "Election 2026: Power & Politics in Action",
+      "due": "2026-11-09",
+      "platform": "syllabusOnly",
+      "component": "Election 2026: Power & Politics in Action"
+    },
+    {
+      "title": "Unit Test 3",
+      "due": "2026-11-18",
+      "platform": "syllabusOnly",
+      "component": "Unit Tests"
+    },
+    {
+      "title": "AI Literacy Extra Credit",
+      "due": "2026-12-02",
+      "platform": "syllabusOnly"
+    },
+    {
+      "title": "Organizational Shark Tank presentations",
+      "due": "2026-12-07",
+      "platform": "syllabusOnly",
+      "component": "Organizational Shark Tank"
+    },
+    {
+      "title": "Unit Test 4 (Final Exam)",
+      "due": null,
+      "platform": "syllabusOnly",
+      "component": "Unit Tests"
+    }
+  ]
+}

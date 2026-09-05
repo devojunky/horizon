@@ -15,7 +15,7 @@ public actor IngestCoordinator {
     private let store: HorizonStore
     private let storage: DocumentStorage
     private let sync: SyncCoordinator?
-    private let options: IngestOptions
+    private var options: IngestOptions
     private let deviceName: String
     private let parse: Parser
     private let progress: @Sendable (DocumentProgress) -> Void
@@ -39,6 +39,9 @@ public actor IngestCoordinator {
         return try await store.enqueueDocument(filename: filename ?? fileURL.lastPathComponent, sha256: stored.sha256,
                                                kind: stored.url.pathExtension.lowercased(), deviceName: deviceName)
     }
+
+    /// Where the next drain reads documents: on device, or in Private Cloud Compute (a user setting).
+    public func setRoute(_ route: IngestOptions.RoutePolicy) { options.route = route }
 
     /// Parses every queued document, folds results into the store, then writes Reminders.
     public func drain() async -> [Report] {

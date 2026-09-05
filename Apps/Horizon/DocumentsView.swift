@@ -12,6 +12,10 @@ struct DocumentsView: View {
             Section {
                 LabeledContent("Reminders access", value: model.remindersAuthorized.map { $0 ? "Granted" : "Denied" } ?? "Not asked")
                 LabeledContent("Device", value: AppModel.deviceName)
+                LabeledContent("Reads documents", value: model.readInCloud ? "In Private Cloud Compute" : "On device")
+                if let why = model.cloudUnavailableReason {
+                    Text("Private Cloud Compute is unavailable: \(why).").font(.footnote).foregroundStyle(.secondary)
+                }
             }
             Section("Documents") {
                 ForEach(documents) { doc in
@@ -22,8 +26,8 @@ struct DocumentsView: View {
                             Text("\(doc.inputTokens) in · \(doc.outputTokens) out · \(doc.durationMs / 1000) s · \(doc.route ?? "")").font(.footnote).monospacedDigit().foregroundStyle(.secondary)
                         }
                         if let failure = doc.failure { Text(failure).font(.footnote).foregroundStyle(Design.accent) }
-                        if doc.status == .failed || doc.status == .awaitingCloudParse {
-                            Button("Retry") { Task { await model.retry(documentID: doc.id) } }.font(.footnote).buttonStyle(.bordered).controlSize(.mini)
+                        if doc.status == .failed || doc.status == .awaitingCloudParse || doc.status == .cancelled {
+                            Button("Retry", systemImage: "arrow.clockwise") { Task { await model.retry(documentID: doc.id) } }.buttonStyle(.bordered).controlSize(.small).padding(.top, 2)
                         }
                         ForEach(doc.warnings, id: \.self) { Text($0).font(.footnote).foregroundStyle(.secondary) }
                     }
@@ -34,6 +38,6 @@ struct DocumentsView: View {
     }
 
     private func status(_ doc: SourceDocument) -> String {
-        switch doc.status { case .queued: "Queued"; case .parsed: "Parsed"; case .failed: "Failed"; case .awaitingCloudParse: "Waiting for Private Cloud Compute" }
+        switch doc.status { case .queued: "Queued"; case .parsed: "Parsed"; case .failed: "Failed"; case .awaitingCloudParse: "Waiting for Private Cloud Compute"; case .cancelled: "Cancelled" }
     }
 }

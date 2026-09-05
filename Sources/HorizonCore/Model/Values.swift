@@ -44,5 +44,5 @@ public enum FieldKey: String, Codable, Sendable, CaseIterable {
 }
 
 public enum DocumentStatus: String, Codable, Sendable {
-    case queued, parsed, failed, awaitingCloudParse
+    case queued, parsed, failed, awaitingCloudParse, cancelled
 }

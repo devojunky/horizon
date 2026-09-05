@@ -6,7 +6,7 @@ import IngestKit
 struct CoverageTests {
     let now = Fixture.day(9, 21, hour: 12, minute: 0)   // Monday, September 21, 2026
     func course(_ code: String, components: [GradeComponent] = [], platforms: [String] = [], lastIngested: Date? = nil) -> CourseSnapshot {
-        CourseSnapshot(code: code, title: "Course \(code)", termStart: Fixture.day(9, 2), termEnd: Fixture.day(12, 14), gradeComponents: components, platforms: platforms, lastIngested: lastIngested)
+        CourseSnapshot(code: code, title: code, termStart: Fixture.day(9, 2), termEnd: Fixture.day(12, 14), gradeComponents: components, platforms: platforms, lastIngested: lastIngested)
     }
     func obligation(_ title: String, due: Date?, course: CourseSnapshot, component: String? = nil, completed: Bool = false) -> ObligationSnapshot {
         ObligationSnapshot(id: UUID(), title: title, due: due, dueHasTime: false, platform: .syllabusOnly, componentName: component, pointsAtStake: nil, confidence: 1,
@@ -98,7 +98,7 @@ struct CoverageTests {
         var quiet = Fixture.calculus(sha: "q"); quiet.course = ParsedCourse(code: "AAA 1", title: "Quiet"); quiet.obligations = []; quiet.gradeComponents = [ParsedGradeComponent(name: "Quizzes", weight: 1, cadence: .weekly)]
         try await Fixture.ingest(quiet, into: store)
         let coverage = try await store.coverage(now: Fixture.day(10, 5, hour: 12, minute: 0), calendar: Fixture.calendar)
-        #expect(coverage.map(\.displayName) == ["AAA 1", "MA-UY 1124"])   // the silent, gap-ridden course first despite sorting last by name
+        #expect(coverage.map(\.course.code) == ["AAA 1", "MA-UY 1124"])   // the silent, gap-ridden course first despite sorting last by name
         #expect(coverage[0].cadenceGaps.first?.component == "Quizzes")
     }
 }

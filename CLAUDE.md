@@ -6,10 +6,12 @@ Native iOS 27 / macOS 27 app: an intake engine that turns course documents into 
 ```
 Package.swift             SwiftPM. Targets: IngestKit, HorizonCore (libs), HorizonParse (CLI), IngestKitTests, HorizonCoreTests, IngestEvals
 project.yml               xcodegen spec for the app targets; Horizon.xcodeproj is generated and git-ignored
-Apps/Horizon/             SwiftUI app (iOS + macOS): AppModel (store/coordinator/sync wiring, live Reading state), RootView, ReviewView, ObligationEditor, CourseView, DocumentsView, ImportSources (Files / Photos / document camera), WatchedFolder (macOS)
+Apps/Horizon/             SwiftUI app (iOS + macOS): AppModel (store/coordinator/sync wiring, live Reading state, cancel, PCC setting), HorizonStripView (MainTabs + the M4 strip), RootView (Coverage), CoverageView, ReviewView, ObligationEditor, CourseView, DocumentsView, ImportSources (Files / Photos / document camera), WatchedFolder (macOS)
 Apps/HorizonShare/        iOS share extension: copies the shared file into the App Group inbox; the app parses it
 Sources/HorizonCore/      storage + sync. Identifiers.swift (bundle/group/container ids), Model/Schema.swift (VersionedSchema V1),
   Store/HorizonStore      @ModelActor: ingest → upsert with field ownership, review queue, manual entry, soft delete, reconciliation
+  Coverage/Coverage.swift  M3 gap detection (days silent, cadence gaps, never-ingested platforms, suspicion)
+  Strip/Strip.swift        M4 strip logic: mass, pileups (collisions), span, items on a day
   Sync/ReminderStore      the only EventKit surface (protocol + EventKit impl); Sync/Projector = fetch-then-write projector, Reconciler, SyncCoordinator
   Ingest/IngestCoordinator  inbox → parser → store → Reminders
 Sources/IngestKit/        documents in → IngestResult out. No storage, no EventKit, no UI.
@@ -40,6 +42,8 @@ xcodegen generate                                        # after editing project
 xcodebuild -project Horizon.xcodeproj -scheme Horizon -destination 'platform=iOS Simulator,name=iPhone 17 Pro Max' -derivedDataPath .build/DerivedData build
 xcrun simctl install booted .build/DerivedData/Build/Products/Debug-iphonesimulator/Horizon.app && xcrun simctl launch booted com.daniel.horizon
 xcrun simctl spawn booted log stream --level info --predicate 'subsystem == "com.daniel.horizon"'   # ingest/sync log (os.Logger, category ingest)
+xcrun simctl privacy booted grant reminders com.daniel.horizon && xcrun simctl launch booted com.daniel.horizon --ingest-sample   # DEBUG: read the bundled sample without a tap
+xcrun simctl launch booted com.daniel.horizon --tab-horizon --zoom-two-weeks   # DEBUG: open on the strip, zoomed to two weeks around today
 ```
 The simulator runs a 300M model, not the 3B one; use it to exercise the pipeline, not to judge extraction quality. A DEBUG menu item "Ingest sample syllabus" feeds `Apps/Horizon/Samples/sample-syllabus.pdf`.
 
@@ -56,3 +60,5 @@ The simulator runs a 300M model, not the 3B one; use it to exercise the pipeline
 - Storage: SwiftData in the App Group, CloudKit-shaped from V1 (optional/defaulted fields, no unique attributes, optional relationships with inverses). Soft deletes only (`deletedAt`). `HorizonStore` is the only writer; `ReminderProjector` is the only Reminders writer and re-fetches the Horizon list before every write.
 - Field ownership: documents own title/due/platform/component unless the field is in `userOverrides`; Reminders owns completion; hand edits (review editor, manual entry, edits made in Reminders) set overrides. A re-ingest that changes an owned field goes back to review with a `changeNote`.
 - Manual entry is a fallback reached from the overflow menu, never a primary action; such items carry `origin = manual`.
+- Courses are shown by `displayName` (title, else code) everywhere, including reminder titles. Hand edits to a course (`HorizonStore.updateCourse`) set `Course.userOverrides`, which `upsertCourse` respects. Any obligation can be edited (`ObligationEditor` `.edit`) or deleted (soft delete); both go through the same overrides as review edits.
+- Private Cloud Compute is a user setting (More menu toggle → `IngestCoordinator.setRoute`). It needs Apple's managed entitlement `com.apple.developer.private-cloud-compute`; select `Horizon-PCC.entitlements` from Local.xcconfig once granted. Without it `Ingestor.cloudAvailability()` reports the missing entitlement and the toggle is disabled.

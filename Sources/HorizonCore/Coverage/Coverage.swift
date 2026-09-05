@@ -18,7 +18,7 @@ public struct CourseCoverage: Sendable, Identifiable, Equatable {
     /// "Bio has been silent for 9 days and its syllabus implies weekly quizzes."
     public var headline: String
 
-    public var displayName: String { course.code.isEmpty ? course.title : course.code }
+    public var displayName: String { course.displayName }
 }
 
 /// A grade component whose stated rhythm is not showing up in the obligations on file.
@@ -93,7 +93,7 @@ public enum Coverage {
 
     /// One sentence a person would say. The strongest signals only, each clause carrying its own subject.
     static func headline(course: CourseSnapshot, daysSilent: Int?, upcoming: Int, gaps: [CadenceGap], never: [Platform]) -> String {
-        let name = course.code.isEmpty ? course.title : course.code
+        let name = course.displayName
         var clauses: [String] = []
         if let days = daysSilent, days >= 7 { clauses.append("\(name) has been silent for \(days) days") }
         if daysSilent == nil { clauses.append("\(name) has nothing on file") }

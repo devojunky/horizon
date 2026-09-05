@@ -143,7 +143,7 @@ struct SyncTests {
         #expect(again == ReminderProjector.Report() && items.count == 4)
         let hw1 = items.first { $0.title.hasPrefix("HW 1") }!
         let stored = try await store.obligations().first { $0.title == "HW 1" }!
-        #expect(hw1.title == "HW 1 · MA-UY 1124" && hw1.url == Identifiers.link(for: stored.id))
+        #expect(hw1.title == "HW 1 · Calculus II" && hw1.url == Identifiers.link(for: stored.id))   // reminders carry the course's name
         #expect(hw1.notes?.contains("Worth 1.5% of the grade") == true && hw1.notes?.contains("WebAssign") == true && hw1.notes?.contains("page 2") == true)
     }
 
@@ -257,6 +257,6 @@ struct SyncTests {
         #expect(manual.origin == .manual && manual.state == .readyToProject && manual.userOverrides.contains(.title))
         _ = try await SyncCoordinator.device("A", store: store, reminders: reminders).sync()
         let items = await reminders.items
-        #expect(items.contains { $0.title == "Bring calculator to exam · MA-UY 1124" && $0.notes?.contains("Told in lecture") == true })
+        #expect(items.contains { $0.title == "Bring calculator to exam · Calculus II" && $0.notes?.contains("Told in lecture") == true })
     }
 }

@@ -6,7 +6,7 @@ import HorizonCore
 struct ReviewView: View {
     @Environment(AppModel.self) private var model
     @Query(sort: \Obligation.due) private var obligations: [Obligation]
-    @Query(sort: \Course.code) private var courses: [Course]
+    @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
     @State private var editing: Obligation?
 
     private var pending: [Obligation] { obligations.filter { $0.deletedAt == nil && $0.state == .pendingReview } }
@@ -21,7 +21,7 @@ struct ReviewView: View {
                     ObligationRow(obligation: item)
                     Text(reason(for: item)).font(.footnote).foregroundStyle(item.changeNote == nil ? .secondary : Design.accent)
                     HStack {
-                        Button("Confirm") { Task { await model.confirm(item.id) } }.buttonStyle(.borderedProminent)
+                        Button("Confirm", systemImage: "checkmark") { Task { await model.confirm(item.id) } }.buttonStyle(.bordered).tint(Design.accent)
                         Button("Edit") { editing = item }.buttonStyle(.bordered)
                         Spacer()
                         Button("Discard", role: .destructive) { Task { await model.discard(item.id) } }.buttonStyle(.borderless)
@@ -29,6 +29,8 @@ struct ReviewView: View {
                     .controlSize(.small)
                 }
                 .padding(.vertical, 4)
+                .swipeActions(edge: .leading) { Button("Confirm", systemImage: "checkmark") { Task { await model.confirm(item.id) } }.tint(Design.accent) }
+                .swipeActions(edge: .trailing) { Button("Discard", systemImage: "trash", role: .destructive) { Task { await model.discard(item.id) } } }
             }
         }
         .navigationTitle("Review")
@@ -49,6 +51,7 @@ struct ReviewView: View {
             case "unknownComponent": "grade component unknown"
             case "titleNotInSource": "the document never names it this way"
             case "titleFromLine": "name taken from the sentence with the date"
+            case "dateNotOnRow": "the date isn't on the item's own line"
             case "modelLowConfidence": "low confidence"
             default: nil
             }

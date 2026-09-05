@@ -7,18 +7,21 @@ import HorizonCore
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @Query(sort: \Obligation.due) private var obligations: [Obligation]
-    @Query(sort: \Course.code) private var courses: [Course]
+    @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
     @State private var addingByHand = false
+    @State private var addingCourse = false
     @State private var linked: Obligation?
+    @State private var path = NavigationPath()
+    @State private var editing: EditMode = .inactive   // owned here and handed to the list, so the toolbar and the rows agree
 
     private var live: [Obligation] { obligations.filter { $0.deletedAt == nil } }
     private var pending: [Obligation] { live.filter { $0.state == .pendingReview } }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
                 if let reading = model.reading {
-                    ReadingSection(reading: reading)
+                    ReadingSection(reading: reading, cancel: { model.cancelReading() })
                 } else if let status = model.statusLine ?? model.lastError {
                     Section { Label(status, systemImage: model.lastError == nil ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle").foregroundStyle(model.lastError == nil ? .secondary : Design.accent) }
                         .listRowSeparator(.hidden)
@@ -36,18 +39,36 @@ struct RootView: View {
                 CoverageList(reading: model.reading != nil)
             }
             .listStyle(.plain)
+            .animation(.default, value: model.reading != nil)
+            .animation(.default, value: model.statusLine)
+            .animation(.default, value: model.lastError)
+            .navigationDestination(for: Course.self) { CourseView(course: $0) }
+            .onChange(of: courses.count, initial: true) { _, count in
+                if MainTabs.debugFlag("--open-course"), count > 0, path.isEmpty, let first = courses.first { path.append(first) }
+            }
             .navigationTitle("Coverage")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.large)
             #endif
             .toolbar {
+                if editing.isEditing {
+                    ToolbarItem(placement: .primaryAction) { Button("Done") { withAnimation { editing = .inactive } } }
+                } else {
                 ToolbarItem(placement: .primaryAction) { ImportMenu() }
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
                         Button { Task { await model.drainAndSync() } } label: { Label("Sync with Reminders", systemImage: "arrow.triangle.2.circlepath") }
-                        NavigationLink { DocumentsView() } label: { Label("Documents and usage", systemImage: "doc.text") }
+                        NavigationLink { DocumentsView() } label: { Label("Documents", systemImage: "doc.text") }
+                        Toggle(isOn: Binding(get: { model.readInCloud }, set: { model.readInCloud = $0 })) {
+                            Label("Read in Private Cloud Compute", systemImage: "cloud")
+                        }
+                        .disabled(model.cloudUnavailableReason != nil)
                         Divider()
-                        Button { addingByHand = true } label: { Label("Add by hand…", systemImage: "square.and.pencil") }
+                        Button { addingByHand = true } label: { Label("Add Item…", systemImage: "square.and.pencil") }
+                        Button { addingCourse = true } label: { Label("Add Course…", systemImage: "book") }
+                        if courses.count > 1 || !courses.isEmpty {
+                            Button { withAnimation { editing = .active } } label: { Label("Edit Courses", systemImage: "arrow.up.arrow.down") }
+                        }
                         #if DEBUG
                         Divider()
                         Button {
@@ -58,8 +79,12 @@ struct RootView: View {
                         #endif
                     } label: { Label("More", systemImage: "ellipsis.circle") }
                 }
+                }
             }
+            .environment(\.editMode, $editing)
+            .onAppear { if MainTabs.debugFlag("--edit-courses") { editing = .active } }
             .sheet(isPresented: $addingByHand) { ObligationEditor(mode: .manual, courses: courses) }
+            .sheet(isPresented: $addingCourse) { CourseEditor(course: nil) }
             .sheet(item: $linked) { ObligationEditor(mode: .review($0), courses: courses) }
             .onChange(of: model.linkedObligationID) { _, id in
                 guard let id else { return }   // the reset below fires this again with nil; it must not close the sheet
@@ -71,29 +96,45 @@ struct RootView: View {
 }
 
 /// The document resolving into obligations, as the model streams them (SPEC §9's one earned animation, plainly for now).
+/// A progress bar with a cancel button; the rows the model is streaming sit behind a disclosure, closed by default,
+/// and the choice is remembered.
 struct ReadingSection: View {
     let reading: AppModel.Reading
+    var cancel: () -> Void
+    @AppStorage("showReadingDetails") private var showDetails = false
 
     var body: some View {
         Section {
-            HStack(spacing: 10) {
-                ProgressView().controlSize(.small)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Reading \(reading.filename)").font(.body.weight(.medium))
-                    Text(progressLine).font(.footnote).foregroundStyle(.secondary).monospacedDigit()
-                }
-            }
-            ForEach(reading.items) { item in
-                HStack(alignment: .firstTextBaseline) {
-                    Text(item.title)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .center, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Reading \(reading.filename)").font(.body.weight(.medium))
+                        Text(progressLine).font(.footnote).foregroundStyle(.secondary).monospacedDigit()
+                    }
                     Spacer()
-                    Text(item.dateAsWritten ?? "…").foregroundStyle(.secondary).monospacedDigit()
+                    Button { withAnimation { showDetails.toggle() } } label: {
+                        Image(systemName: showDetails ? "chevron.up" : "chevron.down").font(.body.weight(.semibold)).frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless).foregroundStyle(.secondary)
+                    .accessibilityLabel(showDetails ? "Hide what is being read" : "Show what is being read")
+                    Button(action: cancel) { Image(systemName: "xmark.circle.fill").font(.title3).frame(width: 44, height: 44).contentShape(Rectangle()) }
+                        .buttonStyle(.borderless).foregroundStyle(.secondary)
+                        .accessibilityLabel("Cancel reading")
                 }
-                .font(.subheadline)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                ProgressView(value: reading.fraction).tint(Design.accent)
             }
-        } footer: {
-            Text("Dates are checked against the document before anything is written to Reminders.")
+            .padding(.vertical, 4)
+            if showDetails {
+                ForEach(reading.items) { item in
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(item.title)
+                        Spacer()
+                        Text(item.dateAsWritten ?? "…").foregroundStyle(.secondary).monospacedDigit()
+                    }
+                    .font(.subheadline)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
         }
         .animation(.default, value: reading.items)
     }
@@ -107,13 +148,14 @@ struct ReadingSection: View {
 
 struct ObligationRow: View {
     let obligation: Obligation
+    var showCourse = true
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(obligation.title).font(.body.weight(.medium))
                 HStack(spacing: 6) {
-                    if let code = obligation.course?.code, !code.isEmpty { Text(code) }
+                    if showCourse, let name = obligation.course?.displayName, !name.isEmpty { Text(name).lineLimit(1) }
                     Text(Design.due(obligation.due, hasTime: obligation.dueHasTime)).monospacedDigit()
                 }
                 .font(.subheadline).foregroundStyle(.secondary)

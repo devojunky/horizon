@@ -26,11 +26,20 @@ public enum HorizonSchemaV1: VersionedSchema {
         public var platforms: [String] = []
         public var lastIngested: Date?
         public var createdAt: Date = Date()
+        /// Course fields the user edited by hand ("title", "code", "term", "termStart", "termEnd", "instructor"): a later
+        /// document does not overwrite them.
+        public var userOverrides: [String] = []
+        /// Soft delete: the course and its items leave every screen and Reminders; a document naming it again revives it.
+        public var deletedAt: Date?
+        /// The user's own order on the Coverage screen; courses without one follow, most suspicious first.
+        public var sortOrder: Int?
         @Relationship(deleteRule: .cascade, inverse: \Obligation.course) public var obligations: [Obligation]?
         @Relationship(deleteRule: .cascade, inverse: \SourceDocument.course) public var documents: [SourceDocument]?
         @Relationship(deleteRule: .cascade, inverse: \Policy.course) public var policies: [Policy]?
 
         public init(code: String, title: String) { self.code = code; self.title = title }
+        /// What the app calls the course: its name, falling back to the code.
+        public var displayName: String { title.isEmpty ? code : title }
     }
 
     @Model

@@ -77,6 +77,7 @@ targets:
         # macOS: no provisioning profile yet, so sign ad hoc without the App Group entitlement (local store fallback).
         "CODE_SIGN_IDENTITY[sdk=macosx*]": "-"
         "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": Apps/Horizon/Horizon-macOS.entitlements
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": $(HORIZON_IOS_ENTITLEMENTS)   # Horizon-PCC.entitlements once the PCC entitlement is granted (Local.xcconfig)
   HorizonShare:
     type: app-extension
     platform: iOS

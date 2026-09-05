@@ -1,0 +1,58 @@
+{
+  "note": "Real NYU Tandon syllabus shared by the user (2026-09-05). Six pages: two exams with dates, a TBD final, a Cengage opt-out deadline, and a grade table with a Total row; no problem-set dates (those live in 17-real-calc2-schedule-pdf).",
+  "course": {
+    "code": "MA-UY 1124",
+    "title": "Calculus II"
+  },
+  "gradeComponents": [
+    {
+      "name": "WebAssign",
+      "weight": 0.04
+    },
+    {
+      "name": "Problem Sets",
+      "weight": 0.04
+    },
+    {
+      "name": "Quizzes",
+      "weight": 0.12
+    },
+    {
+      "name": "Exam 1",
+      "weight": 0.25
+    },
+    {
+      "name": "Exam 2",
+      "weight": 0.25
+    },
+    {
+      "name": "Final Exam",
+      "weight": 0.3
+    }
+  ],
+  "obligations": [
+    {
+      "title": "Opt out of the program",
+      "due": "2026-09-17",
+      "platform": "syllabusOnly"
+    },
+    {
+      "title": "Exam 1",
+      "due": "2026-10-06",
+      "platform": "syllabusOnly",
+      "component": "Exam 1"
+    },
+    {
+      "title": "Exam 2",
+      "due": "2026-11-10",
+      "platform": "syllabusOnly",
+      "component": "Exam 2"
+    },
+    {
+      "title": "Final Exam",
+      "due": null,
+      "platform": "syllabusOnly",
+      "component": "Final Exam"
+    }
+  ]
+}

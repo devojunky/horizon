@@ -27,12 +27,15 @@ public struct ObligationSnapshot: Sendable, Identifiable, Equatable {
     public var createdOn: String
     public var courseID: UUID?
     public var courseCode: String?
+    public var courseTitle: String? = nil
     public var sourceDocumentID: UUID?
     public var sourcePage: Int?
 
     public var link: URL { Identifiers.link(for: id) }
-    /// Title as written to Reminders: "Homework 3 · MA-UY 1124".
-    public var reminderTitle: String { courseCode.map { "\(title) · \($0)" } ?? title }
+    /// The course as the app names it: its name, falling back to the code.
+    public var courseName: String? { [courseTitle, courseCode].compactMap { $0 }.first { !$0.isEmpty } }
+    /// Title as written to Reminders: "Homework 3 · Calculus II".
+    public var reminderTitle: String { courseName.map { "\(title) · \($0)" } ?? title }
 }
 
 public struct CourseSnapshot: Sendable, Identifiable, Equatable {
@@ -46,16 +49,39 @@ public struct CourseSnapshot: Sendable, Identifiable, Equatable {
     /// `Platform` raw values the course's documents name.
     public var platforms: [String]
     public var lastIngested: Date?
+    public var sortOrder: Int? = nil
 
     public init(id: UUID = UUID(), code: String, title: String, term: String? = nil, termStart: Date? = nil, termEnd: Date? = nil,
-                gradeComponents: [GradeComponent] = [], platforms: [String] = [], lastIngested: Date? = nil) {
+                gradeComponents: [GradeComponent] = [], platforms: [String] = [], lastIngested: Date? = nil, sortOrder: Int? = nil) {
         self.id = id; self.code = code; self.title = title; self.term = term; self.termStart = termStart; self.termEnd = termEnd
-        self.gradeComponents = gradeComponents; self.platforms = platforms; self.lastIngested = lastIngested
+        self.gradeComponents = gradeComponents; self.platforms = platforms; self.lastIngested = lastIngested; self.sortOrder = sortOrder
     }
 
     public init(_ c: Course) {
         self.init(id: c.id, code: c.code, title: c.title, term: c.term, termStart: c.termStart, termEnd: c.termEnd,
-                  gradeComponents: c.gradeComponents, platforms: c.platforms, lastIngested: c.lastIngested)
+                  gradeComponents: c.gradeComponents, platforms: c.platforms, lastIngested: c.lastIngested, sortOrder: c.sortOrder)
+    }
+
+    /// What the app calls the course: its name, falling back to the code.
+    public var displayName: String { title.isEmpty ? code : title }
+}
+
+/// Hand edits to a course. Each set field becomes a user override that later documents do not overwrite.
+public struct CourseEdits: Sendable, Equatable {
+    public var title: String?
+    public var code: String?
+    public var term: String??
+    public var termStart: Date??
+    public var termEnd: Date??
+    public var instructor: String??
+    public var room: String??
+    public var meetings: [MeetingSlot]?
+    public var gradeComponents: [GradeComponent]?
+    public var noClassDates: [ClosedDateRange]?
+    public init(title: String? = nil, code: String? = nil, term: String?? = nil, termStart: Date?? = nil, termEnd: Date?? = nil, instructor: String?? = nil,
+                room: String?? = nil, meetings: [MeetingSlot]? = nil, gradeComponents: [GradeComponent]? = nil, noClassDates: [ClosedDateRange]? = nil) {
+        self.title = title; self.code = code; self.term = term; self.termStart = termStart; self.termEnd = termEnd; self.instructor = instructor
+        self.room = room; self.meetings = meetings; self.gradeComponents = gradeComponents; self.noClassDates = noClassDates
     }
 }
 
@@ -90,7 +116,7 @@ extension ObligationSnapshot {
                   pointsAtStake: o.pointsAtStake, confidence: o.confidence, state: o.state, origin: o.origin, flags: o.flags, notes: o.notes,
                   userOverrides: o.userOverrides, ekExternalID: o.ekExternalID, projectedTitle: o.projectedTitle, projectedDue: o.projectedDue,
                   projectedNotes: o.projectedNotes, completedAt: o.completedAt, deletedAt: o.deletedAt, changeNote: o.changeNote, createdOn: o.createdOn,
-                  courseID: o.course?.id, courseCode: o.course?.code, sourceDocumentID: o.sourceDocument?.id, sourcePage: o.sourcePage)
+                  courseID: o.course?.id, courseCode: o.course?.code, courseTitle: o.course?.title, sourceDocumentID: o.sourceDocument?.id, sourcePage: o.sourcePage)
     }
 }
 

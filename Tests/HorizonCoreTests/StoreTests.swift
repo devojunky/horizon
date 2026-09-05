@@ -17,6 +17,54 @@ struct StoreTests {
         #expect(queue == ["Quiz 1"] && docStatus == .parsed)
     }
 
+    @Test func courseEditsSurviveAReissuedDocument() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let course = try await store.courses().first!
+        try await store.updateCourse(id: course.id, edits: CourseEdits(title: "Calc 2", term: .some("Fall 2026"), termEnd: .some(nil)))
+        var again = Fixture.calculus(sha: "v2"); again.course?.title = "Calculus II, revised"
+        try await Fixture.ingest(again, into: store)
+        let after = try await store.courses().first!
+        #expect(after.title == "Calc 2" && after.displayName == "Calc 2" && after.term == "Fall 2026")   // the hand edits stay
+        #expect(after.termEnd == nil)                                                                   // an edited field is not refilled by the document
+        let hw = try await store.obligations().first { $0.title == "HW 1" }!
+        #expect(hw.reminderTitle == "HW 1 · Calc 2" && hw.courseName == "Calc 2")                        // Reminders carry the course's name
+    }
+
+    @Test func aHandMadeCourseAndEditedComponentsOutliveDocuments() async throws {
+        let store = try Fixture.store()
+        let made = try await store.addCourse(CourseEdits(title: "Studio", code: "ART-UY 101", gradeComponents: [GradeComponent(name: "Critiques", weight: 0.5, cadence: .weekly)]))
+        #expect(made.displayName == "Studio" && made.gradeComponents.map(\.name) == ["Critiques"])
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let calc = try await store.courses().first { $0.code == "MA-UY 1124" }!
+        try await store.updateCourse(id: calc.id, edits: CourseEdits(gradeComponents: [GradeComponent(name: "Labs", weight: 1)]))
+        try await Fixture.ingest(Fixture.calculus(sha: "v2"), into: store)   // the reissued document carries the original table
+        let after = try await store.courses().first { $0.code == "MA-UY 1124" }!
+        #expect(after.gradeComponents.map(\.name) == ["Labs"])            // the hand-edited table stays
+        #expect(try await store.courses().count == 2)
+    }
+
+    @Test func deletingACourseRetiresItsItemsAndADocumentRevivesIt() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let calc = try await store.courses().first!
+        try await store.deleteCourse(id: calc.id)
+        #expect(try await store.courses().isEmpty)
+        #expect(try await store.obligations().allSatisfy { $0.deletedAt != nil })
+        try await Fixture.ingest(Fixture.calculus(sha: "again"), into: store)
+        #expect(try await store.courses().map(\.id) == [calc.id])   // the same row, back
+    }
+
+    @Test func coursesKeepTheUsersOrder() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let art = try await store.addCourse(CourseEdits(title: "Studio", code: "ART-UY 101"))
+        let calc = try await store.courses().first { $0.code == "MA-UY 1124" }!
+        try await store.reorderCourses([calc.id, art.id])
+        let orders = Dictionary(uniqueKeysWithValues: try await store.courses().map { ($0.code, $0.sortOrder) })
+        #expect(orders == ["MA-UY 1124": 0, "ART-UY 101": 1])
+    }
+
     @Test func sameDocumentTwiceIsRecordedOnce() async throws {
         let store = try Fixture.store()
         let a = try await store.enqueueDocument(filename: "calc.pdf", sha256: "abc", kind: "pdf", deviceName: "iPhone")

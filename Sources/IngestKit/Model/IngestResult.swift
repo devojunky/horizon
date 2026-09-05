@@ -127,6 +127,7 @@ public enum ParseFlag: String, Codable, Sendable {
     case dateUnresolved       // a date was written but could not be resolved
     case titleNotInSource     // the document never prints this name and no line carrying the date labels it
     case titleFromLine        // the name was cut from the sentence that carries the date; check it reads well
+    case dateNotOnRow         // the document names the item and the date, but never on the same line
     case dateOutsideTerm
     case unknownComponent     // component name matches no grade breakdown row
     case modelLowConfidence

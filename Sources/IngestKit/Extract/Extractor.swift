@@ -1,5 +1,6 @@
 import Foundation
 import FoundationModels
+import Security
 import Vision  // enables the OCRTool cross-import overlay (absent in the iOS simulator SDK)
 import CoreGraphics
 import ImageIO
@@ -65,6 +66,7 @@ actor Extractor {
             return Extractor(route: route, contextSize: model.contextSize, chunkBudgetTokens: budget, charsPerToken: ratio, fixedOverheadTokens: overhead,
                              outputBudgetTokens: outputReserve - 64, system: model, cloud: nil, log: log, progress: progress)
         case .privateCloudCompute:
+            guard hasCloudEntitlement else { throw IngestError.cloudUnavailable("the app is not signed with the Private Cloud Compute entitlement") }
             let model = PrivateCloudComputeLanguageModel()
             guard case .available = model.availability else {
                 throw IngestError.cloudUnavailable(String(describing: model.availability))
@@ -207,6 +209,9 @@ actor Extractor {
         } catch LanguageModelError.rateLimited(let info) {
             throw IngestError.cloudUnavailable("rate limited until \(info.resetDate.map { "\($0)" } ?? "later")")
         } catch {
+            if route == .privateCloudCompute, !Self.isSafetyStop(error) {   // the cloud refused the request: wait for it rather than fail the document
+                throw IngestError.cloudUnavailable("\(error.localizedDescription)" + (Self.hasCloudEntitlement ? "" : "; the app is not signed with the Private Cloud Compute entitlement"))
+            }
             warn("chunk \(chunk) (page \(page + 1)): model \(Self.isSafetyStop(error) ? "declined" : "failed"): \(error.localizedDescription)")
             return nil
         }
@@ -281,6 +286,26 @@ actor Extractor {
         if case LanguageModelError.contextSizeExceeded = error { return true }
         return false
     }
+
+    /// Why Private Cloud Compute cannot be used right now, or nil when it can. Nothing here touches
+    /// `PrivateCloudComputeLanguageModel` unless the process carries Apple's managed entitlement
+    /// (com.apple.developer.private-cloud-compute): without it FoundationModels traps on first use.
+    static func cloudAvailability() -> String? {
+        guard hasCloudEntitlement else { return "the app is not signed with the Private Cloud Compute entitlement" }
+        switch PrivateCloudComputeLanguageModel().availability {
+        case .available: return nil
+        case .unavailable(let reason): return String(describing: reason)
+        }
+    }
+
+    /// Whether this process is signed with the Private Cloud Compute entitlement, read from the entitlements plist
+    /// embedded in the executable's code signature (there is no API for a process's own entitlements on iOS). The
+    /// needle is assembled at runtime so this source file's own strings cannot match.
+    static let hasCloudEntitlement: Bool = {
+        guard let executable = Bundle.main.executableURL, let data = try? Data(contentsOf: executable, options: .mappedIfSafe) else { return false }
+        let needle = Data(("<key>" + "com.apple.developer." + "private-cloud-compute" + "</key>").utf8)
+        return data.range(of: needle) != nil
+    }()
 
     static func isSafetyStop(_ error: any Error) -> Bool {
         switch error {
