@@ -6,6 +6,7 @@ import HorizonCore
 struct DocumentsView: View {
     @Environment(AppModel.self) private var model
     @Query(sort: \SourceDocument.queuedAt, order: .reverse) private var documents: [SourceDocument]
+    @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
 
     var body: some View {
         List {
@@ -22,6 +23,16 @@ struct DocumentsView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(doc.filename).font(.body.weight(.medium))
                         Text("\(status(doc)) · \(doc.deviceName) · \(doc.queuedAt.formatted(date: .abbreviated, time: .shortened))").font(.footnote).foregroundStyle(.secondary)
+                        if let course = doc.course {
+                            Text(course.displayName).font(.footnote).foregroundStyle(.secondary)
+                        } else if doc.status == .parsed, !courses.isEmpty {
+                            Menu {
+                                ForEach(courses) { course in Button(course.displayName) { Task { await model.assignDocument(doc.id, to: course.id) } } }
+                            } label: {
+                                Label("File under a course", systemImage: "folder.badge.questionmark").font(.footnote)
+                            }
+                            .padding(.top, 2)
+                        }
                         if doc.status == .parsed {
                             Text("\(doc.inputTokens) in · \(doc.outputTokens) out · \(doc.durationMs / 1000) s · \(doc.route ?? "")").font(.footnote).monospacedDigit().foregroundStyle(.secondary)
                         }

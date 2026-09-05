@@ -15,7 +15,17 @@ public actor HorizonStore {
     public func ingest(_ result: IngestResult, documentID: UUID, calendar: Calendar = .current) throws -> IngestSummary {
         var summary = IngestSummary(warnings: result.warnings)
         guard let document = try fetchDocument(id: documentID) else { throw StoreError.missingDocument }
-        let course = try upsertCourse(from: result)
+        // A document filed under a course by the user stays there; its facts apply only if it names no other course.
+        let course: Course?
+        if let hinted = document.course {
+            let named = result.course?.code.map(Normalize.collapseWhitespace) ?? ""
+            if named.isEmpty || Normalize.key(named) == Normalize.key(hinted.code) { applyFacts(from: result, to: hinted) }
+            else { summary.warnings.append("The document names \(named); filed under \(hinted.displayName) as asked") }
+            hinted.deletedAt = nil
+            course = hinted
+        } else {
+            course = try upsertCourse(from: result)
+        }
         summary.courseCode = course?.code
         document.course = course
         document.status = .parsed
@@ -58,8 +68,51 @@ public actor HorizonStore {
                 if item.state == .pendingReview { summary.pendingReview += 1 }
             }
         }
+        if let course { recomputePoints(for: course) }
         try modelContext.save()
         return summary
+    }
+
+    /// Points at stake per item, over everything on file for the course (its documents together): weight over a stated
+    /// count, else the rhythm over the term, else what is on file.
+    private func recomputePoints(for course: Course) {
+        let live = (course.obligations ?? []).filter { $0.deletedAt == nil }
+        for component in course.gradeComponents {
+            guard let weight = component.weight else { continue }
+            let members = live.filter { $0.componentName.map(Normalize.key) == Normalize.key(component.name) }
+            let points = PointsAtStake.perItem(weight: weight, expectedCount: component.expectedCount, cadence: component.cadence,
+                                               termStart: course.termStart, termEnd: course.termEnd, onFile: members.count)
+            for item in members where item.pointsAtStake != points { item.pointsAtStake = points; item.updatedAt = Date() }
+        }
+    }
+
+    /// What the parser should already know when it reads a document filed under this course.
+    public func knownCourse(for id: UUID) throws -> KnownCourse? {
+        guard let course = try fetchCourse(id: id) else { return nil }
+        let live = (course.obligations ?? []).filter { $0.deletedAt == nil }
+        let components = course.gradeComponents.map { component in
+            let platforms = live.filter { $0.componentName.map(Normalize.key) == Normalize.key(component.name) }.map(\.platform).filter { $0 != .syllabusOnly }
+            let platform = Dictionary(grouping: platforms, by: { $0 }).max { $0.value.count < $1.value.count }?.key
+            return KnownComponent(name: component.name, weight: component.weight, expectedCount: component.expectedCount, cadence: component.cadence, platform: platform)
+        }
+        return KnownCourse(code: course.code.isEmpty ? nil : course.code, title: course.title.isEmpty ? nil : course.title, term: course.term,
+                           termStart: course.termStart, termEnd: course.termEnd, components: components)
+    }
+
+    /// Files a parsed document (and the items it produced without a course) under a course.
+    public func assignDocument(id: UUID, to courseID: UUID) throws {
+        guard let document = try fetchDocument(id: id), let course = try fetchCourse(id: courseID) else { return }
+        document.course = course
+        let names = course.gradeComponents.map(\.name)
+        for item in document.obligations ?? [] where item.course == nil && item.deletedAt == nil {
+            item.course = course
+            if item.componentName == nil || !names.contains(where: { Normalize.key($0) == Normalize.key(item.componentName ?? "") }) {
+                item.componentName = ComponentNames.infer(title: item.title, among: names) ?? item.componentName
+            }
+            item.updatedAt = Date()
+        }
+        recomputePoints(for: course)
+        try modelContext.save()
     }
 
     /// Same course when the code matches; a title that reads the same only when neither side has a code; else new.
@@ -73,6 +126,15 @@ public actor HorizonStore {
             ?? all.first { (code.isEmpty || $0.code.isEmpty) && !title.isEmpty && Normalize.similarity($0.title, title) >= 0.6 }
             ?? { let c = Course(code: code, title: title); modelContext.insert(c); return c }()
         course.deletedAt = nil   // a document naming a retired course brings it back
+        applyFacts(from: result, to: course)
+        return course
+    }
+
+    /// What a document says about its course, except where the user's hand edits stand.
+    private func applyFacts(from result: IngestResult, to course: Course) {
+        let parsed = result.course
+        let code = parsed?.code.map(Normalize.collapseWhitespace) ?? ""
+        let title = parsed?.title.map(Normalize.collapseWhitespace) ?? ""
         let kept = Set(course.userOverrides)   // hand-edited fields stay
         if course.code.isEmpty, !kept.contains("code") { course.code = code }
         if !kept.contains("title"), course.title.isEmpty || (!title.isEmpty && Normalize.key(course.title) != Normalize.key(title) && course.title.count < title.count) { course.title = title }
@@ -91,7 +153,6 @@ public actor HorizonStore {
             course.noClassDates = result.noClassDates.map { ClosedDateRange(start: $0.start, end: $0.end ?? $0.start, label: $0.dateAsWritten) }
         }
         for platform in Set(result.obligations.map(\.platform.rawValue)) where !course.platforms.contains(platform) { course.platforms.append(platform) }
-        return course
     }
 
     /// Index of the row a parsed item is: the same title on the same day; else the same title when exactly one side is
@@ -152,12 +213,16 @@ public actor HorizonStore {
         item.flags = parsed.flags.map(\.rawValue)
         item.dateAsWritten = parsed.dateAsWritten
         item.sourcePage = parsed.sourcePage
+        let previous = item.sourceDocument?.filename
         item.sourceDocument = document
         item.updatedAt = Date()
         if isNew {
             item.state = switch parsed.status { case .ready: .readyToProject; case .needsReview: .pendingReview; case .awaitingDate: .awaitingDate }
         } else if !changed.isEmpty {
-            item.changeNote = changed.joined(separator: "; ")
+            // "schedule.pdf says due Oct 6 → Oct 8; earlier from syllabus.pdf" names both sides of a disagreement.
+            item.changeNote = previous != nil && previous != document.filename
+                ? "\(document.filename) says " + changed.joined(separator: "; ") + "; earlier from \(previous!)"
+                : "Reissued document: " + changed.joined(separator: "; ")
             item.state = .pendingReview
         } else if item.state == .awaitingDate, item.due != nil {
             item.state = parsed.status == .ready ? .readyToProject : .pendingReview
@@ -175,12 +240,16 @@ public actor HorizonStore {
     // MARK: Documents
 
     /// Records a document by content hash. The same file again is the same record; a failed one is queued again.
-    public func enqueueDocument(filename: String, sha256: String, kind: String, deviceName: String) throws -> DocumentSnapshot {
+    public func enqueueDocument(filename: String, sha256: String, kind: String, deviceName: String, courseID: UUID? = nil) throws -> DocumentSnapshot {
+        let course = try courseID.flatMap { try fetchCourse(id: $0) }
         if let existing = try fetchDocuments().first(where: { $0.sha256 == sha256 }) {
-            if existing.status == .failed || existing.status == .cancelled { existing.status = .queued; existing.failure = nil; try modelContext.save() }
+            if existing.status == .failed || existing.status == .cancelled { existing.status = .queued; existing.failure = nil }
+            if let course, existing.course == nil { existing.course = course }
+            try modelContext.save()
             return snapshot(existing)
         }
         let doc = SourceDocument(filename: filename, sha256: sha256, kind: kind, deviceName: deviceName)
+        doc.course = course   // the user's word on where it belongs; the parser learns the course from it
         modelContext.insert(doc)
         try modelContext.save()
         return snapshot(doc)

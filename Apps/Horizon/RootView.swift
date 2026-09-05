@@ -8,6 +8,7 @@ struct RootView: View {
     @Environment(AppModel.self) private var model
     @Query(sort: \Obligation.due) private var obligations: [Obligation]
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
+    @Query(filter: #Predicate<SourceDocument> { $0.course == nil }) private var looseDocuments: [SourceDocument]
     @State private var addingByHand = false
     @State private var addingCourse = false
     @State private var linked: Obligation?
@@ -35,6 +36,15 @@ struct RootView: View {
                     }
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 16, leading: 20, bottom: 4, trailing: 20))
+                }
+                let unfiled = looseDocuments.filter { $0.status == .parsed && !($0.obligations ?? []).filter { $0.deletedAt == nil }.isEmpty }
+                if !unfiled.isEmpty, !courses.isEmpty {
+                    NavigationLink { DocumentsView() } label: {
+                        Text(unfiled.count == 1 ? "One document has no course yet" : "\(unfiled.count) documents have no course yet")
+                            .font(.system(.title3, design: .serif, weight: .semibold))
+                    }
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 4, trailing: 20))
                 }
                 CoverageList(reading: model.reading != nil)
             }

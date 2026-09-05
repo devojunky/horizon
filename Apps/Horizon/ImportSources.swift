@@ -9,6 +9,8 @@ import UIKit
 /// Where documents come from inside the app: Files, the photo library, and (on iPhone/iPad) the document camera.
 /// Each source ends the same way: temporary files handed to `AppModel.importFiles`.
 struct ImportMenu: View {
+    /// Files what is imported under this course (the course page); nil lets the parser find the course.
+    var courseID: UUID? = nil
     @Environment(AppModel.self) private var model
     @State private var files = false
     @State private var choosingPhotos = false
@@ -31,7 +33,7 @@ struct ImportMenu: View {
             Label("Add Document", systemImage: "doc.badge.plus")
         }
         .fileImporter(isPresented: $files, allowedContentTypes: Self.readable, allowsMultipleSelection: true) { result in
-            if case .success(let urls) = result { Task { await model.importFiles(urls) } }
+            if case .success(let urls) = result { Task { await model.importFiles(urls, courseID: courseID) } }
         }
         .photosPicker(isPresented: $choosingPhotos, selection: $photos, maxSelectionCount: 10, matching: .images)
         .onChange(of: photos) { _, items in
@@ -46,7 +48,7 @@ struct ImportMenu: View {
                     do { try data.write(to: url); urls.append(url) } catch { unreadable += 1 }
                 }
                 photos = []
-                await model.importFiles(urls)
+                await model.importFiles(urls, courseID: courseID)
                 for url in urls { try? FileManager.default.removeItem(at: url) }   // the app keeps its own copy
                 if unreadable > 0 { model.lastError = unreadable == 1 ? "One photo could not be read" : "\(unreadable) photos could not be read" }
             }
@@ -56,7 +58,7 @@ struct ImportMenu: View {
             DocumentCamera { url in
                 scanning = false
                 if let url {
-                    Task { await model.importFiles([url]); try? FileManager.default.removeItem(at: url) }
+                    Task { await model.importFiles([url], courseID: courseID); try? FileManager.default.removeItem(at: url) }
                 } else if scanFailed {
                     model.lastError = "The scan could not be saved"
                 }

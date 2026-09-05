@@ -24,7 +24,11 @@ enum Merger {
             }
             course = c
         }
-        let year = DateResolver.year(inTerm: course?.term, fallback: options.defaultYear ?? options.calendar.component(.year, from: Date()))
+        // A document that names no course belongs to the one the caller knows.
+        if let known = options.knownCourse, course == nil, known.code != nil || known.title != nil {
+            course = ParsedCourse(code: known.code ?? "", title: known.title ?? "", instructor: nil, term: known.term, termStart: nil, termEnd: nil, room: nil, meetings: [])
+        }
+        let year = DateResolver.year(inTerm: course?.term ?? options.knownCourse?.term, fallback: options.defaultYear ?? options.calendar.component(.year, from: Date()))
         var resolver = DateResolver(calendar: options.calendar, defaultYear: year)
         // Term boundaries: the document's own "classes begin … and end …" sentence first, then a model date the document
         // actually names (the model has put a term start a week off, which shifts every week-relative deadline); an
@@ -39,18 +43,24 @@ enum Merger {
             }
             return nil
         }
-        course?.termStart = options.termStart ?? termDay(source.termBoundary(.start, resolver), \.termStart)
-        course?.termEnd = termDay(source.termBoundary(.end, resolver), \.termEnd)
-        resolver.termStart = course?.termStart ?? options.termStart
-        resolver.termEnd = course?.termEnd
+        course?.termStart = options.termStart ?? termDay(source.termBoundary(.start, resolver), \.termStart) ?? options.knownCourse?.termStart
+        course?.termEnd = termDay(source.termBoundary(.end, resolver), \.termEnd) ?? options.knownCourse?.termEnd
+        resolver.termStart = course?.termStart ?? options.termStart ?? options.knownCourse?.termStart
+        resolver.termEnd = course?.termEnd ?? options.knownCourse?.termEnd
 
         // Grade components: dedupe by name; recover a missing weight from the source line; ignore rows once weights total 100%.
         var components: [ParsedGradeComponent] = []
         var componentPlatforms: [String: Platform] = [:]
+        // Components the caller already knows (a syllabus read earlier) come first; a schedule need not repeat them.
+        let knownKeys = Set((options.knownCourse?.components ?? []).map { Normalize.key($0.name) })
+        for known in options.knownCourse?.components ?? [] {
+            components.append(ParsedGradeComponent(name: known.name, weight: known.weight, expectedCount: known.expectedCount, cadence: known.cadence, dropLowest: nil))
+            if let p = known.platform { componentPlatforms[Normalize.key(known.name)] = p }
+        }
         for facts in extractions.flatMap(\.gradeComponents) {
             let key = Normalize.key(facts.name)
             guard key.filter(\.isLetter).count >= 3 else { continue }   // "5.3-4": a section number from a schedule, not a component
-            if source.hasText, !source.contains(facts.name) { warnings.append("Ignored component '\(facts.name)': not in the document"); continue }
+            if source.hasText, !knownKeys.contains(key), !source.contains(facts.name) { warnings.append("Ignored component '\(facts.name)': not in the document"); continue }
             let weight = (source.percentage(onLineMentioning: facts.name) ?? facts.weightPercent.flatMap { $0 > 0 ? $0 : nil }).map { $0 / 100 }   // the row's own figure first; 0% is no figure
             if let i = components.firstIndex(where: { Normalize.key($0.name) == key }) {
                 if components[i].weight == nil { components[i].weight = weight }
@@ -88,6 +98,7 @@ enum Merger {
         if tableRows.count >= 3, (99...101).contains(tableRows.map(\.weight).reduce(0, +)),
            components.contains(where: { c in tableRows.contains { Source.sameComponent(c.name, $0.name) } }) {
             components.removeAll { c in
+                if knownKeys.contains(Normalize.key(c.name)) { return false }   // what the caller knows stands
                 let inTable = tableRows.contains { Source.sameComponent(c.name, $0.name) }
                 if !inTable { warnings.append("Ignored component '\(c.name)': not a row of the grade table") }
                 return !inTable
@@ -263,9 +274,8 @@ enum Merger {
             guard let name = ob.componentName, let component = components.first(where: { Normalize.key($0.name) == Normalize.key(name) }),
                   let weight = component.weight else { continue }
             let onFile = obligations.filter { $0.componentName.map(Normalize.key) == Normalize.key(name) }.count
-            let expected = component.expectedCount ?? impliedCount(component.cadence, termStart: resolver.termStart, termEnd: resolver.termEnd) ?? onFile
-            guard expected > 0 else { continue }
-            obligations[i].pointsAtStake = (weight * 100 / Double(expected) * 100).rounded() / 100
+            obligations[i].pointsAtStake = PointsAtStake.perItem(weight: weight, expectedCount: component.expectedCount, cadence: component.cadence,
+                                                                  termStart: resolver.termStart, termEnd: resolver.termEnd, onFile: onFile)
         }
 
         // Policies: exact wording only. A paraphrase is replaced by the best-matching source sentences or marked non-verbatim.
@@ -662,7 +672,9 @@ enum Merger {
     /// "HW 3" → "Homework", "Quiz 2" → "Quizzes", "Midterm 1" → "Midterm 1" or "Exams". Nil when nothing fits.
     static func inferComponent(fromTitle title: String, in components: [ParsedGradeComponent]) -> String? {
         if let exact = components.first(where: { Normalize.key($0.name) == Normalize.key(title) }) { return exact.name }
-        guard let head = Normalize.key(title).split(separator: " ").first.map({ stem(String($0)) }) else { return nil }
+        guard let first = Normalize.key(title).split(separator: " ").first else { return nil }
+        let letters = first.prefix(while: \.isLetter)   // "PS0" → "ps"
+        let head = stem(letters.isEmpty ? String(first) : String(letters))
         let candidates = [head] + (synonyms[head] ?? [])
         for candidate in candidates {
             let match = components.first { c in
@@ -682,11 +694,12 @@ enum Merger {
     }
 
     static func impliedCount(_ cadence: Cadence?, termStart: Date?, termEnd: Date?) -> Int? {
-        guard let cadence else { return nil }
-        if cadence == .once { return 1 }
-        guard let termStart, let termEnd, termEnd > termStart else { return nil }
-        let weeks = max(1, Int(termEnd.timeIntervalSince(termStart) / (7 * 86400)))
-        return cadence == .weekly ? weeks : max(1, weeks / 2)
+        PointsAtStake.impliedCount(cadence, termStart: termStart, termEnd: termEnd)
+    }
+
+    /// The store's way to name a component for an item it files under a course later ("PS 3" → "Problem Sets").
+    static func componentName(forTitle title: String, among names: [String]) -> String? {
+        inferComponent(fromTitle: title, in: names.map { ParsedGradeComponent(name: $0, weight: nil) })
     }
 
     static func platform(_ raw: String) -> Platform {

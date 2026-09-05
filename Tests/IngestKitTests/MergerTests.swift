@@ -247,6 +247,28 @@ struct MergerTests {
         #expect(r.obligations.count == 1)
     }
 
+    @Test func aKnownCourseSeedsAScheduleThatNamesNothing() {
+        let text = """
+        Week Dates Monday Wednesday
+        3 Sept 14-18 7.1-2 PS0 due Wed Sept 16
+        4 Sept 21-25 7.4 PS1 due Wed Sept 23
+        6 Oct 5-9 review Midterm I Wed Oct 7
+        """
+        var options = Self.options
+        let cal = options.calendar
+        options.knownCourse = KnownCourse(code: "MA-UY 1124", title: "Calculus II", term: "Fall 2026",
+                                          termStart: cal.date(from: DateComponents(year: 2026, month: 9, day: 2)), termEnd: cal.date(from: DateComponents(year: 2026, month: 12, day: 14)),
+                                          components: [KnownComponent(name: "Problem Sets", weight: 0.04, expectedCount: 6, platform: .gradescope), KnownComponent(name: "Exam 1", weight: 0.25, cadence: .once)])
+        let r = Merger.merge(outcomes: [Self.outcome(0, obligations: [
+            Self.ob("PS0", "Wed Sept 16", iso: "2026-09-16"), Self.ob("PS1", "Wed Sept 23", iso: "2026-09-23"), Self.ob("Midterm I", "Wed Oct 7", iso: "2026-10-07"),
+        ])], document: DocumentNormalizer.normalize(text: text, name: "schedule.txt"), route: .onDevice, options: options, warnings: [])
+        #expect(r.course?.code == "MA-UY 1124" && Self.day(r.course?.termStart) == 2)                  // the document names no course; the known one stands
+        #expect(r.gradeComponents.map(\.name) == ["Problem Sets", "Exam 1"])                          // known components are not "missing from the document"
+        let ps = r.obligations.first { $0.title == "PS0" }!
+        #expect(ps.componentName == "Problem Sets" && ps.platform == .gradescope && ps.pointsAtStake == 0.67)   // 4% ÷ 6, on the syllabus's platform
+        #expect(r.obligations.first { $0.title == "Midterm I" }?.componentName == "Exam 1")
+    }
+
     @Test func missingWeightIsRecoveredFromTheSourceLine() {
         let r = Self.merge([Self.outcome(0, components: [Self.component("Homework", nil), Self.component("Final Exam", nil), Self.component("Participation", nil)])])
         #expect(r.gradeComponents.map(\.weight) == [0.15, 0.33])   // Participation is not in the document → dropped, not kept weightless

@@ -65,6 +65,66 @@ struct StoreTests {
         #expect(orders == ["MA-UY 1124": 0, "ART-UY 101": 1])
     }
 
+    @Test func aDocumentFiledUnderACourseReadsAsThatCourse() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let calc = try await store.courses().first!
+        // The schedule names no course; the user filed it under Calculus from the course page.
+        let doc = try await store.enqueueDocument(filename: "schedule.pdf", sha256: "sched", kind: "pdf", deviceName: "A", courseID: calc.id)
+        #expect(doc.courseID == calc.id)
+        let known = try await store.knownCourse(for: calc.id)
+        #expect(known?.code == "MA-UY 1124" && known?.components.map(\.name) == ["Homework", "Quizzes", "Final Exam"] && known?.components.first?.platform == .webAssign)
+        var schedule = Fixture.calculus(sha: "sched"); schedule.course = nil; schedule.gradeComponents = []; schedule.policies = []
+        schedule.obligations = [ParsedObligation(title: "HW 3", platform: .syllabusOnly, componentName: "Homework", dateAsWritten: "9/23", due: Fixture.day(9, 23), status: .ready, pointsAtStake: nil, sourcePage: 1)]
+        let summary = try await store.ingest(schedule, documentID: doc.id, calendar: Fixture.calendar)
+        #expect(summary.courseCode == "MA-UY 1124" && summary.created == 1)
+        let hw3 = try await store.obligations().first { $0.title == "HW 3" }!
+        #expect(hw3.courseID == calc.id && hw3.pointsAtStake == 1.5)   // 15% over the syllabus's stated ten
+        #expect(try await store.courses().count == 1)
+    }
+
+    @Test func aFiledDocumentNamingAnotherCourseStaysPutWithAWarning() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let calc = try await store.courses().first!
+        let doc = try await store.enqueueDocument(filename: "other.pdf", sha256: "other", kind: "pdf", deviceName: "A", courseID: calc.id)
+        var physics = Fixture.calculus(sha: "other"); physics.course = ParsedCourse(code: "PH-UY 1013", title: "Physics I")
+        physics.obligations = [ParsedObligation(title: "Lab 1 report", platform: .syllabusOnly, componentName: nil, dateAsWritten: "9/18", due: Fixture.day(9, 18), status: .ready, pointsAtStake: nil, sourcePage: 1)]
+        let summary = try await store.ingest(physics, documentID: doc.id, calendar: Fixture.calendar)
+        #expect(summary.warnings.contains { $0.contains("PH-UY 1013") && $0.contains("filed under Calculus II") })
+        let courses = try await store.courses()
+        #expect(courses.count == 1 && courses[0].title == "Calculus II")   // the user's filing wins; the other course's facts do not touch this one
+        #expect(try await store.obligations().first { $0.title == "Lab 1 report" }?.courseID == calc.id)
+    }
+
+    @Test func changeNotesNameBothDocuments() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let calc = try await store.courses().first!
+        let doc = try await store.enqueueDocument(filename: "schedule.pdf", sha256: "sched2", kind: "pdf", deviceName: "A", courseID: calc.id)
+        var schedule = Fixture.calculus(sha: "sched2"); schedule.course = nil; schedule.gradeComponents = []; schedule.policies = []
+        schedule.obligations = [ParsedObligation(title: "HW 1", platform: .webAssign, componentName: "Homework", dateAsWritten: "9/10", due: Fixture.day(9, 10), status: .ready, pointsAtStake: nil, sourcePage: 1)]
+        try await store.ingest(schedule, documentID: doc.id, calendar: Fixture.calendar)
+        let hw1 = try await store.obligations().first { $0.title == "HW 1" }!
+        #expect(hw1.state == .pendingReview && hw1.changeNote?.hasPrefix("schedule.pdf says due Sep 9 → Sep 10") == true && hw1.changeNote?.hasSuffix("earlier from calc.pdf") == true)
+    }
+
+    @Test func filingALooseDocumentMovesItsItemsUnderTheCourse() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        var loose = Fixture.calculus(sha: "loose"); loose.course = nil; loose.gradeComponents = []; loose.policies = []
+        loose.obligations = [ParsedObligation(title: "Quiz 4", platform: .syllabusOnly, componentName: nil, dateAsWritten: "10/22", due: Fixture.day(10, 22), status: .ready, pointsAtStake: nil, sourcePage: 1)]
+        try await Fixture.ingest(loose, into: store)   // no hint and no course named: it lands nowhere
+        #expect(try await store.obligations().first { $0.title == "Quiz 4" }?.courseID == nil)
+        let doc = try await store.documents().first { $0.sha256 == "loose" }!
+        let calc = try await store.courses().first!
+        try await store.assignDocument(id: doc.id, to: calc.id)
+        let quiz = try await store.obligations().first { $0.title == "Quiz 4" }!
+        #expect(quiz.courseID == calc.id && quiz.componentName == "Quizzes")
+        #expect(quiz.pointsAtStake == 6)   // 12% over the two quizzes now on file
+        #expect(try await store.documents().first { $0.sha256 == "loose" }?.courseID == calc.id)
+    }
+
     @Test func sameDocumentTwiceIsRecordedOnce() async throws {
         let store = try Fixture.store()
         let a = try await store.enqueueDocument(filename: "calc.pdf", sha256: "abc", kind: "pdf", deviceName: "iPhone")

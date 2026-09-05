@@ -38,7 +38,7 @@ struct ReviewView: View {
     }
 
     private func reason(for item: Obligation) -> String {
-        if let note = item.changeNote { return "Reissued document: \(note)" }
+        if let note = item.changeNote { return note }
         var parts: [String] = []
         if let written = item.dateAsWritten, !written.isEmpty { parts.append("Read as “\(written)”") }
         let flags = item.flags.compactMap { flag -> String? in

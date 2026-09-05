@@ -48,6 +48,16 @@ struct RollingContext: Sendable {
     /// "Homework (webassign)" — name plus platform when known.
     var componentLines: [String] = []
 
+    /// What the caller already knows about the course, before the first chunk.
+    mutating func seed(_ known: KnownCourse) {
+        let name = [known.code, known.title].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
+        if !name.isEmpty { courseLine = name }
+        if let term = known.term { termLine = term }
+        for c in known.components where !componentLines.contains(where: { $0.hasPrefix(c.name) }) {
+            componentLines.append(c.platform.map { "\(c.name) (\($0.rawValue))" } ?? c.name)
+        }
+    }
+
     mutating func absorb(_ extraction: ChunkExtraction) {
         if courseLine == nil, let c = extraction.course, c.code != nil || c.title != nil {
             courseLine = [c.code, c.title].compactMap { $0 }.joined(separator: " ")

@@ -49,6 +49,7 @@ struct CourseView: View {
         }
         .navigationTitle(course.displayName)
         .toolbar {
+            ToolbarItem(placement: .primaryAction) { ImportMenu(courseID: course.id) }
             ToolbarItem(placement: .primaryAction) { Button("Edit") { editingCourse = true } }
         }
         .sheet(item: $editing) { ObligationEditor(mode: .edit($0), courses: courses) }

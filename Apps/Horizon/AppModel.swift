@@ -112,13 +112,19 @@ final class AppModel {
     }
 
     /// Files picked in the app or handed over by the system. Security-scoped URLs are opened for the copy only.
-    func importFiles(_ urls: [URL]) async {
+    /// `courseID` files the documents under a course before they are read (the course page's Add Document).
+    func importFiles(_ urls: [URL], courseID: UUID? = nil) async {
         for url in urls {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            do { _ = try await coordinator.enqueue(fileURL: url) } catch { lastError = error.localizedDescription }
+            do { _ = try await coordinator.enqueue(fileURL: url, courseID: courseID) } catch { lastError = error.localizedDescription }
         }
         await drainAndSync()
+    }
+
+    func assignDocument(_ id: UUID, to courseID: UUID) async {
+        do { try await store.assignDocument(id: id, to: courseID) } catch { lastError = error.localizedDescription }
+        await drainAndSync()   // its items now carry the course's name and points
     }
 
     /// Parse whatever is queued, then reconcile with Reminders and write what is ready. Safe to run repeatedly; a call

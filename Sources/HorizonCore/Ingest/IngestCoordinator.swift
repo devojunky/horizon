@@ -34,10 +34,10 @@ public actor IngestCoordinator {
 
     /// Copies the file into the App Group container and records it. The same file shared twice is recorded once;
     /// a file that failed before is queued again.
-    public func enqueue(fileURL: URL, filename: String? = nil) async throws -> DocumentSnapshot {
+    public func enqueue(fileURL: URL, filename: String? = nil, courseID: UUID? = nil) async throws -> DocumentSnapshot {
         let stored = try storage.store(fileURL)
         return try await store.enqueueDocument(filename: filename ?? fileURL.lastPathComponent, sha256: stored.sha256,
-                                               kind: stored.url.pathExtension.lowercased(), deviceName: deviceName)
+                                               kind: stored.url.pathExtension.lowercased(), deviceName: deviceName, courseID: courseID)
     }
 
     /// Where the next drain reads documents: on device, or in Private Cloud Compute (a user setting).
@@ -52,6 +52,7 @@ public actor IngestCoordinator {
             let url = storage.url(sha256: doc.sha256, extension: doc.kind)
             guard storage.exists(sha256: doc.sha256, extension: doc.kind) else { continue }   // ingested on another device
             var perDocument = options
+            if let courseID = doc.courseID, let known = try? await store.knownCourse(for: courseID) { perDocument.knownCourse = known }   // filed under a course: read it as that course's
             let sink = progress, id = doc.id, name = doc.filename
             perDocument.progress = { event in sink(DocumentProgress(documentID: id, filename: name, event: event)) }
             do {
