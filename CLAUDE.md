@@ -6,7 +6,7 @@ Native iOS 27 / macOS 27 app: an intake engine that turns course documents into 
 ```
 Package.swift             SwiftPM. Targets: IngestKit, HorizonCore (libs), HorizonParse (CLI), IngestKitTests, HorizonCoreTests, IngestEvals
 project.yml               xcodegen spec for the app targets; Horizon.xcodeproj is generated and git-ignored
-Apps/Horizon/             SwiftUI app (iOS + macOS): AppModel (store/coordinator/sync wiring), RootView, ReviewView, ObligationEditor, CourseView, DocumentsView, WatchedFolder (macOS)
+Apps/Horizon/             SwiftUI app (iOS + macOS): AppModel (store/coordinator/sync wiring, live Reading state), RootView, ReviewView, ObligationEditor, CourseView, DocumentsView, ImportSources (Files / Photos / document camera), WatchedFolder (macOS)
 Apps/HorizonShare/        iOS share extension: copies the shared file into the App Group inbox; the app parses it
 Sources/HorizonCore/      storage + sync. Identifiers.swift (bundle/group/container ids), Model/Schema.swift (VersionedSchema V1),
   Store/HorizonStore      @ModelActor: ingest → upsert with field ownership, review queue, manual entry, soft delete, reconciliation

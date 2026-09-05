@@ -1,9 +1,16 @@
 import Foundation
 import IngestKit
 
+/// Progress of one document's read, for live UI.
+public struct DocumentProgress: Sendable, Equatable {
+    public var documentID: UUID
+    public var filename: String
+    public var event: IngestEvent
+}
+
 /// Inbox → parser → store → Reminders. The share extension and the folder watcher only `enqueue`; the app `drain`s.
 public actor IngestCoordinator {
-    public typealias Parser = @Sendable (URL) async throws -> IngestResult
+    public typealias Parser = @Sendable (URL, IngestOptions) async throws -> IngestResult
 
     private let store: HorizonStore
     private let storage: DocumentStorage
@@ -11,6 +18,7 @@ public actor IngestCoordinator {
     private let options: IngestOptions
     private let deviceName: String
     private let parse: Parser
+    private let progress: @Sendable (DocumentProgress) -> Void
 
     public struct Report: Sendable, Equatable {
         public var document: DocumentSnapshot
@@ -18,9 +26,10 @@ public actor IngestCoordinator {
         public var failure: String?
     }
 
-    public init(store: HorizonStore, storage: DocumentStorage, sync: SyncCoordinator?, options: IngestOptions = IngestOptions(), deviceName: String, parse: Parser? = nil) {
-        self.store = store; self.storage = storage; self.sync = sync; self.options = options; self.deviceName = deviceName
-        self.parse = parse ?? { url in try await Ingestor(options: options).ingest(fileURL: url) }
+    public init(store: HorizonStore, storage: DocumentStorage, sync: SyncCoordinator?, options: IngestOptions = IngestOptions(), deviceName: String,
+                progress: @escaping @Sendable (DocumentProgress) -> Void = { _ in }, parse: Parser? = nil) {
+        self.store = store; self.storage = storage; self.sync = sync; self.options = options; self.deviceName = deviceName; self.progress = progress
+        self.parse = parse ?? { url, options in try await Ingestor(options: options).ingest(fileURL: url) }
     }
 
     /// Copies the file into the App Group container and records it. The same file shared twice is recorded once;
@@ -39,8 +48,11 @@ public actor IngestCoordinator {
             if Task.isCancelled { break }   // background time ran out; the rest stays queued
             let url = storage.url(sha256: doc.sha256, extension: doc.kind)
             guard storage.exists(sha256: doc.sha256, extension: doc.kind) else { continue }   // ingested on another device
+            var perDocument = options
+            let sink = progress, id = doc.id, name = doc.filename
+            perDocument.progress = { event in sink(DocumentProgress(documentID: id, filename: name, event: event)) }
             do {
-                let result = try await parse(url)
+                let result = try await parse(url, perDocument)
                 let summary = try await store.ingest(result, documentID: doc.id)
                 reports.append(Report(document: doc, summary: summary, failure: nil))
             } catch IngestError.modelNotReady(let why) {

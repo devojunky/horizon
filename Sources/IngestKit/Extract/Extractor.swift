@@ -38,8 +38,10 @@ actor Extractor {
     private let system: SystemLanguageModel?
     private let cloud: PrivateCloudComputeLanguageModel?
     private let log: @Sendable (String) -> Void
+    private let progress: @Sendable (IngestEvent) -> Void
 
-    static func make(route: ModelRoute, sampleText: String, log: @escaping @Sendable (String) -> Void) async throws -> Extractor {
+    static func make(route: ModelRoute, sampleText: String, log: @escaping @Sendable (String) -> Void,
+                     progress: @escaping @Sendable (IngestEvent) -> Void = { _ in }) async throws -> Extractor {
         switch route {
         case .onDevice:
             let model = SystemLanguageModel.default
@@ -58,7 +60,7 @@ actor Extractor {
             let budget = model.contextSize - overhead - outputReserve
             log("on-device: context \(model.contextSize), instructions \(instructions), schema \(schema), chunk budget \(budget) tokens, \(String(format: "%.2f", ratio)) chars/token")
             guard budget > 200 else { throw IngestError.modelUnavailable("context window too small for the extraction schema") }
-            return Extractor(route: route, contextSize: model.contextSize, chunkBudgetTokens: budget, charsPerToken: ratio, fixedOverheadTokens: overhead, system: model, cloud: nil, log: log)
+            return Extractor(route: route, contextSize: model.contextSize, chunkBudgetTokens: budget, charsPerToken: ratio, fixedOverheadTokens: overhead, system: model, cloud: nil, log: log, progress: progress)
         case .privateCloudCompute:
             let model = PrivateCloudComputeLanguageModel()
             guard case .available = model.availability else {
@@ -67,14 +69,16 @@ actor Extractor {
             let context = try await model.contextSize
             let budget = context - 1500 - max(2000, context / 4)
             log("private cloud compute: context \(context), chunk budget \(budget) tokens")
-            return Extractor(route: route, contextSize: context, chunkBudgetTokens: budget, charsPerToken: 3.5, fixedOverheadTokens: 1500, system: nil, cloud: model, log: log)
+            return Extractor(route: route, contextSize: context, chunkBudgetTokens: budget, charsPerToken: 3.5, fixedOverheadTokens: 1500, system: nil, cloud: model, log: log, progress: progress)
         }
     }
 
     private init(route: ModelRoute, contextSize: Int, chunkBudgetTokens: Int, charsPerToken: Double, fixedOverheadTokens: Int,
-                 system: SystemLanguageModel?, cloud: PrivateCloudComputeLanguageModel?, log: @escaping @Sendable (String) -> Void) {
+                 system: SystemLanguageModel?, cloud: PrivateCloudComputeLanguageModel?, log: @escaping @Sendable (String) -> Void,
+                 progress: @escaping @Sendable (IngestEvent) -> Void) {
         self.route = route; self.contextSize = contextSize; self.chunkBudgetTokens = chunkBudgetTokens
-        self.charsPerToken = charsPerToken; self.fixedOverheadTokens = fixedOverheadTokens; self.system = system; self.cloud = cloud; self.log = log
+        self.charsPerToken = charsPerToken; self.fixedOverheadTokens = fixedOverheadTokens; self.system = system; self.cloud = cloud
+        self.log = log; self.progress = progress
     }
 
     /// Output tokens a chunk is likely to produce: every date in it is probably an obligation (~90 tokens each).
@@ -138,20 +142,32 @@ actor Extractor {
         return ctx.makeImage()
     }
 
-    /// One model call. Returns nil (with a warning) when the model declines or fails on this chunk alone.
+    /// One model call, streamed so partial obligations reach the UI while the model is still writing.
+    /// Returns nil (with a warning) when the model declines or fails on this chunk alone.
     private func respond(chunk: Int, page: Int, kind: ExtractionOutcome.Kind, tools: [any Tool], prompt: () -> Prompt) async throws -> ExtractionOutcome? {
         let options = GenerationOptions(samplingMode: .greedy)
         let start = ContinuousClock.now
         let response: LanguageModelSession.Response<ChunkExtraction>
         do {
+            let stream: LanguageModelSession.ResponseStream<ChunkExtraction>
             switch route {
             case .onDevice:
                 let session = LanguageModelSession(model: system!, tools: tools, instructions: Instructions(IngestInstructions.text))
-                response = try await session.respond(to: prompt(), generating: ChunkExtraction.self, options: options, contextOptions: ContextOptions())
+                stream = session.streamResponse(to: prompt(), generating: ChunkExtraction.self, options: options, contextOptions: ContextOptions())
             case .privateCloudCompute:
                 let session = LanguageModelSession(model: cloud!, tools: tools, instructions: Instructions(IngestInstructions.text))
-                response = try await session.respond(to: prompt(), generating: ChunkExtraction.self, options: options, contextOptions: ContextOptions(reasoningLevel: .light))
+                stream = session.streamResponse(to: prompt(), generating: ChunkExtraction.self, options: options, contextOptions: ContextOptions(reasoningLevel: .light))
             }
+            progress(.chunkStarted(index: chunk))
+            var lastCount = -1
+            for try await snapshot in stream {
+                let items = Self.provisional(snapshot.content, chunk: chunk)
+                if items.count != lastCount || items.last?.dateAsWritten != nil {   // emit when a new item appears or the current one completes its date
+                    progress(.partial(chunk: chunk, obligations: items))
+                    lastCount = items.count
+                }
+            }
+            response = try await stream.collect()
         } catch let error where Self.isContextOverflow(error) {
             throw error
         } catch let error as PrivateCloudComputeLanguageModel.Error {
@@ -169,6 +185,7 @@ actor Extractor {
                                 outputTokens: u.output.totalTokenCount, reasoningTokens: u.output.reasoningTokenCount,
                                 durationMs: Int(elapsed / .milliseconds(1)))
         log("chunk \(chunk) \(usage.step): in \(usage.inputTokens) out \(usage.outputTokens) \(usage.durationMs)ms, \(response.content.obligations.count) obligations")
+        progress(.chunkFinished(index: chunk, obligations: response.content.obligations.count, usage: usage))
         for o in response.content.obligations {
             log("    raw: \(o.title) | \(o.dateAsWritten) | \(o.dueDate ?? "nil") | \(o.platform) | \(o.component ?? "-") | \(o.confidence)")
         }
@@ -181,6 +198,14 @@ actor Extractor {
     private func warn(_ message: String) {
         log(message)
         warnings.append(message)
+    }
+
+    /// The model's words so far, as rows the UI can show: only items whose title has arrived.
+    static func provisional(_ partial: ChunkExtraction.PartiallyGenerated, chunk: Int) -> [ProvisionalObligation] {
+        (partial.obligations ?? []).enumerated().compactMap { index, item in
+            guard let title = item.title, !title.isEmpty else { return nil }
+            return ProvisionalObligation(id: "\(chunk)-\(index)", title: title, dateAsWritten: item.dateAsWritten, component: item.component ?? nil)
+        }
     }
 
     static func isContextOverflow(_ error: any Error) -> Bool {

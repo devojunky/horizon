@@ -48,6 +48,7 @@ targets:
         UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         NSRemindersFullAccessUsageDescription: Horizon writes your deadlines to a Reminders list called Horizon, so they still fire if you stop opening the app.
         NSCalendarsFullAccessUsageDescription: Horizon reads your calendar to plan around classes and appointments.
+        NSCameraUsageDescription: Horizon scans printed syllabi and handouts with the camera.
         CFBundleURLTypes:
           - CFBundleURLName: com.daniel.horizon
             CFBundleURLSchemes: [horizon]

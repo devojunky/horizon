@@ -113,21 +113,40 @@ struct StoreTests {
         let storage = DocumentStorage.temporary()
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("s-\(UUID().uuidString).txt")
         try "syllabus".write(to: file, atomically: true, encoding: .utf8)
-        let notReady = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac") { _ in throw IngestError.modelNotReady("loading") }
+        let notReady = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac", parse: { _, _ in throw IngestError.modelNotReady("loading") })
         _ = try await notReady.enqueue(fileURL: file)
         let reports = await notReady.drain()
         let doc = try await store.documents().first!
         #expect(reports.count == 1 && doc.status == .queued && doc.failure?.contains("Waiting") == true)   // still queued: retried next drain
 
-        let noCloud = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac") { _ in throw IngestError.cloudUnavailable("offline") }
+        let noCloud = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac", parse: { _, _ in throw IngestError.cloudUnavailable("offline") })
         _ = await noCloud.drain()
         let parked = try await store.documents().first!
         #expect(parked.status == .awaitingCloudParse)   // a genuine cloud need waits for BGProcessingTask
 
-        let parses = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac") { _ in Fixture.calculus() }
+        let parses = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac", parse: { _, _ in Fixture.calculus() })
         let done = await parses.drain()
         let parsed = try await store.documents().first!
         #expect(done.first?.summary?.created == 5 && parsed.status == .parsed)
+    }
+
+    @Test func coordinatorForwardsProgressWithTheDocument() async throws {
+        let store = try Fixture.store()
+        let storage = DocumentStorage.temporary()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("p-\(UUID().uuidString).txt")
+        try "syllabus".write(to: file, atomically: true, encoding: .utf8)
+        let events = EventLog()
+        let coordinator = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac", progress: { p in events.append(p) }, parse: { _, options in
+            options.progress(.started(document: "x", textChunks: 1, images: 0))
+            options.progress(.partial(chunk: 0, obligations: [ProvisionalObligation(id: "0-0", title: "HW 1", dateAsWritten: "Wed 9/9")]))
+            options.progress(.finished(obligations: 5))
+            return Fixture.calculus()
+        })
+        let doc = try await coordinator.enqueue(fileURL: file)
+        _ = await coordinator.drain()
+        let seen = events.all
+        #expect(seen.count == 3 && seen.allSatisfy { $0.documentID == doc.id && $0.filename == file.lastPathComponent })
+        if case .partial(_, let items) = seen[1].event { #expect(items.first?.title == "HW 1") } else { Issue.record("expected a partial event") }
     }
 
     @Test func coordinatorDrainsQueuedFilesAndSkipsOtherDevicesFiles() async throws {
@@ -143,4 +162,12 @@ struct StoreTests {
         let queued = try await store.queuedDocuments().count
         #expect(queued == 2)
     }
+}
+
+
+final class EventLog: @unchecked Sendable {
+    private var events: [DocumentProgress] = []
+    private let lock = NSLock()
+    func append(_ p: DocumentProgress) { lock.withLock { events.append(p) } }
+    var all: [DocumentProgress] { lock.withLock { events } }
 }

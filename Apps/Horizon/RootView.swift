@@ -8,7 +8,6 @@ struct RootView: View {
     @Environment(AppModel.self) private var model
     @Query(sort: \Obligation.due) private var obligations: [Obligation]
     @Query(sort: \Course.code) private var courses: [Course]
-    @State private var importing = false
     @State private var addingByHand = false
     @State private var linked: Obligation?
 
@@ -22,7 +21,9 @@ struct RootView: View {
     var body: some View {
         NavigationStack {
             List {
-                if let status = model.statusLine ?? model.lastError {
+                if let reading = model.reading {
+                    ReadingSection(reading: reading)
+                } else if let status = model.statusLine ?? model.lastError {
                     Section { Label(status, systemImage: model.lastError == nil ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle").foregroundStyle(model.lastError == nil ? .secondary : Design.accent) }
                 }
                 if !pending.isEmpty {
@@ -56,9 +57,7 @@ struct RootView: View {
             }
             .navigationTitle("Horizon")
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button { importing = true } label: { Label("Ingest document", systemImage: "doc.badge.plus") }
-                }
+                ToolbarItem(placement: .primaryAction) { ImportMenu() }
                 ToolbarItem(placement: .primaryAction) {   // its own glass button, not an overflow "More" row
                     Menu {
                         Button { Task { await model.drainAndSync() } } label: { Label("Sync with Reminders", systemImage: "arrow.triangle.2.circlepath") }
@@ -75,9 +74,6 @@ struct RootView: View {
                     } label: { Label("More", systemImage: "ellipsis.circle") }
                 }
             }
-            .fileImporter(isPresented: $importing, allowedContentTypes: [.pdf, .image, .plainText, UTType("org.openxmlformats.wordprocessingml.document") ?? .data], allowsMultipleSelection: true) { result in
-                if case .success(let urls) = result { Task { await model.importFiles(urls) } }
-            }
             .sheet(isPresented: $addingByHand) { ObligationEditor(mode: .manual, courses: courses) }
             .sheet(item: $linked) { ObligationEditor(mode: .review($0), courses: courses) }
             .onChange(of: model.linkedObligationID) { _, id in
@@ -88,6 +84,41 @@ struct RootView: View {
                 if model.busy { ProgressView().padding(.bottom, 24) }
             }
         }
+    }
+}
+
+/// The document resolving into obligations, as the model streams them (SPEC §9's one earned animation, plainly for now).
+struct ReadingSection: View {
+    let reading: AppModel.Reading
+
+    var body: some View {
+        Section {
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Reading \(reading.filename)").font(.body.weight(.medium))
+                    Text(progressLine).font(.footnote).foregroundStyle(.secondary).monospacedDigit()
+                }
+            }
+            ForEach(reading.items) { item in
+                HStack(alignment: .firstTextBaseline) {
+                    Text(item.title)
+                    Spacer()
+                    Text(item.dateAsWritten ?? "…").foregroundStyle(.secondary).monospacedDigit()
+                }
+                .font(.subheadline)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        } footer: {
+            Text("Dates are checked against the document before anything is written to Reminders.")
+        }
+        .animation(.default, value: reading.items)
+    }
+
+    private var progressLine: String {
+        let total = reading.chunks + reading.images
+        let part = total > 1 ? "part \(min(max(reading.chunk, 1), total)) of \(total) · " : ""
+        return part + "\(reading.items.count) found so far"
     }
 }
 

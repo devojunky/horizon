@@ -17,6 +17,8 @@ public struct IngestOptions: Sendable {
     /// Obligations below this confidence are marked `.needsReview`.
     public var reviewThreshold: Double = 0.7
     public var log: @Sendable (String) -> Void = { _ in }
+    /// Receives progress as the document is read, including partial obligations while the model streams.
+    public var progress: @Sendable (IngestEvent) -> Void = { _ in }
 
     public init() {}
 }
@@ -46,20 +48,21 @@ public actor Ingestor {
         let extractor: Extractor
         switch options.route {
         case .onDeviceOnly:
-            extractor = try await Extractor.make(route: .onDevice, sampleText: document.fullText, log: log)
+            extractor = try await Extractor.make(route: .onDevice, sampleText: document.fullText, log: log, progress: options.progress)
         case .privateCloudCompute:
-            extractor = try await Extractor.make(route: .privateCloudCompute, sampleText: document.fullText, log: log)
+            extractor = try await Extractor.make(route: .privateCloudCompute, sampleText: document.fullText, log: log, progress: options.progress)
         case .onDeviceFirst:
-            do { extractor = try await Extractor.make(route: .onDevice, sampleText: document.fullText, log: log) }
+            do { extractor = try await Extractor.make(route: .onDevice, sampleText: document.fullText, log: log, progress: options.progress) }
             catch IngestError.modelUnavailable(let why) {   // a device that will never have the model; "not ready" propagates for a retry
                 warnings.append("On-device model unavailable (\(why)); using Private Cloud Compute")
-                extractor = try await Extractor.make(route: .privateCloudCompute, sampleText: document.fullText, log: log)
+                extractor = try await Extractor.make(route: .privateCloudCompute, sampleText: document.fullText, log: log, progress: options.progress)
             }
         }
 
         let textChunks = Chunker.chunks(pages: document.textPages, budgetTokens: extractor.chunkBudgetTokens, charsPerToken: extractor.charsPerToken)
         let images = document.imagePages
         log("\(document.info.name): \(document.pages.count) page(s) → \(textChunks.count) text chunk(s), \(images.count) image(s)")
+        options.progress(.started(document: document.info.name, textChunks: textChunks.count, images: images.count))
 
         var context = RollingContext()
         var outcomes: [ExtractionOutcome] = []
@@ -77,6 +80,8 @@ public actor Ingestor {
         }
         warnings += await extractor.warnings
         guard !outcomes.isEmpty else { throw IngestError.extractionFailed(warnings.joined(separator: "; ")) }
-        return Merger.merge(outcomes: outcomes, document: document, route: extractor.route, options: options, warnings: warnings)
+        let result = Merger.merge(outcomes: outcomes, document: document, route: extractor.route, options: options, warnings: warnings)
+        options.progress(.finished(obligations: result.obligations.count))
+        return result
     }
 }

@@ -25,6 +25,18 @@ final class AppModel {
     var reports: [IngestCoordinator.Report] = []
     /// Set by a `horizon://obligation/<id>` link (the provenance link on every reminder); RootView opens it.
     var linkedObligationID: UUID?
+    /// What the parser is reading right now, item by item as the model streams. Nil when idle.
+    var reading: Reading?
+
+    struct Reading: Equatable {
+        var filename: String
+        var chunk = 0
+        var chunks = 0
+        var images = 0
+        var found: [ProvisionalObligation] = []      // finished chunks
+        var current: [ProvisionalObligation] = []    // the chunk being written now
+        var items: [ProvisionalObligation] { found + current }
+    }
 
     static let deviceName: String = {
         #if canImport(UIKit)
@@ -40,7 +52,29 @@ final class AppModel {
         sync = SyncCoordinator(store: store, reminders: reminders, seen: DefaultsSeenIDs(), deviceName: Self.deviceName)
         var options = IngestOptions()
         options.log = { message in Task { @MainActor in AppModel.log(message) } }
-        coordinator = IngestCoordinator(store: store, storage: DocumentStorage.appGroup() ?? .temporary(), sync: sync, options: options, deviceName: Self.deviceName)
+        let box = ProgressBox()
+        coordinator = IngestCoordinator(store: store, storage: DocumentStorage.appGroup() ?? .temporary(), sync: sync, options: options, deviceName: Self.deviceName,
+                                        progress: { p in Task { @MainActor in box.model?.apply(p) } })
+        box.model = self
+    }
+
+    /// Breaks the init cycle between the coordinator's sink and self.
+    private final class ProgressBox: @unchecked Sendable { weak var model: AppModel? }
+
+    private func apply(_ p: DocumentProgress) {
+        switch p.event {
+        case .started(_, let chunks, let images):
+            reading = Reading(filename: p.filename, chunks: chunks, images: images)   // the user's name for it, not the stored hash
+        case .chunkStarted(let index):
+            reading?.chunk = index + 1
+            reading?.current = []
+        case .partial(_, let items):
+            reading?.current = items
+        case .chunkFinished:
+            if let current = reading?.current { reading?.found += current; reading?.current = [] }
+        case .finished:
+            reading = nil
+        }
     }
 
     private static let logger = Logger(subsystem: Identifiers.bundlePrefix, category: "ingest")

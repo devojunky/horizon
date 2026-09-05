@@ -169,7 +169,7 @@ public struct UsageReport: Codable, Sendable {
     }
 }
 
-public struct UsageRecord: Codable, Sendable {
+public struct UsageRecord: Codable, Sendable, Equatable {
     public var step: String
     public var chunk: Int
     public var route: ModelRoute

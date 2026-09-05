@@ -93,7 +93,9 @@ public enum Reconciler {
 
         for item in reminders {
             guard let obligation = byExternal[item.externalID] ?? item.obligationID.flatMap({ byID[$0] }) else {
-                changes.append(.importUnattributed(item))
+                // No Horizon link: the user made it by hand, so import it. A Horizon link with no record here belongs to
+                // another device whose records have not synced yet (or to a reinstall): leave it alone.
+                if item.obligationID == nil { changes.append(.importUnattributed(item)) }
                 continue
             }
             present.insert(obligation.id)

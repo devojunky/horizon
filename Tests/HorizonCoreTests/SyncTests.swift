@@ -233,6 +233,21 @@ struct SyncTests {
         #expect(imported.count == 1 && imported[0].origin == .reminders && imported[0].state == .projected && count == 1)
     }
 
+    @Test func anotherDevicesRemindersAreNotImportedAsHandMade() async throws {
+        // A's reminders (with Horizon links) reach B through iCloud before A's records reach B through CloudKit.
+        let reminders = FakeReminderStore()
+        let a = try Fixture.store(), b = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: a, device: "A")
+        _ = try await SyncCoordinator.device("A", store: a, reminders: reminders).sync()
+        _ = try await SyncCoordinator.device("B", store: b, reminders: reminders).sync()
+        let imported = try await b.obligations()
+        #expect(imported.isEmpty)   // nothing invented on B; the records will arrive
+        await reminders.userCreates(title: "Buy the lab notebook", due: Fixture.day(9, 8))
+        _ = try await SyncCoordinator.device("B", store: b, reminders: reminders).sync()
+        let handMade = try await b.obligations()
+        #expect(handMade.map(\.title) == ["Buy the lab notebook"])
+    }
+
     @Test func manualEntryProjectsWithProvenance() async throws {
         let reminders = FakeReminderStore()
         let store = try Fixture.store()
