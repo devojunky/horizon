@@ -1,0 +1,20 @@
+{
+  "render": "docx",
+  "course": {"code": "EXPOS-UA 1", "title": "Writing the Essay"},
+  "gradeComponents": [
+    {"name": "Progression 1 Essay", "weight": 0.20}, {"name": "Progression 2 Essay", "weight": 0.25}, {"name": "Progression 3 Essay", "weight": 0.30},
+    {"name": "Final Portfolio", "weight": 0.15}, {"name": "Participation and Drafts", "weight": 0.10}
+  ],
+  "obligations": [
+    {"title": "Exercise 1.1", "due": "2026-09-14", "platform": "lms"},
+    {"title": "Draft 1", "due": "2026-09-23", "platform": "lms"},
+    {"title": "Progression 1 Final Essay", "due": "2026-10-05", "platform": "lms", "component": "Progression 1 Essay"},
+    {"title": "Exercise 2.1", "due": "2026-10-14", "platform": "lms"},
+    {"title": "Draft 2", "due": "2026-10-26", "platform": "lms"},
+    {"title": "Progression 2 Final Essay", "due": "2026-11-04", "platform": "lms", "component": "Progression 2 Essay"},
+    {"title": "Exercise 3.1", "due": "2026-11-11", "platform": "lms"},
+    {"title": "Draft 3", "due": "2026-11-23", "platform": "lms"},
+    {"title": "Progression 3 Final Essay", "due": "2026-12-09", "platform": "lms", "component": "Progression 3 Essay"},
+    {"title": "Final Portfolio", "due": "2026-12-14", "platform": "lms", "component": "Final Portfolio"}
+  ]
+}

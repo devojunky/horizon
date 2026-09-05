@@ -1,0 +1,20 @@
+{
+  "render": "scanned",
+  "course": {"code": "MA-UY 2034", "title": "Linear Algebra and Differential Equations"},
+  "gradeComponents": [
+    {"name": "WebAssign Homework", "weight": 0.10}, {"name": "Written Homework", "weight": 0.10}, {"name": "Quizzes", "weight": 0.10},
+    {"name": "Midterm 1", "weight": 0.20}, {"name": "Midterm 2", "weight": 0.20}, {"name": "Final Exam", "weight": 0.30}
+  ],
+  "obligations": [
+    {"title": "Quiz 1", "due": "2026-09-22", "component": "Quizzes"},
+    {"title": "Written Homework 1", "due": "2026-09-25", "platform": "gradescope", "component": "Written Homework"},
+    {"title": "Midterm 1", "due": "2026-10-06", "component": "Midterm 1"},
+    {"title": "Quiz 2", "due": "2026-10-20", "component": "Quizzes"},
+    {"title": "Written Homework 2", "due": "2026-10-23", "platform": "gradescope", "component": "Written Homework"},
+    {"title": "Midterm 2", "due": "2026-11-10", "component": "Midterm 2"},
+    {"title": "Quiz 3", "due": "2026-11-17", "component": "Quizzes"},
+    {"title": "Written Homework 3", "due": "2026-11-20", "platform": "gradescope", "component": "Written Homework"},
+    {"title": "Written Homework 4", "due": "2026-12-11", "platform": "gradescope", "component": "Written Homework"},
+    {"title": "Final Exam", "due": "2026-12-17", "component": "Final Exam"}
+  ]
+}

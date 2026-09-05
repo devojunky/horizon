@@ -1,0 +1,21 @@
+{
+  "render": "txt",
+  "course": {"code": "ECON-UA 2", "title": "Introduction to Microeconomics"},
+  "gradeComponents": [
+    {"name": "MyLab Homework", "weight": 0.20}, {"name": "Midterm 1", "weight": 0.25}, {"name": "Midterm 2", "weight": 0.25}, {"name": "Final Exam", "weight": 0.30}
+  ],
+  "obligations": [
+    {"title": "HW 1", "due": "2027-02-07", "platform": "myLab", "component": "MyLab Homework"},
+    {"title": "HW 2", "due": "2027-02-21", "platform": "myLab", "component": "MyLab Homework"},
+    {"title": "Midterm 1", "due": "2027-03-03", "component": "Midterm 1"},
+    {"title": "HW 3", "due": "2027-03-07", "platform": "myLab", "component": "MyLab Homework"},
+    {"title": "HW 4", "due": "2027-03-28", "platform": "myLab", "component": "MyLab Homework"},
+    {"title": "HW 5", "due": "2027-04-11", "platform": "myLab", "component": "MyLab Homework"},
+    {"title": "Midterm 2", "due": "2027-04-14", "component": "Midterm 2"},
+    {"title": "HW 6", "due": "2027-04-25", "platform": "myLab", "component": "MyLab Homework"},
+    {"title": "Extra credit data exercise", "due": "2027-04-30", "platform": "myLab"},
+    {"title": "HW 7", "due": "2027-05-02", "platform": "myLab", "component": "MyLab Homework"},
+    {"title": "HW 8", "due": "2027-05-09", "platform": "myLab", "component": "MyLab Homework"},
+    {"title": "Final Exam", "due": "2027-05-13", "component": "Final Exam"}
+  ]
+}

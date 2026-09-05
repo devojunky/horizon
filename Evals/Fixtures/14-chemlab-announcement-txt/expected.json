@@ -1,0 +1,18 @@
+{
+  "render": "txt",
+  "notes": "Pre-lab quizzes have no individual dates listed; expanding them would be a false positive.",
+  "course": {"code": "CM-UY 1004", "title": "General Chemistry Laboratory I"},
+  "gradeComponents": [
+    {"name": "Lab Reports", "weight": 0.70}, {"name": "Pre-lab Quizzes", "weight": 0.10}, {"name": "Lab Notebook", "weight": 0.10}, {"name": "Final Practical", "weight": 0.10}
+  ],
+  "obligations": [
+    {"title": "Lab 1 report", "due": "2026-09-16", "platform": "gradescope", "component": "Lab Reports"},
+    {"title": "Lab 2 report", "due": "2026-09-30", "platform": "gradescope", "component": "Lab Reports"},
+    {"title": "Lab 3 report", "due": "2026-10-14", "platform": "gradescope", "component": "Lab Reports"},
+    {"title": "Lab 4 report", "due": "2026-10-28", "platform": "gradescope", "component": "Lab Reports"},
+    {"title": "Lab 5 report", "due": "2026-11-11", "platform": "gradescope", "component": "Lab Reports"},
+    {"title": "Lab 6 report", "due": "2026-12-02", "platform": "gradescope", "component": "Lab Reports"},
+    {"title": "Lab 7 report", "due": "2026-12-09", "platform": "gradescope", "component": "Lab Reports"},
+    {"title": "Final practical", "due": "2026-12-09", "component": "Final Practical"}
+  ]
+}

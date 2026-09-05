@@ -1,0 +1,28 @@
+{
+  "render": "pdf",
+  "course": {"code": "MA-UY 1124", "title": "Calculus II"},
+  "gradeComponents": [
+    {"name": "Homework", "weight": 0.15}, {"name": "Quizzes", "weight": 0.12},
+    {"name": "Midterm 1", "weight": 0.20}, {"name": "Midterm 2", "weight": 0.20}, {"name": "Final Exam", "weight": 0.33}
+  ],
+  "obligations": [
+    {"title": "HW 1", "due": "2026-09-09", "platform": "webAssign", "component": "Homework"},
+    {"title": "HW 2", "due": "2026-09-16", "platform": "webAssign", "component": "Homework"},
+    {"title": "Quiz 1", "due": "2026-09-17", "component": "Quizzes"},
+    {"title": "HW 3", "due": "2026-09-23", "platform": "webAssign", "component": "Homework"},
+    {"title": "HW 4", "due": "2026-09-30", "platform": "webAssign", "component": "Homework"},
+    {"title": "Quiz 2", "due": "2026-10-01", "component": "Quizzes"},
+    {"title": "Midterm 1", "due": "2026-10-07", "component": "Midterm 1"},
+    {"title": "HW 5", "due": "2026-10-14", "platform": "webAssign", "component": "Homework"},
+    {"title": "HW 6", "due": "2026-10-21", "platform": "webAssign", "component": "Homework"},
+    {"title": "Quiz 3", "due": "2026-10-22", "component": "Quizzes"},
+    {"title": "HW 7", "due": "2026-10-28", "platform": "webAssign", "component": "Homework"},
+    {"title": "HW 8", "due": "2026-11-04", "platform": "webAssign", "component": "Homework"},
+    {"title": "Quiz 4", "due": "2026-11-05", "component": "Quizzes"},
+    {"title": "Midterm 2", "due": "2026-11-11", "component": "Midterm 2"},
+    {"title": "HW 9", "due": "2026-11-18", "platform": "webAssign", "component": "Homework"},
+    {"title": "HW 10", "due": "2026-12-02", "platform": "webAssign", "component": "Homework"},
+    {"title": "Quiz 5", "due": "2026-12-03", "component": "Quizzes"},
+    {"title": "Final Exam", "due": null, "component": "Final Exam"}
+  ]
+}

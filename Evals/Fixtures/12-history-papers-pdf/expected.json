@@ -1,0 +1,18 @@
+{
+  "render": "pdf",
+  "course": {"code": "HIST-UA 9", "title": "World History: 1500 to the Present"},
+  "gradeComponents": [
+    {"name": "Response Papers", "weight": 0.25}, {"name": "Map Quiz", "weight": 0.10}, {"name": "Midterm Essay", "weight": 0.20},
+    {"name": "Final Paper", "weight": 0.30}, {"name": "Participation", "weight": 0.15}
+  ],
+  "obligations": [
+    {"title": "Map Quiz", "due": "2027-02-11", "component": "Map Quiz"},
+    {"title": "Response Paper 1", "due": "2027-02-12", "platform": "lms", "component": "Response Papers"},
+    {"title": "Response Paper 2", "due": "2027-02-26", "platform": "lms", "component": "Response Papers"},
+    {"title": "Response Paper 3", "due": "2027-03-12", "platform": "lms", "component": "Response Papers"},
+    {"title": "Midterm Essay", "due": "2027-03-26", "platform": "lms", "component": "Midterm Essay"},
+    {"title": "Response Paper 4", "due": "2027-04-09", "platform": "lms", "component": "Response Papers"},
+    {"title": "Response Paper 5", "due": "2027-04-23", "platform": "lms", "component": "Response Papers"},
+    {"title": "Final Paper", "due": "2027-05-12", "platform": "lms", "component": "Final Paper"}
+  ]
+}

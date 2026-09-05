@@ -1,0 +1,146 @@
+import Foundation
+import PDFKit
+import CoreGraphics
+import ImageIO
+import Vision
+import UniformTypeIdentifiers
+#if canImport(AppKit)
+import AppKit
+#endif
+
+/// A document reduced to pages of either text (PDFKit/plain text) or raster images (screenshots, scanned pages).
+/// Image pages also carry Vision OCR text so the deterministic guards in `Merger` have something to check against.
+public struct NormalizedDocument: @unchecked Sendable {
+    public var info: DocumentInfo
+    public var pages: [Page]
+
+    public enum Page {
+        case text(String)
+        case image(CGImage, orientation: CGImagePropertyOrientation?, ocrText: String)
+    }
+
+    struct ImagePage { var page: Int; var image: CGImage; var orientation: CGImagePropertyOrientation? }
+
+    /// Text pages with their index in the document.
+    var textPages: [(page: Int, text: String)] { pages.enumerated().compactMap { i, p in if case .text(let t) = p { (i, t) } else { nil } } }
+    var imagePages: [ImagePage] {
+        pages.enumerated().compactMap { i, p in if case .image(let img, let o, _) = p { ImagePage(page: i, image: img, orientation: o) } else { nil } }
+    }
+    /// Text pages plus OCR text of image pages, in page order.
+    var fullText: String {
+        pages.map { switch $0 { case .text(let t): t; case .image(_, _, let ocr): ocr } }.joined(separator: "\n")
+    }
+}
+
+enum DocumentNormalizer {
+    /// Pages whose text layer is shorter than this are treated as scanned and rasterized instead.
+    static let minimumTextCharacters = 40
+    static let rasterScale: CGFloat = 2.0
+
+    static func normalize(fileURL: URL) throws -> NormalizedDocument {
+        let data: Data
+        do { data = try Data(contentsOf: fileURL) } catch { throw IngestError.unreadable(error.localizedDescription) }
+        let name = fileURL.lastPathComponent
+        let type = UTType(filenameExtension: fileURL.pathExtension) ?? .data
+
+        if type.conforms(to: .pdf) {
+            guard let pdf = PDFDocument(data: data) else { throw IngestError.unreadable("PDFKit could not open \(name)") }
+            var pages: [NormalizedDocument.Page] = []
+            for i in 0..<pdf.pageCount {
+                guard let page = pdf.page(at: i) else { continue }
+                let text = page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if text.count >= minimumTextCharacters {
+                    pages.append(.text(text))
+                } else if let image = rasterize(page) {
+                    pages.append(imagePage(image, orientation: nil))
+                }
+            }
+            return NormalizedDocument(info: info(name, data, .pdf, pdf.pageCount), pages: pages)
+        }
+        if type.conforms(to: .image) {
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+                throw IngestError.unreadable("ImageIO could not decode \(name)")
+            }
+            var orientation: CGImagePropertyOrientation?
+            if let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+               let raw = props[kCGImagePropertyOrientation] as? UInt32 {
+                orientation = CGImagePropertyOrientation(rawValue: raw)
+            }
+            return NormalizedDocument(info: info(name, data, .image, 1), pages: [imagePage(image, orientation: orientation)])
+        }
+        if fileURL.pathExtension.lowercased() == "docx" {
+            #if canImport(AppKit)
+            let attributed = try NSAttributedString(
+                data: data, options: [.documentType: NSAttributedString.DocumentType.officeOpenXML], documentAttributes: nil)
+            return normalize(text: attributed.string, name: name, kind: .docx, data: data)
+            #else
+            throw IngestError.unsupportedFile("docx (macOS only)")
+            #endif
+        }
+        if type.conforms(to: .text) || type == .data, let text = String(data: data, encoding: .utf8) {
+            return normalize(text: text, name: name, kind: .text, data: data)
+        }
+        throw IngestError.unsupportedFile(fileURL.pathExtension.isEmpty ? "unknown" : fileURL.pathExtension)
+    }
+
+    static func normalize(text: String, name: String, kind: DocumentKind = .text, data: Data? = nil) -> NormalizedDocument {
+        let bytes = data ?? Data(text.utf8)
+        // Split long plain text on form feeds or every ~60 lines so the chunker has page boundaries to work with.
+        let pages = text.components(separatedBy: "\u{0C}").flatMap { block -> [String] in
+            let lines = block.components(separatedBy: "\n")
+            return stride(from: 0, to: max(lines.count, 1), by: 60).map { lines[$0..<min($0 + 60, lines.count)].joined(separator: "\n") }
+        }.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        return NormalizedDocument(info: info(name, bytes, kind, max(pages.count, 1)), pages: pages.map { .text($0) })
+    }
+
+    static func normalize(image: CGImage, name: String) -> NormalizedDocument {
+        let bytes = Data("\(name)-\(image.width)x\(image.height)".utf8)
+        return NormalizedDocument(info: info(name, bytes, .image, 1), pages: [imagePage(image, orientation: nil)])
+    }
+
+    private static func imagePage(_ image: CGImage, orientation: CGImagePropertyOrientation?) -> NormalizedDocument.Page {
+        .image(image, orientation: orientation, ocrText: recognizeText(in: image, orientation: orientation))
+    }
+
+    /// Vision OCR reassembled into rows: observations whose vertical centres fall within half a line height of each
+    /// other form one row, left to right, cells separated by two spaces — so table rows read like PDF text rows.
+    /// Empty when Vision finds nothing.
+    static func recognizeText(in image: CGImage, orientation: CGImagePropertyOrientation?) -> String {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        let handler = VNImageRequestHandler(cgImage: image, orientation: orientation ?? .up)
+        guard (try? handler.perform([request])) != nil, let observations = request.results else { return "" }
+        let cells = observations.compactMap { o in o.topCandidates(1).first.map { (text: $0.string, box: o.boundingBox) } }
+            .sorted { $0.box.midY > $1.box.midY }   // Vision's origin is bottom-left: larger y is higher on the page
+        var rows: [[(text: String, box: CGRect)]] = []
+        for cell in cells {
+            if let last = rows.last?.first, abs(last.box.midY - cell.box.midY) < max(last.box.height, cell.box.height) * 0.5 {
+                rows[rows.count - 1].append(cell)
+            } else {
+                rows.append([cell])
+            }
+        }
+        return rows.map { $0.sorted { $0.box.minX < $1.box.minX }.map(\.text).joined(separator: "  ") }.joined(separator: "\n")
+    }
+
+    private static func info(_ name: String, _ data: Data, _ kind: DocumentKind, _ pages: Int) -> DocumentInfo {
+        DocumentInfo(name: name, sha256: Normalize.sha256(data), kind: kind, pageCount: pages, ingestedAt: Date())
+    }
+
+    static func rasterize(_ page: PDFPage) -> CGImage? {
+        let bounds = page.bounds(for: .mediaBox)
+        let width = Int(bounds.width * rasterScale), height = Int(bounds.height * rasterScale)
+        guard width > 0, height > 0,
+              let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        ctx.scaleBy(x: rasterScale, y: rasterScale)
+        ctx.translateBy(x: -bounds.minX, y: -bounds.minY)
+        page.draw(with: .mediaBox, to: ctx)
+        return ctx.makeImage()
+    }
+}

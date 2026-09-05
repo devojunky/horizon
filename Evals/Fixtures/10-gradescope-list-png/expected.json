@@ -1,0 +1,15 @@
+{
+  "render": "png",
+  "course": {"code": "CS-UY 2413"},
+  "gradeComponents": [],
+  "obligations": [
+    {"title": "Homework 1", "due": "2026-09-16", "platform": "gradescope"},
+    {"title": "Homework 2", "due": "2026-09-30", "platform": "gradescope"},
+    {"title": "Homework 3", "due": "2026-10-14", "platform": "gradescope"},
+    {"title": "Programming Assignment 1", "due": "2026-10-21", "platform": "gradescope"},
+    {"title": "Homework 4", "due": "2026-10-28", "platform": "gradescope"},
+    {"title": "Homework 5", "due": "2026-11-11", "platform": "gradescope"},
+    {"title": "Homework 6", "due": "2026-12-02", "platform": "gradescope"},
+    {"title": "Programming Assignment 2", "due": "2026-12-09", "platform": "gradescope"}
+  ]
+}

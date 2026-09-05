@@ -1,0 +1,17 @@
+{
+  "render": "pdf",
+  "course": {"code": "BIO-UA 11", "title": "Principles of Biology I"},
+  "gradeComponents": [
+    {"name": "Weekly Quizzes", "weight": 0.20}, {"name": "Lab Reports", "weight": 0.20},
+    {"name": "Exam 1", "weight": 0.20}, {"name": "Exam 2", "weight": 0.20}, {"name": "Final Exam", "weight": 0.20}
+  ],
+  "obligations": [
+    {"title": "Exam 1", "due": "2026-10-02", "component": "Exam 1"},
+    {"title": "Lab Report 1", "due": "2026-10-05", "platform": "lms", "component": "Lab Reports"},
+    {"title": "Lab Report 2", "due": "2026-10-26", "platform": "lms", "component": "Lab Reports"},
+    {"title": "Exam 2", "due": "2026-11-06", "component": "Exam 2"},
+    {"title": "Lab Report 3", "due": "2026-11-16", "platform": "lms", "component": "Lab Reports"},
+    {"title": "Lab Report 4", "due": "2026-12-07", "platform": "lms", "component": "Lab Reports"},
+    {"title": "Final Exam", "due": "2026-12-15", "component": "Final Exam"}
+  ]
+}

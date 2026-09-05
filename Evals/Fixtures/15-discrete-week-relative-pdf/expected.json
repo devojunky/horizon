@@ -1,0 +1,19 @@
+{
+  "render": "pdf",
+  "notes": "Week 1 begins Wednesday September 2, 2026, so the Monday of week 1 is August 31. Week N Friday = Aug 31 + 7(N-1) + 4 days.",
+  "course": {"code": "MA-UY 2314", "title": "Discrete Mathematics"},
+  "gradeComponents": [
+    {"name": "Homework", "weight": 0.20}, {"name": "Midterm 1", "weight": 0.25}, {"name": "Midterm 2", "weight": 0.25}, {"name": "Final Exam", "weight": 0.30}
+  ],
+  "obligations": [
+    {"title": "Homework 1", "due": "2026-09-11", "platform": "lms", "component": "Homework"},
+    {"title": "Homework 2", "due": "2026-09-25", "platform": "lms", "component": "Homework"},
+    {"title": "Midterm 1", "due": "2026-09-30", "component": "Midterm 1"},
+    {"title": "Homework 3", "due": "2026-10-09", "platform": "lms", "component": "Homework"},
+    {"title": "Homework 4", "due": "2026-10-23", "platform": "lms", "component": "Homework"},
+    {"title": "Homework 5", "due": "2026-11-06", "platform": "lms", "component": "Homework"},
+    {"title": "Midterm 2", "due": "2026-11-11", "component": "Midterm 2"},
+    {"title": "Homework 6", "due": "2026-11-20", "platform": "lms", "component": "Homework"},
+    {"title": "Final Exam", "due": "2026-12-17", "component": "Final Exam"}
+  ]
+}

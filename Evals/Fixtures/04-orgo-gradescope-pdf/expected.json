@@ -1,0 +1,20 @@
+{
+  "render": "pdf",
+  "course": {"code": "CHEM-UA 225", "title": "Organic Chemistry I"},
+  "gradeComponents": [
+    {"name": "Problem Sets", "weight": 0.20}, {"name": "Exam 1", "weight": 0.20}, {"name": "Exam 2", "weight": 0.20},
+    {"name": "Exam 3", "weight": 0.20}, {"name": "Final Exam", "weight": 0.20}
+  ],
+  "obligations": [
+    {"title": "Problem Set 1", "due": "2027-02-05", "platform": "gradescope", "component": "Problem Sets"},
+    {"title": "Problem Set 2", "due": "2027-02-19", "platform": "gradescope", "component": "Problem Sets"},
+    {"title": "Exam 1", "due": "2027-02-25", "component": "Exam 1"},
+    {"title": "Problem Set 3", "due": "2027-03-05", "platform": "gradescope", "component": "Problem Sets"},
+    {"title": "Problem Set 4", "due": "2027-03-26", "platform": "gradescope", "component": "Problem Sets"},
+    {"title": "Exam 2", "due": "2027-04-01", "component": "Exam 2"},
+    {"title": "Problem Set 5", "due": "2027-04-09", "platform": "gradescope", "component": "Problem Sets"},
+    {"title": "Exam 3", "due": "2027-04-29", "component": "Exam 3"},
+    {"title": "Problem Set 6", "due": "2027-04-30", "platform": "gradescope", "component": "Problem Sets"},
+    {"title": "Final Exam", "due": null, "component": "Final Exam"}
+  ]
+}

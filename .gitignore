@@ -1,0 +1,9 @@
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.DS_Store
+.claude/skills/HIGAgentSkills/
+.claude/settings.local.json
+Evals/Results/

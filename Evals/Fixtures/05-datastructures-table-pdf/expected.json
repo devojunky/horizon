@@ -1,0 +1,19 @@
+{
+  "render": "pdf",
+  "course": {"code": "CS-UY 1134", "title": "Data Structures and Algorithms"},
+  "gradeComponents": [
+    {"name": "Homework", "weight": 0.25}, {"name": "Projects", "weight": 0.20}, {"name": "Midterm", "weight": 0.25}, {"name": "Final", "weight": 0.30}
+  ],
+  "obligations": [
+    {"title": "HW 1", "due": "2026-09-18", "platform": "gradescope", "component": "Homework"},
+    {"title": "HW 2", "due": "2026-10-02", "platform": "gradescope", "component": "Homework"},
+    {"title": "Project 1", "due": "2026-10-16", "platform": "lms", "component": "Projects"},
+    {"title": "HW 3", "due": "2026-10-23", "platform": "gradescope", "component": "Homework"},
+    {"title": "Midterm", "due": "2026-10-28", "component": "Midterm"},
+    {"title": "HW 4", "due": "2026-11-13", "platform": "gradescope", "component": "Homework"},
+    {"title": "HW 5", "due": "2026-11-25", "platform": "gradescope", "component": "Homework"},
+    {"title": "Project 2", "due": "2026-12-04", "platform": "lms", "component": "Projects"},
+    {"title": "HW 6", "due": "2026-12-11", "platform": "gradescope", "component": "Homework"},
+    {"title": "Final Exam", "due": "2026-12-21", "component": "Final"}
+  ]
+}

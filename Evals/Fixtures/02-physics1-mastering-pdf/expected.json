@@ -1,0 +1,30 @@
+{
+  "render": "pdf",
+  "course": {"code": "PH-UY 1013", "title": "Physics I"},
+  "gradeComponents": [
+    {"name": "Mastering Physics Homework", "weight": 0.15}, {"name": "Labs", "weight": 0.15}, {"name": "Recitation Quizzes", "weight": 0.10},
+    {"name": "Exam 1", "weight": 0.15}, {"name": "Exam 2", "weight": 0.15}, {"name": "Exam 3", "weight": 0.15}, {"name": "Final Exam", "weight": 0.15}
+  ],
+  "obligations": [
+    {"title": "MP HW 1", "due": "2026-09-13", "platform": "myLab", "component": "Mastering Physics Homework"},
+    {"title": "Lab 1 report", "due": "2026-09-18", "component": "Labs"},
+    {"title": "MP HW 2", "due": "2026-09-20", "platform": "myLab", "component": "Mastering Physics Homework"},
+    {"title": "MP HW 3", "due": "2026-09-27", "platform": "myLab", "component": "Mastering Physics Homework"},
+    {"title": "Lab 2 report", "due": "2026-10-02", "component": "Labs"},
+    {"title": "MP HW 4", "due": "2026-10-04", "platform": "myLab", "component": "Mastering Physics Homework"},
+    {"title": "Exam 1", "due": "2026-10-08", "component": "Exam 1"},
+    {"title": "Lab 3 report", "due": "2026-10-16", "component": "Labs"},
+    {"title": "MP HW 5", "due": "2026-10-18", "platform": "myLab", "component": "Mastering Physics Homework"},
+    {"title": "MP HW 6", "due": "2026-10-25", "platform": "myLab", "component": "Mastering Physics Homework"},
+    {"title": "Lab 4 report", "due": "2026-10-30", "component": "Labs"},
+    {"title": "MP HW 7", "due": "2026-11-01", "platform": "myLab", "component": "Mastering Physics Homework"},
+    {"title": "Exam 2", "due": "2026-11-05", "component": "Exam 2"},
+    {"title": "Lab 5 report", "due": "2026-11-13", "component": "Labs"},
+    {"title": "MP HW 8", "due": "2026-11-15", "platform": "myLab", "component": "Mastering Physics Homework"},
+    {"title": "MP HW 9", "due": "2026-11-22", "platform": "myLab", "component": "Mastering Physics Homework"},
+    {"title": "Exam 3", "due": "2026-12-03", "component": "Exam 3"},
+    {"title": "Lab 6 report", "due": "2026-12-04", "component": "Labs"},
+    {"title": "MP HW 10", "due": "2026-12-13", "platform": "myLab", "component": "Mastering Physics Homework"},
+    {"title": "Final Exam", "due": "2026-12-18", "component": "Final Exam"}
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "render": "png",
+  "course": {"code": "PSYC-UA 1"},
+  "gradeComponents": [],
+  "obligations": [
+    {"title": "Research Participation Log 1", "due": "2026-09-25", "platform": "lms"},
+    {"title": "Reaction Paper 1", "due": "2026-10-09", "platform": "lms"},
+    {"title": "Research Participation Log 2", "due": "2026-10-30", "platform": "lms"},
+    {"title": "Reaction Paper 2", "due": "2026-11-13", "platform": "lms"},
+    {"title": "Research Participation Log 3", "due": "2026-12-04", "platform": "lms"},
+    {"title": "Reaction Paper 3", "due": "2026-12-11", "platform": "lms"}
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "render": "pdf",
+  "course": {"code": "MA-UY 2224", "title": "Data Analysis"},
+  "gradeComponents": [
+    {"name": "Weekly Labs", "weight": 0.30}, {"name": "Project", "weight": 0.20}, {"name": "Midterm", "weight": 0.20}, {"name": "Final Exam", "weight": 0.30}
+  ],
+  "obligations": [
+    {"title": "Lab 1", "due": "2027-02-04", "platform": "gradescope", "component": "Weekly Labs"},
+    {"title": "Lab 2", "due": "2027-02-11", "platform": "gradescope", "component": "Weekly Labs"},
+    {"title": "Lab 3", "due": "2027-02-18", "platform": "gradescope", "component": "Weekly Labs"},
+    {"title": "Lab 4", "due": "2027-02-25", "platform": "gradescope", "component": "Weekly Labs"},
+    {"title": "Lab 5", "due": "2027-03-04", "platform": "gradescope", "component": "Weekly Labs"},
+    {"title": "Midterm", "due": "2027-03-09", "component": "Midterm"},
+    {"title": "Lab 6", "due": "2027-03-11", "platform": "gradescope", "component": "Weekly Labs"},
+    {"title": "Lab 7", "due": "2027-03-25", "platform": "gradescope", "component": "Weekly Labs"},
+    {"title": "Project proposal", "due": "2027-03-26", "platform": "gradescope", "component": "Project"},
+    {"title": "Lab 8", "due": "2027-04-01", "platform": "gradescope", "component": "Weekly Labs"},
+    {"title": "Lab 9", "due": "2027-04-08", "platform": "gradescope", "component": "Weekly Labs"},
+    {"title": "Lab 10", "due": "2027-04-15", "platform": "gradescope", "component": "Weekly Labs"},
+    {"title": "Project report", "due": "2027-05-07", "platform": "gradescope", "component": "Project"},
+    {"title": "Final Exam", "due": "2027-05-12", "component": "Final Exam"}
+  ]
+}

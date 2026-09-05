@@ -1,0 +1,168 @@
+import Foundation
+
+// Public, Codable output of an ingest. Stable shape: HorizonCore and the CLI both consume it.
+
+public struct IngestResult: Codable, Sendable {
+    public var document: DocumentInfo
+    public var route: ModelRoute
+    public var course: ParsedCourse?
+    public var gradeComponents: [ParsedGradeComponent]
+    public var obligations: [ParsedObligation]
+    public var policies: [ParsedPolicy]
+    public var noClassDates: [ParsedNoClass]
+    public var usage: UsageReport
+    public var warnings: [String]
+}
+
+public struct DocumentInfo: Codable, Sendable {
+    public var name: String
+    public var sha256: String
+    public var kind: DocumentKind
+    public var pageCount: Int
+    public var ingestedAt: Date
+}
+
+public enum DocumentKind: String, Codable, Sendable {
+    case pdf, image, text, docx
+}
+
+public enum ModelRoute: String, Codable, Sendable {
+    case onDevice, privateCloudCompute
+}
+
+public enum Platform: String, Codable, Sendable, CaseIterable {
+    case lms, webAssign, gradescope, myLab, syllabusOnly
+}
+
+public struct ParsedCourse: Codable, Sendable {
+    public var code: String?
+    public var title: String?
+    public var instructor: String?
+    public var term: String?
+    public var termStart: Date?
+    public var termEnd: Date?
+    public var room: String?
+    public var meetings: [MeetingSlot]
+}
+
+public struct MeetingSlot: Codable, Sendable, Equatable {
+    /// 1 = Sunday … 7 = Saturday, matching `Calendar`.
+    public var weekday: Int
+    public var start: String?
+    public var end: String?
+}
+
+public struct ParsedGradeComponent: Codable, Sendable {
+    public var name: String
+    /// Fraction of the final grade, 0…1.
+    public var weight: Double?
+    public var expectedCount: Int?
+    public var cadence: Cadence?
+    public var dropLowest: Int?
+}
+
+public enum Cadence: String, Codable, Sendable {
+    case weekly, biweekly, once
+}
+
+public struct ParsedObligation: Codable, Sendable, Identifiable {
+    public var id: UUID
+    public var title: String
+    public var platform: Platform
+    public var componentName: String?
+    public var dateAsWritten: String
+    /// Local time. When `dueHasTime` is false the value is 23:59 local on the due day.
+    public var due: Date?
+    public var dueHasTime: Bool
+    public var status: ObligationStatus
+    /// 0…1. Below `IngestOptions.reviewThreshold` means `status == .needsReview`.
+    public var confidence: Double
+    public var flags: [ParseFlag]
+    /// Percentage points of the final grade: component weight ÷ expected item count.
+    public var pointsAtStake: Double?
+    /// 0-based page of the source document the item was read from.
+    public var sourcePage: Int
+}
+
+public enum ObligationStatus: String, Codable, Sendable {
+    case ready, needsReview, awaitingDate
+}
+
+public enum ParseFlag: String, Codable, Sendable {
+    case dateNotInSource      // neither the copied wording nor the resolved date appears in the document text
+    case conflictingDate      // the same item appears twice with different dates
+    case dateAmbiguous        // the item's row lists several dates and the chosen one is the first, e.g. a session or release date
+    case dateDisagreement     // model's ISO date and the deterministic re-parse of dateAsWritten differ
+    case dateUnresolved       // a date was written but could not be resolved
+    case dateOutsideTerm
+    case unknownComponent     // component name matches no grade breakdown row
+    case modelLowConfidence
+}
+
+public struct ParsedPolicy: Codable, Sendable {
+    public var kind: PolicyKind
+    public var text: String
+    /// False when the model's quote could not be matched to the document's own sentences.
+    public var verbatim: Bool
+}
+
+public enum PolicyKind: String, Codable, Sendable {
+    case lateWork, makeupExam, attendance, dropRule, extraCredit, other
+}
+
+public struct ParsedNoClass: Codable, Sendable {
+    public var dateAsWritten: String
+    public var start: Date
+    public var end: Date?
+}
+
+public struct UsageReport: Codable, Sendable {
+    public var calls: [UsageRecord]
+    public var inputTokens: Int { calls.reduce(0) { $0 + $1.inputTokens } }
+    public var outputTokens: Int { calls.reduce(0) { $0 + $1.outputTokens } }
+    public var durationMs: Int { calls.reduce(0) { $0 + $1.durationMs } }
+
+    enum CodingKeys: String, CodingKey { case calls, inputTokens, outputTokens, durationMs }
+    public init(calls: [UsageRecord]) { self.calls = calls }
+    public init(from decoder: any Decoder) throws {
+        calls = try decoder.container(keyedBy: CodingKeys.self).decode([UsageRecord].self, forKey: .calls)
+    }
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(calls, forKey: .calls)
+        try c.encode(inputTokens, forKey: .inputTokens)
+        try c.encode(outputTokens, forKey: .outputTokens)
+        try c.encode(durationMs, forKey: .durationMs)
+    }
+}
+
+public struct UsageRecord: Codable, Sendable {
+    public var step: String
+    public var chunk: Int
+    public var route: ModelRoute
+    public var inputTokens: Int
+    public var cachedTokens: Int
+    public var outputTokens: Int
+    public var reasoningTokens: Int
+    public var durationMs: Int
+}
+
+public enum IngestError: Error, LocalizedError, Sendable {
+    case unsupportedFile(String)
+    case unreadable(String)
+    case modelUnavailable(String)
+    case cloudUnavailable(String)
+    case emptyDocument
+    case extractionFailed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .unsupportedFile(let ext): "Unsupported file type: \(ext)"
+        case .unreadable(let why): "Could not read document: \(why)"
+        case .modelUnavailable(let why): "On-device model unavailable: \(why)"
+        case .cloudUnavailable(let why): "Private Cloud Compute unavailable, document queued: \(why)"
+        case .emptyDocument: "Document has no readable text or images"
+        case .extractionFailed(let why): "The model produced nothing for this document: \(why)"
+        }
+    }
+}
