@@ -6,13 +6,13 @@ Native iOS 27 / macOS 27 app: an intake engine that turns course documents into 
 ```
 Package.swift             SwiftPM. Targets: IngestKit, HorizonCore (libs), HorizonParse (CLI), IngestKitTests, HorizonCoreTests, IngestEvals
 project.yml               xcodegen spec for the app targets; Horizon.xcodeproj is generated and git-ignored
-Apps/Horizon/             SwiftUI app (iOS + macOS): AppModel (store/coordinator/sync wiring, live Reading state, cancel, PCC setting), HorizonStripView (MainTabs + the M4 strip), RootView (Coverage), CoverageView, ReviewView, ObligationEditor, CourseView, DocumentsView, ImportSources (Files / Photos / document camera), WatchedFolder (macOS)
+Apps/Horizon/             SwiftUI app (iOS + macOS): AppModel (store/coordinator/sync wiring, live Reading state, cancel, PCC setting), HorizonStripView (MainTabs + the M4 strip), NowView (M5 day plan), RootView (Coverage), CoverageView, ReviewView, ObligationEditor, CourseView, DocumentsView, ImportSources (Files / Photos / document camera), WatchedFolder (macOS)
 Apps/HorizonShare/        iOS share extension: copies the shared file into the App Group inbox; the app parses it
 Sources/HorizonCore/      storage + sync. Identifiers.swift (bundle/group/container ids), Model/Schema.swift (VersionedSchema V1),
   Store/HorizonStore      @ModelActor: ingest → upsert with field ownership, review queue, manual entry, soft delete, reconciliation
   Coverage/Coverage.swift  M3 gap detection (days silent, cadence gaps, never-ingested platforms, suspicion)
   Strip/Strip.swift        M4 strip logic: mass, pileups (collisions), span, items on a day
-  Sync/ReminderStore      the only EventKit surface (protocol + EventKit impl); Sync/Projector = fetch-then-write projector, Reconciler, SyncCoordinator
+  Sync/ReminderStore      the Reminders side of EventKit (protocol + impl); Sync/CalendarSource = the calendar side, read-only, for the day plan; Sync/Projector = fetch-then-write projector, Reconciler, SyncCoordinator
   Ingest/IngestCoordinator  inbox → parser → store → Reminders
 Sources/IngestKit/        documents in → IngestResult out. No storage, no EventKit, no UI.
   Model/Extraction.swift      @Generable schema the model fills per chunk (strings only; dates resolved later)
@@ -21,6 +21,7 @@ Sources/IngestKit/        documents in → IngestResult out. No storage, no Even
   Extract/Chunker.swift       token-budgeted chunking; IngestInstructions.swift = the prompt; Extractor.swift = the only code that talks to a LanguageModelSession
   Postprocess/DateResolver    deterministic date resolution (model ISO cross-checked against the copied wording)
   Postprocess/Merger.swift    fold chunk extractions → dedupe, confidence, status, points at stake
+  Plan/DayPlanner.swift       M5 day plan: gaps from calendar events, the model proposes, validation keeps it in the gaps, fallback by the numbers
   Eval/Scoring.swift          recall / date / weight / platform accuracy, false positives (all, and those that would ship as .ready)
   Ingestor.swift              public entry point (actor)
 Sources/HorizonParse/     `horizon-parse <file> [--pcc|--on-device] [--year] [--term-start] [--verbose]` → JSON on stdout
@@ -49,7 +50,7 @@ The simulator runs a 300M model, not the 3B one; use it to exercise the pipeline
 
 ## Rules of the codebase
 - The user never types a task (SPEC §2). No composer UI, ever.
-- Every LanguageModelSession lives in `Extractor`. Log `response.usage` on every call (it is; see `UsageRecord`).
+- Every LanguageModelSession lives in `Extractor` (ingest) or `DayPlanner` (the day plan). Log `response.usage` on every call (it is; see `UsageRecord`).
 - Dates: the model emits `dateAsWritten` (copied text) and `dueDate` (ISO). `DateResolver` re-parses the wording; the wording wins on disagreement (a model year slip is forgiven; a model date the document also names means review), except that wording naming several dates without "due" lets the model choose among them. TBD wording rejects a model date outright. A date that neither the wording nor the document mentions is dropped (text pages) or sent to review (image pages). A date printed before the item on a row with a later date is `dateAmbiguous` → review.
 - Year: term label, else `IngestOptions.defaultYear` / `--year`, else today. The data detector's own year guess is never used.
 - Date-only deadlines are stored at 23:59 local with `dueHasTime == false`.

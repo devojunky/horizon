@@ -49,6 +49,10 @@ final class AppModel {
         mutating func advance(to value: Double) { fraction = min(1, max(fraction, value)) }
         var total: Double { Double(max(chunks + images, 1)) }
     }
+    /// Today's plan (SPEC §6.3). Never stored: it lives as long as the app does.
+    var plan: DayPlan?
+    var planning = false
+    private let calendarSource: any CalendarSource = EventKitCalendarSource()
     private var drainTask: Task<Void, Never>?
     private var cancelledDocument: UUID?
     private var cancelNotice: String?   // shown until the next document is read
@@ -190,6 +194,23 @@ final class AppModel {
     func discard(_ id: UUID) async {
         do { try await store.softDelete(id: id) } catch { lastError = error.localizedDescription }
         await drainAndSync()   // its reminder goes with it
+    }
+
+    /// One plan for the rest of today: calendar events are hard stops, the coming week's obligations fill the gaps.
+    func planToday() async {
+        guard !planning else { return }
+        planning = true
+        defer { planning = false }
+        let now = Date()
+        var busy: [PlanBusy] = []
+        do {
+            if try await calendarSource.requestAccess() { busy = try await calendarSource.busy(on: now, calendar: .current) }
+        } catch { lastError = error.localizedDescription }
+        let obligations = (try? await store.planObligations(from: now, days: 21)) ?? []   // three weeks out: enough to choose from
+        let planner = DayPlanner(log: { message in Task { @MainActor in AppModel.log(message) } })
+        let route: IngestOptions.RoutePolicy = readInCloud && cloudUnavailableReason == nil ? .privateCloudCompute : .onDeviceFirst
+        let result = await planner.plan(PlanInput(date: now, now: now, busy: busy, obligations: obligations), route: route)
+        withAnimation { plan = result }
     }
 
     func deleteCourse(_ id: UUID) async {

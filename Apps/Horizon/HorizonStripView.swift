@@ -2,15 +2,16 @@ import SwiftUI
 import SwiftData
 import HorizonCore
 
-/// The app's screens (SPEC §6): Coverage and the Horizon strip; Now arrives in M5.
+/// The app's screens (SPEC §6): Coverage, the Horizon strip, and Now.
 struct MainTabs: View {
-    /// `--tab-horizon` (DEBUG) opens on the strip, for screenshots from the command line.
-    @State private var tab = Self.debugFlag("--tab-horizon") ? 1 : 0
+    /// `--tab-horizon` / `--tab-now` (DEBUG) open on a tab, for screenshots from the command line.
+    @State private var tab = Self.debugFlag("--tab-horizon") ? 1 : Self.debugFlag("--tab-now") ? 2 : 0
 
     var body: some View {
         TabView(selection: $tab) {
             Tab("Coverage", systemImage: "eye", value: 0) { RootView() }
             Tab("Horizon", systemImage: "chart.bar.xaxis", value: 1) { HorizonStripView() }
+            Tab("Now", systemImage: "sun.horizon", value: 2) { NowView() }
         }
     }
 

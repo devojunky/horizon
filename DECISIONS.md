@@ -144,3 +144,9 @@ Dated log. Newest first.
 - **Points at stake are recomputed per course after every ingest and filing** over everything on file (`PointsAtStake.perItem`, shared with the parser): the syllabus's weights and counts, the schedule's items.
 - **Change notes name both documents** ("schedule.pdf says due Sep 9 → Sep 10; earlier from calc.pdf") when a different document moves a field; a reissue of the same document reads "Reissued document: …". Hand edits are still protected by the same overrides.
 - **Not done:** weekday-column schedules (fixture 17) are still read by the model alone; resolving columns in flattened PDF text is its own piece of work.
+
+## 2026-09-05 · M5 Now
+
+- **The plan is generated on device until the cloud entitlement arrives.** SPEC §6.3 asks for the `.plan` profile on Private Cloud Compute with deep reasoning; the app has no PCC entitlement yet, so `DayPlanner` uses the on-device model and switches to PCC with `.deep` reasoning by itself when the setting is on and the entitlement is present. It is the second place a `LanguageModelSession` lives (the rule in CLAUDE.md now names both).
+- **The model proposes; the planner decides what fits.** Free gaps are computed deterministically from the calendar's timed events (all-day entries are not stops), from now to 22:00, at least 25 minutes long. The model's blocks are clipped to the gaps, kept in order without overlaps, and their titles snapped back to the obligations' own spelling. A plan that fits nothing, or a model that is unavailable, yields a plan by the numbers: 50-minute blocks on the nearest deadlines weighted by points, with a meal in the first gap that spans lunch or dinner.
+- **Nothing is saved.** The plan lives in the app model; leaving the app discards it; tomorrow starts from nothing.
