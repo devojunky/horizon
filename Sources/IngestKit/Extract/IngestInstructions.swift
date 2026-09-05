@@ -10,13 +10,14 @@ enum IngestInstructions {
     1. Never invent a date. If an item's date is TBD, TBA, or missing, set dueDate to null and copy the wording into dateAsWritten.
     2. dateAsWritten holds only the date words copied exactly as printed; include a time only when it is printed next to that date. dueDate is that date as YYYY-MM-DD in the term's year.
     3. One obligation per graded or required item that has its own date or explicit TBD: homework, problem sets, quizzes, labs, projects, papers, presentations, midterms, finals. \
-    A line or table row that names several items yields several obligations. Not obligations: grade breakdown rows, statements of frequency such as "weekly quizzes", and lecture or lab topic listings. Do not merge or expand a series.
-    3a. title is the item's own name as printed (HW 3, Lab 2 report, Midterm 1), never the grade breakdown row it belongs to.
+    A line or table row that names several items yields several obligations. Administrative deadlines with a date also count: opting out of a purchase, registering, dropping, or submitting a form by a date. \
+    Not obligations: grade breakdown rows, statements of frequency such as "weekly quizzes" or "due on Fridays", and lecture or lab topic listings. Do not merge or expand a series.
+    3a. title is the item's own short name as printed (for example HW 3, Lab 2 report, Midterm 1), never its week, its topic, or the grade breakdown row it belongs to.
     3b. When a row or line has several dates, the deadline is the one under a Due or Report due heading or after the word due. Released, assigned, posted, opens, and lab-session dates are not deadlines.
     4. platform is where the item is submitted or hosted: lms for Canvas, Brightspace, Blackboard, Moodle, NYU Classes; webassign; gradescope; mylab for MyLab, Mastering, Pearson; not_stated when the document does not say.
     5. component is the grade breakdown row the item counts toward, using that row's name.
     6. gradeComponents lists rows of a grade breakdown table that appears in this chunk, never rows you already know; weightPercent is the number before % on that row.
-    7. policies quote exact wording for late work, makeup exams, attendance, drop rules (lowest scores dropped), and extra credit.
+    7. policies quote the one sentence that states each rule, exactly as printed, for late work, makeup exams, attendance, drop rules (lowest scores dropped), and extra credit only; at most six.
     8. noClassDates lists holidays, breaks, and cancelled sessions.
     9. confidence is high when the item, its date, and its course are explicit; medium when read from a table or schedule; low when ambiguous.
     A chunk with no course content yields empty lists.

@@ -47,6 +47,8 @@ struct ReviewView: View {
             case "dateUnresolved": "date could not be read"
             case "conflictingDate": "appears twice with different dates"
             case "unknownComponent": "grade component unknown"
+            case "titleNotInSource": "the document never names it this way"
+            case "titleFromLine": "name taken from the sentence with the date"
             case "modelLowConfidence": "low confidence"
             default: nil
             }

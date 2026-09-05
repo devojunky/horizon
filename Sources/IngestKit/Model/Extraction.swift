@@ -10,7 +10,7 @@ struct ChunkExtraction {
     var gradeComponents: [GradeComponentFacts]
     @Guide(description: "Graded or required items in this chunk that have a specific date or an explicit TBD.")
     var obligations: [ObligationFacts]
-    @Guide(description: "Policies quoted word for word.")
+    @Guide(description: "Policies, one sentence each, quoted word for word.", .maximumCount(6))
     var policies: [PolicyFacts]
     @Guide(description: "Holidays, breaks, cancelled sessions.")
     var noClassDates: [NoClassFacts]
@@ -29,6 +29,7 @@ struct CourseFacts {
     @Guide(description: "Last class day, YYYY-MM-DD")
     var termEnd: String?
     var room: String?
+    @Guide(.maximumCount(7))   // a run of "meetings" is where the small model loops
     var meetings: [MeetingFacts]
 }
 

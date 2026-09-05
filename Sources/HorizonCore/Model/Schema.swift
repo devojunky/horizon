@@ -89,6 +89,8 @@ public enum HorizonSchemaV1: VersionedSchema {
         public var status: DocumentStatus = DocumentStatus.queued
         public var failure: String?
         public var route: String?
+        /// The platform a screenshot came from; nil for syllabi. Feeds "never ingested" on the Coverage screen.
+        public var platform: Platform?
         public var inputTokens: Int = 0
         public var outputTokens: Int = 0
         public var durationMs: Int = 0

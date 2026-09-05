@@ -67,6 +67,14 @@ struct NormalizerTests {
         #expect(doc.info.kind == .docx && doc.fullText.contains("Progression 1 Final Essay due Monday, October 5"))
     }
 
+    @Test func repeatedLinesCollapse() {
+        let text = "Exams\nmust be taken within one week of the original exam date\nmust be taken within one week of the original exam date\nmust be taken within one week of the original exam date\nmust be takenmust be takenmust be takenmust be taken within a week\nExam 1 Tuesday, October 6th, 2026\n1\n1"
+        let collapsed = DocumentNormalizer.collapseRepeats(text)
+        #expect(collapsed.components(separatedBy: "\n").filter { $0.hasPrefix("must be taken within one week") }.count == 1)
+        #expect(collapsed.contains("must be taken within a week") && !collapsed.contains("must be takenmust be taken"))
+        #expect(collapsed.contains("Exam 1 Tuesday, October 6th, 2026") && collapsed.components(separatedBy: "\n").filter { $0 == "1" }.count == 2)   // short lines are left alone
+    }
+
     @Test func keysAndSimilarity() {
         #expect(Normalize.key("  Midterm 1: Wednesday, Oct. 7!  ") == "midterm 1 wednesday oct 7")
         #expect(Normalize.numbers("Homework 12 (v2)") == ["12"])

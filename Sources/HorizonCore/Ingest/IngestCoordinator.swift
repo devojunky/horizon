@@ -62,6 +62,9 @@ public actor IngestCoordinator {
             } catch IngestError.cloudUnavailable(let why) {
                 try? await store.markDocument(id: doc.id, status: .awaitingCloudParse, failure: why)
                 reports.append(Report(document: doc, summary: nil, failure: "Queued for Private Cloud Compute: \(why)"))
+            } catch is CancellationError {
+                try? await store.markDocument(id: doc.id, status: .queued, failure: nil)   // background time ran out mid-document; read it again next time
+                break
             } catch {
                 try? await store.markDocument(id: doc.id, status: .failed, failure: error.localizedDescription)
                 reports.append(Report(document: doc, summary: nil, failure: error.localizedDescription))

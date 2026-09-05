@@ -1,9 +1,9 @@
 import SwiftUI
 import SwiftData
 import HorizonCore
-import UniformTypeIdentifiers
 
-/// M2 shell: intake status, the review queue, and what is on file. The three real screens arrive in M3–M5.
+/// The home screen is Coverage (SPEC §6.1). Intake status and the review queue sit above it; the strip and the day
+/// plan arrive in M4 and M5.
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @Query(sort: \Obligation.due) private var obligations: [Obligation]
@@ -13,10 +13,6 @@ struct RootView: View {
 
     private var live: [Obligation] { obligations.filter { $0.deletedAt == nil } }
     private var pending: [Obligation] { live.filter { $0.state == .pendingReview } }
-    private var upcoming: [Obligation] {
-        live.filter { $0.state != .pendingReview && $0.completedAt == nil && ($0.due ?? .distantFuture) >= Calendar.current.startOfDay(for: Date()) }
-            .sorted { ($0.due ?? .distantFuture, $0.title) < ($1.due ?? .distantFuture, $1.title) }   // TBD last
-    }
 
     var body: some View {
         NavigationStack {
@@ -25,42 +21,31 @@ struct RootView: View {
                     ReadingSection(reading: reading)
                 } else if let status = model.statusLine ?? model.lastError {
                     Section { Label(status, systemImage: model.lastError == nil ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle").foregroundStyle(model.lastError == nil ? .secondary : Design.accent) }
+                        .listRowSeparator(.hidden)
                 }
                 if !pending.isEmpty {
-                    Section {
-                        NavigationLink { ReviewView() } label: {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text("Review").deck()
-                                Spacer()
-                                Text(pending.count, format: .number).monospacedDigit().foregroundStyle(Design.accent)
-                            }
-                        }
-                    } footer: { Text("Items the parser was not sure about, and dates that moved in a reissued document.") }
-                }
-                Section("Next up") {
-                    if upcoming.isEmpty {
-                        ContentUnavailableView("Nothing on file", systemImage: "doc.text.magnifyingglass", description: Text("Share a syllabus, a screenshot of an assignment list, or drop a file into Horizon Inbox on your Mac."))
-                    }
-                    ForEach(upcoming.prefix(12)) { ObligationRow(obligation: $0) }
-                }
-                Section("Courses") {
-                    ForEach(courses) { course in
-                        NavigationLink { CourseView(course: course) } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(course.code.isEmpty ? course.title : course.code).font(.headline)
-                                Text(course.title).font(.subheadline).foregroundStyle(.secondary)
-                            }
+                    NavigationLink { ReviewView() } label: {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(pending.count == 1 ? "One item to review" : "\(pending.count) items to review").font(.system(.title3, design: .serif, weight: .semibold))
+                            Spacer()
                         }
                     }
-                    NavigationLink("Documents and usage") { DocumentsView() }
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 16, leading: 20, bottom: 4, trailing: 20))
                 }
+                CoverageList(reading: model.reading != nil)
             }
-            .navigationTitle("Horizon")
+            .listStyle(.plain)
+            .navigationTitle("Coverage")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.large)
+            #endif
             .toolbar {
                 ToolbarItem(placement: .primaryAction) { ImportMenu() }
-                ToolbarItem(placement: .primaryAction) {   // its own glass button, not an overflow "More" row
+                ToolbarItem(placement: .primaryAction) {
                     Menu {
                         Button { Task { await model.drainAndSync() } } label: { Label("Sync with Reminders", systemImage: "arrow.triangle.2.circlepath") }
+                        NavigationLink { DocumentsView() } label: { Label("Documents and usage", systemImage: "doc.text") }
                         Divider()
                         Button { addingByHand = true } label: { Label("Add by hand…", systemImage: "square.and.pencil") }
                         #if DEBUG
@@ -77,11 +62,9 @@ struct RootView: View {
             .sheet(isPresented: $addingByHand) { ObligationEditor(mode: .manual, courses: courses) }
             .sheet(item: $linked) { ObligationEditor(mode: .review($0), courses: courses) }
             .onChange(of: model.linkedObligationID) { _, id in
-                linked = id.flatMap { id in live.first { $0.id == id } }
+                guard let id else { return }   // the reset below fires this again with nil; it must not close the sheet
+                linked = live.first { $0.id == id }
                 model.linkedObligationID = nil
-            }
-            .overlay(alignment: .bottom) {
-                if model.busy { ProgressView().padding(.bottom, 24) }
             }
         }
     }

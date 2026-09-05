@@ -26,9 +26,21 @@ enum Merger {
         }
         let year = DateResolver.year(inTerm: course?.term, fallback: options.defaultYear ?? options.calendar.component(.year, from: Date()))
         var resolver = DateResolver(calendar: options.calendar, defaultYear: year)
+        // Term boundaries: the document's own "classes begin … and end …" sentence first, then a model date the document
+        // actually names (the model has put a term start a week off, which shifts every week-relative deadline); an
+        // image page keeps the model's reading.
         let termFacts = extractions.compactMap(\.course)
-        course?.termStart = options.termStart ?? termFacts.lazy.compactMap { resolver.resolveDay(iso: $0.termStart, asWritten: "") }.first
-        course?.termEnd = termFacts.lazy.compactMap { resolver.resolveDay(iso: $0.termEnd, asWritten: "") }.first
+        func termDay(_ stated: Date?, _ iso: (CourseFacts) -> String?) -> Date? {
+            if let stated { return stated }
+            for facts in termFacts {
+                guard let raw = iso(facts), let day = resolver.resolveDay(iso: raw, asWritten: "") else { continue }
+                if !source.hasText || resolver.mentions(day).contains(where: source.contains) { return day }
+                warnings.append("Ignored term date \(raw): the document never names it")
+            }
+            return nil
+        }
+        course?.termStart = options.termStart ?? termDay(source.termBoundary(.start, resolver), \.termStart)
+        course?.termEnd = termDay(source.termBoundary(.end, resolver), \.termEnd)
         resolver.termStart = course?.termStart ?? options.termStart
         resolver.termEnd = course?.termEnd
 
@@ -38,7 +50,8 @@ enum Merger {
         for facts in extractions.flatMap(\.gradeComponents) {
             let key = Normalize.key(facts.name)
             guard !key.isEmpty else { continue }
-            let weight = (source.percentage(onLineMentioning: facts.name) ?? facts.weightPercent).map { $0 / 100 }   // the row's own figure first
+            if source.hasText, !source.contains(facts.name) { warnings.append("Ignored component '\(facts.name)': not in the document"); continue }
+            let weight = (source.percentage(onLineMentioning: facts.name) ?? facts.weightPercent.flatMap { $0 > 0 ? $0 : nil }).map { $0 / 100 }   // the row's own figure first; 0% is no figure
             if let i = components.firstIndex(where: { Normalize.key($0.name) == key }) {
                 if components[i].weight == nil { components[i].weight = weight }
                 if components[i].expectedCount == nil { components[i].expectedCount = facts.count }
@@ -57,13 +70,24 @@ enum Merger {
         }
         // Rows of the grade table the model skipped, read straight from the document.
         if components.compactMap(\.weight).reduce(0, +) < 0.99 {
-            for row in source.gradeRows() {
-                if let i = components.firstIndex(where: { Normalize.similarity($0.name, row.name) >= 0.5 || Normalize.key($0.name).contains(Normalize.key(row.name)) }) {
+            for row in source.gradeRows(preferring: components.map(\.name)) {
+                if let i = components.firstIndex(where: { Source.sameComponent($0.name, row.name) }) {
                     if components[i].weight == nil { components[i].weight = row.weight / 100 }
                 } else {
                     components.append(ParsedGradeComponent(name: row.name, weight: row.weight / 100))
                     warnings.append("Component '\(row.name)' read from the grade table; the model skipped it")
                 }
+            }
+        }
+        // A grade table that totals 100% is the whole story: a component the model named that is not one of its rows
+        // (a duplicate under another name, or a heading) is dropped rather than carried weightless.
+        let tableRows = source.gradeRows(preferring: components.map(\.name))
+        if tableRows.count >= 3, (99...101).contains(tableRows.map(\.weight).reduce(0, +)),
+           components.contains(where: { c in tableRows.contains { Source.sameComponent(c.name, $0.name) } }) {
+            components.removeAll { c in
+                let inTable = tableRows.contains { Source.sameComponent(c.name, $0.name) }
+                if !inTable { warnings.append("Ignored component '\(c.name)': not a row of the grade table") }
+                return !inTable
             }
         }
         for c in components {   // the grading row's own wording is the authority on where a component is submitted
@@ -78,8 +102,9 @@ enum Merger {
             // Text chunks are checked strictly against the document text. Image pages are checked against Vision OCR
             // text, which can misread a date, so failures there downgrade to review instead of dropping.
             let strict = outcome.kind == .text && source.hasText
+            let siblingTitles = Set(outcome.extraction.obligations.map { Normalize.key($0.title) })
             for facts in outcome.extraction.obligations {
-                let title = Normalize.collapseWhitespace(facts.title)
+                var title = Self.ownName(Normalize.collapseWhitespace(facts.title))
                 guard !title.isEmpty else { continue }
                 let resolution = resolver.resolve(iso: facts.dueDate, asWritten: facts.dateAsWritten)
                 var flags = resolution.flags
@@ -108,6 +133,32 @@ enum Merger {
                         if !writtenInSource || !tbd || namesComponent { dropped += 1; continue }
                     } else if !tbd {
                         dropped += 1; continue
+                    }
+                }
+                // "Lab 1   Data and R basics   due Thu Feb 4": the item's name is its own cell, not the cell and its topic.
+                if strict, let row = source.segment(mentioning: title) {
+                    let cells = Source.cells(of: row)
+                    if cells.count >= 2, cells[0].contains(where: \.isNumber), Normalize.key(title).hasPrefix(Normalize.key(cells[0]) + " "),
+                       Normalize.key(title).contains(Normalize.key(cells[1])) {
+                        title = Normalize.collapseWhitespace(cells[0])
+                    }
+                }
+                // The title must be the document's own wording. A name the document never prints ("Midterm 1" for
+                // "Exam 1", or one carried over from another item) is replaced by the label of the line that carries
+                // the item's date; a label cut from prose, or no label at all, means review.
+                if strict, !source.contains(title) || componentKeys.contains(Normalize.key(title)) {
+                    let found = resolution.date.flatMap { source.label(on: resolver.mentions($0), title: title, otherTitles: siblingTitles.subtracting([Normalize.key(title)])) }
+                        .map { (text: Self.ownName($0.text), prose: $0.prose) }
+                    if let label = found, Normalize.key(label.text).contains(Normalize.key(title)) {
+                        // The row names the item as the model did ("… Midterm 1 Wed Oct 7"): the title stands.
+                    } else if let label = found {
+                        warnings.append("Renamed '\(title)' to '\(label.text)': the document's own wording")
+                        title = label.text
+                        if label.prose { flags.append(.titleFromLine); confidence = min(confidence, options.reviewThreshold - 0.05) }
+                    } else if componentKeys.contains(Normalize.key(title)), source.contains(title) {
+                        // A grade-row name the document also uses as the item's name ("Final Exam"): nothing to rename.
+                    } else {
+                        flags.append(.titleNotInSource); confidence = min(confidence, options.reviewThreshold - 0.05)
                     }
                 }
                 let componentName = matchComponent(facts.component, in: components) ?? inferComponent(fromTitle: title, in: components)
@@ -150,7 +201,7 @@ enum Merger {
                 }
                 if flags.contains(.dateOutsideTerm) { confidence -= 0.15 }
                 // No wording to check, or an image Vision could not read: the model is on its own, so review.
-                if facts.dateAsWritten.trimmingCharacters(in: .whitespaces).isEmpty || (outcome.kind == .image && !source.hasText) {
+                if Self.isNoWording(facts.dateAsWritten) || (outcome.kind == .image && !source.hasText) {
                     if !flags.contains(.dateNotInSource) { flags.append(.dateNotInSource) }
                     confidence = min(confidence, options.reviewThreshold - 0.05)
                 }
@@ -224,7 +275,8 @@ enum Merger {
         }
 
         obligations.sort { ($0.due ?? .distantFuture, $0.title) < ($1.due ?? .distantFuture, $1.title) }
-        return IngestResult(document: document.info, route: route, course: course, gradeComponents: components,
+        let sourcePlatform = outcomes.contains { $0.kind == .image } && !outcomes.contains { $0.kind == .text } ? source.uniquePlatform : nil
+        return IngestResult(document: document.info, sourcePlatform: sourcePlatform, route: route, course: course, gradeComponents: components,
                             obligations: obligations, policies: policies, noClassDates: noClass,
                             usage: UsageReport(calls: outcomes.map(\.usage)), warnings: warnings)
     }
@@ -318,7 +370,7 @@ enum Merger {
 
         /// A month-and-day or numeric M/D somewhere in the text.
         static func hasDate(_ text: String) -> Bool {
-            text.range(of: #"(?i)\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b|\b\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b|\b\d{1,2}/\d{1,2}\b"#, options: .regularExpression) != nil
+            text.range(of: #"(?i)\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(st|nd|rd|th)?\b|\b\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b|\b\d{1,2}/\d{1,2}\b"#, options: .regularExpression) != nil
         }
 
         /// A line that names the item's head word together with one of the given date forms — for titles the model
@@ -329,6 +381,90 @@ enum Merger {
                 let k = " " + Normalize.key(line) + " "
                 return k.contains(" \(head) ") && dateForms.contains { k.contains(" \($0) ") }
             }
+        }
+
+        /// The label of the line that carries the item's date: the words before that date, when they read as a name
+        /// ("Exam 1" from "Exam 1 Tuesday, October 6th, 2026"). The line must share a word with the model's title, or be
+        /// the only line naming the date; a label that is another item's title is refused. `prose` marks a label cut
+        /// from a sentence ("opt out of the program" from "… opt out of the program by September 17th").
+        func label(on dateForms: [String], title: String, otherTitles: Set<String>) -> (text: String, prose: Bool)? {
+            let patterns = dateForms.compactMap(Source.regex(forDateForm:))
+            let titleWords = Set(Normalize.tokens(title).filter { $0.count >= 3 && !$0.allSatisfy(\.isNumber) }.map(Merger.stem))
+            let carrying = lines.filter { line in patterns.contains { line.range(of: $0, options: .regularExpression) != nil } }
+            let related = carrying.filter { line in !Set(Normalize.tokens(line).map(Merger.stem)).isDisjoint(with: titleWords) }
+            let candidates = related.isEmpty ? (carrying.count == 1 ? carrying : []) : related
+            for raw in candidates {
+                guard let match = patterns.compactMap({ raw.range(of: $0, options: .regularExpression) }).min(by: { $0.lowerBound < $1.lowerBound }) else { continue }
+                var head = String(raw[..<match.lowerBound])
+                // "Week 3 (Sep 14, Sep 16): Quiz 1 due Sep 18" → the clause after a dated preamble.
+                if let colon = head.range(of: ":", options: .backwards), Source.hasDate(String(head[..<colon.lowerBound])) { head = String(head[colon.upperBound...]) }
+                // A weekday printed before the date belongs to the date.
+                head = head.replacingOccurrences(of: #"(?i)[\s,\-–—(]*(?:(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)[a-z]*\.?)?[\s,\-–—(:]*$"#, with: "", options: .regularExpression)
+                var prose = false
+                if let m = head.range(of: #"(?i)[\s:,\-–—(]*\b(by|on|is|at|before|until|of|due|through|dated?)\b[\s:,\-–—(]*$"#, options: .regularExpression) {
+                    prose = !head[m].localizedCaseInsensitiveContains("due")
+                    head = String(head[..<m.lowerBound])
+                }
+                // "You must opt out of the program" → "opt out of the program".
+                head = head.replacingOccurrences(of: #"(?i)^\W*(?:(?:you|students|all students|everyone)\s+)?(?:must|should|need to|have to|are required to|are expected to|please)\s+"#, with: "", options: .regularExpression)
+                head = head.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters))
+                let words = head.split(separator: " ")
+                guard (1...6).contains(words.count), !head.contains("%"), head.first?.isLetter == true, !otherTitles.contains(Normalize.key(head)) else { continue }
+                if words.count > 3, head.first?.isLowercase == true { prose = true }
+                return (head.prefix(1).uppercased() + head.dropFirst(), prose)
+            }
+            return nil
+        }
+        /// A date form from `DateResolver.mentions` ("october 6", "10 6") as a pattern over printed text: "October 6th", "10/6".
+        static func regex(forDateForm form: String) -> String? {
+            let parts = form.split(separator: " ").map(String.init)
+            guard !parts.isEmpty else { return nil }
+            let pieces = parts.map { part -> String in
+                let escaped = NSRegularExpression.escapedPattern(for: part)
+                return part.allSatisfy(\.isNumber) ? escaped + #"(?:st|nd|rd|th)?"# : escaped + #"\.?"#
+            }
+            return #"(?i)\b"# + pieces.joined(separator: #"[\s./,\-]+"#) + #"\b"#
+        }
+        /// Two names for the same grade component: similar wording, or one contained in the other.
+        static func sameComponent(_ a: String, _ b: String) -> Bool {
+            Normalize.similarity(a, b) >= 0.5 || Normalize.key(a).contains(Normalize.key(b)) || Normalize.key(b).contains(Normalize.key(a))
+        }
+        /// A row wrapped inside a parenthesis ("Homework (WebAssign, lowest two" / "dropped) …… 15%") reads as one line.
+        static func joiningWrappedRows(_ lines: [String]) -> [String] {
+            var out: [String] = []
+            var i = 0
+            while i < lines.count {
+                var line = lines[i], joins = 0
+                while i + 1 < lines.count, joins < 2, !line.contains("%"), line.filter({ $0 == "(" }).count > line.filter({ $0 == ")" }).count {
+                    line += " " + lines[i + 1].trimmingCharacters(in: .whitespaces); i += 1; joins += 1
+                }
+                out.append(line); i += 1
+            }
+            return out
+        }
+
+        /// Where a date begins on a line: an optional weekday, then "Sep 9", "9 Sep", "9/9".
+        static let dateStart = #"(?i)\b(?:(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)[a-z]*\.?,?\s+)?(?:(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?\b|\d{1,2}/\d{1,2}\b|\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b)"#
+
+        enum TermBoundary { case start, end }
+        /// The date the document itself gives for the start or end of classes: the first date after "begin(s)", "start(s)"
+        /// or "first day of classes" (or "end(s)", "last day of classes") in a sentence about classes, the semester or the term.
+        func termBoundary(_ which: TermBoundary, _ resolver: DateResolver) -> Date? {
+            let keyword = switch which {
+            case .start: #"(?i)\b(?:begins?|starts?|commences?|first\s+(?:day|week)\s+of\s+(?:classes|class|the\s+semester|the\s+term|instruction))\b"#
+            case .end: #"(?i)\b(?:ends?|concludes?|last\s+(?:day|week)\s+of\s+(?:classes|class|the\s+semester|the\s+term|instruction))\b"#
+            }
+            for line in lines {
+                for sentence in line.split(separator: Source.segmentSeparator).map(String.init) {
+                    guard sentence.range(of: #"(?i)\b(?:classes|class|semester|term|instruction|lectures?|course)\b"#, options: .regularExpression) != nil,
+                          let m = sentence.range(of: keyword, options: .regularExpression),
+                          let span = resolver.explicitSpans(in: String(sentence[m.upperBound...])).first else { continue }
+                    var day = span.start
+                    day.hour = 0; day.minute = 0; day.second = 0
+                    return resolver.calendar.date(from: day)
+                }
+            }
+            return nil
         }
 
         /// True when the document has a "Released", "Opens", "Posted", or "Available" column heading.
@@ -351,13 +487,16 @@ enum Merger {
         private static var rowPattern: Regex<(Substring, Substring, Substring)> { try! Regex(#"^\s*([^%\n]{2,70}?)[\s.:_\-–—]*(\d{1,3}(?:\.\d+)?)\s*%"#) }
         /// Adjacent lines shaped like "Name …… 15%" whose weights add up to roughly 100%: the grade table.
         /// A letter-grade scale elsewhere in the document is a different run and does not spoil it.
-        func gradeRows() -> [GradeRow] {
+        func gradeRows(preferring names: [String] = []) -> [GradeRow] {
             var runs: [[GradeRow]] = [], current: [GradeRow] = []
-            for line in lines {
+            for line in Source.joiningWrappedRows(lines) {
                 if let m = line.firstMatch(of: Source.rowPattern), let weight = Double(m.output.2), weight > 0, weight <= 100 {
                     var name = String(m.output.1).replacingOccurrences(of: #"\([^)]*\)"#, with: "", options: .regularExpression)
+                        .replacingOccurrences(of: #"[()\[\]]"#, with: "")   // a stray bracket from a wrapped row
                     name = Normalize.collapseWhitespace(name.trimmingCharacters(in: CharacterSet(charactersIn: " .:-–—_\t")))
                     let letterScale = name.range(of: #"\b[A-F][+\-−]?\s*\d{2,3}$"#, options: .regularExpression) != nil   // "A 93–100%" is a grading scale, not a row
+                    let total = name.range(of: #"(?i)^\s*(total|sum)\b"#, options: .regularExpression) != nil               // "Total 100%" closes the table
+                    if total { if !current.isEmpty { runs.append(current); current = [] }; continue }
                     if name.contains(where: \.isLetter), name.split(separator: " ").count <= 6, !Source.isPenaltyLine(name), !letterScale {
                         current.append(GradeRow(name: name, weight: weight)); continue
                     }
@@ -366,7 +505,10 @@ enum Merger {
                 if line.contains("%"), !current.isEmpty { runs.append(current); current = [] }
             }
             if !current.isEmpty { runs.append(current) }
-            return runs.filter { $0.count >= 2 && (90...110).contains($0.reduce(0) { $0 + $1.weight }) }.max { $0.count < $1.count } ?? []
+            let tables = runs.filter { $0.count >= 2 && (90...110).contains($0.reduce(0) { $0 + $1.weight }) }
+            // Several tables that total 100% (a grade breakdown and a rubric): the one naming the model's components, else the first.
+            func matches(_ table: [GradeRow]) -> Int { names.filter { name in table.contains { Source.sameComponent($0.name, name) } }.count }
+            return tables.enumerated().max { a, b in (matches(a.element), -a.offset) < (matches(b.element), -b.offset) }?.element ?? []
         }
 
         /// The source's own wording for a model-quoted policy, sentence by sentence; `verbatim == false` when a sentence has no close match.
@@ -386,6 +528,37 @@ enum Merger {
             return (text.last.map { ".!?".contains($0) } == true ? text : text + ".", allMatched)
         }
     }
+
+    /// The item's own name out of a schedule row the model copied whole: "Week 3: Trig substitution. HW 3" → "HW 3",
+    /// "8 Oct 19-23 Rotation MP HW 6" → "MP HW 6", "Lab 1: Measurement and density" → "Lab 1". A name of up to three
+    /// words, or one without a component word next to its number, is left alone.
+    static func ownName(_ title: String) -> String {
+        var name = title
+        // A week preamble, then the last sentence of what follows.
+        if let m = name.range(of: #"(?i)^\s*week\s*\d+\b[^.:]*[.:]\s*"#, options: .regularExpression) {
+            let rest = String(name[m.upperBound...])
+            let sentences = rest.split(separator: ". ").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            if let last = sentences.last, last.split(separator: " ").count <= 4 { name = String(last) } else { name = rest }
+        }
+        // A schedule row's week number and date range.
+        name = name.replacingOccurrences(of: #"(?i)^\s*\d{1,2}\s+[a-z]{3,9}\.?\s+\d{1,2}(?:\s*[-–]\s*(?:[a-z]{3,9}\.?\s+)?\d{1,2})?\s+"#, with: "", options: .regularExpression)
+        name = name.trimmingCharacters(in: CharacterSet.whitespaces.union(.punctuationCharacters))
+        let words = name.split(separator: " ").map(String.init)
+        guard words.count > 3, let numberAt = words.lastIndex(where: { $0.trimmingCharacters(in: .punctuationCharacters).allSatisfy(\.isNumber) && !$0.isEmpty }) else { return name }
+        func componentWord(_ w: String) -> Bool {
+            let key = stem(Normalize.key(w))
+            return synonyms[key] != nil || synonyms.values.contains { $0.contains(key) } || ["report", "set", "sheet"].contains(key)
+                || (w.count <= 3 && w == w.uppercased() && w.allSatisfy(\.isLetter))   // "MP", "PS"
+        }
+        var start = numberAt, end = numberAt
+        while start > 0, componentWord(words[start - 1]) { start -= 1 }
+        while end + 1 < words.count, componentWord(words[end + 1]) { end += 1 }
+        guard start < numberAt else { return name }   // no component word next to the number: not a name we can shorten safely
+        return words[start...end].joined(separator: " ").trimmingCharacters(in: .punctuationCharacters)
+    }
+
+    /// "", "null", "none", "n/a": the model had no wording to copy, whatever date it then chose.
+    static func isNoWording(_ s: String) -> Bool { ["", "null", "none", "nil", "n a", "na", "tbd null"].contains(Normalize.key(s)) }
 
     static func isDuplicate(_ a: ParsedObligation, _ b: ParsedObligation, calendar: Calendar) -> Bool {
         guard Normalize.key(a.title) == Normalize.key(b.title) else { return false }

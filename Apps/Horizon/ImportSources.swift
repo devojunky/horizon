@@ -14,6 +14,7 @@ struct ImportMenu: View {
     @State private var choosingPhotos = false
     @State private var photos: [PhotosPickerItem] = []
     @State private var scanning = false
+    @State private var scanFailed = false
 
     static let readable: [UTType] = [.pdf, .image, .plainText, UTType("org.openxmlformats.wordprocessingml.document")].compactMap { $0 }
 
@@ -23,7 +24,7 @@ struct ImportMenu: View {
             Button { choosingPhotos = true } label: { Label("Photo Library…", systemImage: "photo.on.rectangle") }
             #if os(iOS)
             if VNDocumentCameraViewController.isSupported {
-                Button { scanning = true } label: { Label("Scan with Camera", systemImage: "doc.viewfinder") }
+                Button { scanFailed = false; scanning = true } label: { Label("Scan with Camera", systemImage: "doc.viewfinder") }
             }
             #endif
         } label: {
@@ -37,24 +38,29 @@ struct ImportMenu: View {
             guard !items.isEmpty else { return }
             Task {
                 var urls: [URL] = []
+                var unreadable = 0
                 for item in items {
-                    if let data = try? await item.loadTransferable(type: Data.self) {
-                        let stamp = Date().formatted(.dateTime.month(.abbreviated).day().hour().minute()).replacingOccurrences(of: ":", with: ".")
-                        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Photo \(stamp) \(urls.count + 1).\(Self.imageExtension(data))")
-                        try? data.write(to: url)
-                        urls.append(url)
-                    }
+                    guard let data = try? await item.loadTransferable(type: Data.self) else { unreadable += 1; continue }
+                    let stamp = Date().formatted(.dateTime.month(.abbreviated).day().hour().minute()).replacingOccurrences(of: ":", with: ".")
+                    let url = FileManager.default.temporaryDirectory.appendingPathComponent("Photo \(stamp) \(urls.count + 1).\(Self.imageExtension(data))")
+                    do { try data.write(to: url); urls.append(url) } catch { unreadable += 1 }
                 }
                 photos = []
                 await model.importFiles(urls)
+                for url in urls { try? FileManager.default.removeItem(at: url) }   // the app keeps its own copy
+                if unreadable > 0 { model.lastError = unreadable == 1 ? "One photo could not be read" : "\(unreadable) photos could not be read" }
             }
         }
         #if os(iOS)
         .fullScreenCover(isPresented: $scanning) {
             DocumentCamera { url in
                 scanning = false
-                if let url { Task { await model.importFiles([url]) } }
-            }
+                if let url {
+                    Task { await model.importFiles([url]); try? FileManager.default.removeItem(at: url) }
+                } else if scanFailed {
+                    model.lastError = "The scan could not be saved"
+                }
+            } failed: { scanFailed = true }
             .ignoresSafeArea()
         }
         #endif
@@ -70,6 +76,7 @@ struct ImportMenu: View {
 /// treats like any scanned document (Vision OCR text for the guards, the image itself for the model).
 struct DocumentCamera: UIViewControllerRepresentable {
     let completion: (URL?) -> Void
+    var failed: () -> Void = {}
 
     func makeUIViewController(context: Context) -> VNDocumentCameraViewController {
         let controller = VNDocumentCameraViewController()
@@ -78,18 +85,28 @@ struct DocumentCamera: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ controller: VNDocumentCameraViewController, context: Context) {}
-    func makeCoordinator() -> Coordinator { Coordinator(completion: completion) }
+    func makeCoordinator() -> Coordinator { Coordinator(completion: completion, failed: failed) }
 
-    final class Coordinator: NSObject, VNDocumentCameraViewControllerDelegate {
+    @MainActor final class Coordinator: NSObject, @MainActor VNDocumentCameraViewControllerDelegate {   // VisionKit calls its delegate on the main thread
         let completion: (URL?) -> Void
-        init(completion: @escaping (URL?) -> Void) { self.completion = completion }
+        let failed: () -> Void
+        init(completion: @escaping (URL?) -> Void, failed: @escaping () -> Void) { self.completion = completion; self.failed = failed }
 
         func documentCameraViewController(_ controller: VNDocumentCameraViewController, didFinishWith scan: VNDocumentCameraScan) {
+            // Drawing full-resolution pages into a PDF takes seconds for a multi-page scan; keep it off the main thread.
+            let pages = (0..<scan.pageCount).map { scan.imageOfPage(at: $0) }
+            Task.detached(priority: .userInitiated) { [weak self] in
+                let url = Self.pdf(pages: pages)
+                await MainActor.run { self?.completion(url) }
+            }
+        }
+
+        nonisolated static func pdf(pages: [UIImage]) -> URL? {
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("scan-\(UUID().uuidString).pdf")
             var box = CGRect(x: 0, y: 0, width: 612, height: 792)
-            guard let consumer = CGDataConsumer(url: url as CFURL), let pdf = CGContext(consumer: consumer, mediaBox: &box, nil) else { completion(nil); return }
-            for page in 0..<scan.pageCount {
-                guard let image = scan.imageOfPage(at: page).cgImage else { continue }
+            guard let consumer = CGDataConsumer(url: url as CFURL), let pdf = CGContext(consumer: consumer, mediaBox: &box, nil) else { return nil }
+            for page in pages {
+                guard let image = page.cgImage else { continue }
                 let scale = min(box.width / CGFloat(image.width), box.height / CGFloat(image.height))
                 let size = CGSize(width: CGFloat(image.width) * scale, height: CGFloat(image.height) * scale)
                 pdf.beginPDFPage(nil)
@@ -97,11 +114,11 @@ struct DocumentCamera: UIViewControllerRepresentable {
                 pdf.endPDFPage()
             }
             pdf.closePDF()
-            completion(url)
+            return url
         }
 
         func documentCameraViewControllerDidCancel(_ controller: VNDocumentCameraViewController) { completion(nil) }
-        func documentCameraViewController(_ controller: VNDocumentCameraViewController, didFailWithError error: any Error) { completion(nil) }
+        func documentCameraViewController(_ controller: VNDocumentCameraViewController, didFailWithError error: any Error) { failed(); completion(nil) }
     }
 }
 #endif

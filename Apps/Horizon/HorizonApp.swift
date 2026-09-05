@@ -33,7 +33,15 @@ struct HorizonApp: App {
                 .modelContainer(model.container)
                 .tint(Design.accent)
                 .onOpenURL { url in Task { await model.open(url) } }
-                .task { await model.drainAndSync() }
+                .task {
+                    #if DEBUG
+                    // `xcrun simctl launch booted com.daniel.horizon --ingest-sample` drives the sample read without a tap.
+                    if CommandLine.arguments.contains("--ingest-sample"), let sample = Bundle.main.url(forResource: "sample-syllabus", withExtension: "pdf") {
+                        await model.importFiles([sample]); return
+                    }
+                    #endif
+                    await model.drainAndSync()
+                }
                 .onReceive(NotificationCenter.default.publisher(for: .EKEventStoreChanged)) { _ in Task { await model.drainAndSync() } }
                 #if os(macOS)
                 .task { await WatchedFolder.start(model: model) }

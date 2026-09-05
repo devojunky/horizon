@@ -48,7 +48,7 @@ enum DocumentNormalizer {
             var pages: [NormalizedDocument.Page] = []
             for i in 0..<pdf.pageCount {
                 guard let page = pdf.page(at: i) else { continue }
-                let text = page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let text = collapseRepeats(page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
                 if text.count >= minimumTextCharacters {
                     pages.append(.text(text))
                 } else if let image = rasterize(page) {
@@ -97,6 +97,37 @@ enum DocumentNormalizer {
     static func normalize(image: CGImage, name: String) -> NormalizedDocument {
         let bytes = Data("\(name)-\(image.width)x\(image.height)".utf8)
         return NormalizedDocument(info: info(name, bytes, .image, 1), pages: [imagePage(image, orientation: nil)])
+    }
+
+    /// Some text layers repeat a line many times (overlaid glyph runs). Keep each line's first occurrence, and cut a
+    /// phrase that repeats inside one line ("must be takenmust be taken…") down to one copy.
+    static func collapseRepeats(_ text: String) -> String {
+        var previous = ""
+        return text.components(separatedBy: "\n").compactMap { raw -> String? in
+            let line = collapseRepeatedPhrase(raw)
+            let key = Normalize.key(line)
+            defer { previous = key }
+            return key.count > 12 && key == previous ? nil : line   // only a line repeating the one before it; a row that recurs later is content
+        }.joined(separator: "\n")
+    }
+
+    /// "must be takenmust be takenmust be taken within…" → "must be taken within…": a phrase of 8–60 characters
+    /// repeated three or more times back to back keeps one copy.
+    static func collapseRepeatedPhrase(_ line: String) -> String {
+        let chars = Array(line)
+        guard chars.count >= 24 else { return line }
+        for start in 0..<min(chars.count - 24, 40) {
+            for length in 8...min(60, (chars.count - start) / 3) {
+                let phrase = chars[start..<(start + length)]
+                guard phrase.filter(\.isLetter).count >= 3 else { continue }   // words, not a run of "10%" cells
+                var repeats = 1
+                while start + (repeats + 1) * length <= chars.count, chars[(start + repeats * length)..<(start + (repeats + 1) * length)].elementsEqual(phrase) { repeats += 1 }
+                if repeats >= 3 {
+                    return String(chars[..<start]) + String(phrase) + String(chars[(start + repeats * length)...])
+                }
+            }
+        }
+        return line
     }
 
     private static func imagePage(_ image: CGImage, orientation: CGImagePropertyOrientation?) -> NormalizedDocument.Page {

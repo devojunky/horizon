@@ -63,17 +63,21 @@ public actor Ingestor {
         let images = document.imagePages
         log("\(document.info.name): \(document.pages.count) page(s) → \(textChunks.count) text chunk(s), \(images.count) image(s)")
         options.progress(.started(document: document.info.name, textChunks: textChunks.count, images: images.count))
+        var completed = false
+        defer { if !completed { options.progress(.finished(obligations: 0)) } }   // a failed or cancelled read must end in the UI too
 
         var context = RollingContext()
         var outcomes: [ExtractionOutcome] = []
         for chunk in textChunks {
+            try Task.checkCancellation()
             let results = try await extractor.extract(chunk, context: context, document: document.info.name, chunkCount: textChunks.count)
             for r in results { context.absorb(r.extraction) }
             outcomes += results
         }
         for (i, image) in images.enumerated() {
+            try Task.checkCancellation()
             if let r = try await extractor.extract(image: image.image, orientation: image.orientation, page: image.page, imageIndex: i, imageCount: images.count,
-                                                   context: context, document: document.info.name) {
+                                                   position: textChunks.count + i, context: context, document: document.info.name) {
                 context.absorb(r.extraction)
                 outcomes.append(r)
             }
@@ -81,6 +85,7 @@ public actor Ingestor {
         warnings += await extractor.warnings
         guard !outcomes.isEmpty else { throw IngestError.extractionFailed(warnings.joined(separator: "; ")) }
         let result = Merger.merge(outcomes: outcomes, document: document, route: extractor.route, options: options, warnings: warnings)
+        completed = true
         options.progress(.finished(obligations: result.obligations.count))
         return result
     }

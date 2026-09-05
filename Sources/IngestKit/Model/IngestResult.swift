@@ -4,6 +4,8 @@ import Foundation
 
 public struct IngestResult: Codable, Sendable {
     public var document: DocumentInfo
+    /// The platform a screenshot came from (the one platform its page names), nil for syllabi and other documents.
+    public var sourcePlatform: Platform?
     public var route: ModelRoute
     public var course: ParsedCourse?
     public var gradeComponents: [ParsedGradeComponent]
@@ -13,10 +15,10 @@ public struct IngestResult: Codable, Sendable {
     public var usage: UsageReport
     public var warnings: [String]
 
-    public init(document: DocumentInfo, route: ModelRoute = .onDevice, course: ParsedCourse? = nil, gradeComponents: [ParsedGradeComponent] = [],
+    public init(document: DocumentInfo, sourcePlatform: Platform? = nil, route: ModelRoute = .onDevice, course: ParsedCourse? = nil, gradeComponents: [ParsedGradeComponent] = [],
                 obligations: [ParsedObligation] = [], policies: [ParsedPolicy] = [], noClassDates: [ParsedNoClass] = [],
                 usage: UsageReport = UsageReport(calls: []), warnings: [String] = []) {
-        self.document = document; self.route = route; self.course = course; self.gradeComponents = gradeComponents
+        self.document = document; self.sourcePlatform = sourcePlatform; self.route = route; self.course = course; self.gradeComponents = gradeComponents
         self.obligations = obligations; self.policies = policies; self.noClassDates = noClassDates; self.usage = usage; self.warnings = warnings
     }
 }
@@ -123,6 +125,8 @@ public enum ParseFlag: String, Codable, Sendable {
     case dateAmbiguous        // the item's row lists several dates and the chosen one is the first, e.g. a session or release date
     case dateDisagreement     // model's ISO date and the deterministic re-parse of dateAsWritten differ
     case dateUnresolved       // a date was written but could not be resolved
+    case titleNotInSource     // the document never prints this name and no line carrying the date labels it
+    case titleFromLine        // the name was cut from the sentence that carries the date; check it reads well
     case dateOutsideTerm
     case unknownComponent     // component name matches no grade breakdown row
     case modelLowConfidence

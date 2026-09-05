@@ -113,6 +113,7 @@ final class AppModel {
             if remindersAuthorized == nil { await requestReminders() }
             statusLine = "Reading documents…"
             let reports = await coordinator.drain()
+            reading = nil   // however the read ended, the live section must not outlive it
             if !reports.isEmpty { self.reports = reports + self.reports.prefix(20) }
             statusLine = "Syncing with Reminders…"
             do {

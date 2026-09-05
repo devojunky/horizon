@@ -23,6 +23,7 @@ public actor HorizonStore {
         document.ingestedAt = Date()
         document.pageCount = result.document.pageCount
         document.route = result.route.rawValue
+        document.platform = result.sourcePlatform
         document.inputTokens = result.usage.inputTokens
         document.outputTokens = result.usage.outputTokens
         document.durationMs = result.usage.durationMs
@@ -332,9 +333,15 @@ public actor HorizonStore {
     // MARK: Courses
 
     public func courses() throws -> [CourseSnapshot] {
-        try modelContext.fetch(FetchDescriptor<Course>(sortBy: [SortDescriptor(\.code)])).map {
-            CourseSnapshot(id: $0.id, code: $0.code, title: $0.title, term: $0.term, gradeComponents: $0.gradeComponents, lastIngested: $0.lastIngested)
-        }
+        try modelContext.fetch(FetchDescriptor<Course>(sortBy: [SortDescriptor(\.code)])).map(CourseSnapshot.init)
+    }
+
+    /// Where the app is probably blind, per course, most suspicious first (SPEC §6.1).
+    public func coverage(now: Date = Date(), calendar: Calendar = .current) throws -> [CourseCoverage] {
+        let obligations = try fetchObligations().filter { $0.deletedAt == nil }.map(ObligationSnapshot.init)
+        let documents = try fetchDocuments().map(DocumentSnapshot.init)
+        return try courses().map { Coverage.assess(course: $0, obligations: obligations, documents: documents, now: now, calendar: calendar) }
+            .sorted { $0.suspicion > $1.suspicion }
     }
 
     private func fetchCourse(id: UUID) throws -> Course? {
@@ -351,17 +358,8 @@ public actor HorizonStore {
 
     // MARK: Snapshots
 
-    func snapshot(_ o: Obligation) -> ObligationSnapshot {
-        ObligationSnapshot(id: o.id, title: o.title, due: o.due, dueHasTime: o.dueHasTime, platform: o.platform, componentName: o.componentName,
-                           pointsAtStake: o.pointsAtStake, confidence: o.confidence, state: o.state, origin: o.origin, flags: o.flags, notes: o.notes,
-                           userOverrides: o.userOverrides, ekExternalID: o.ekExternalID, projectedTitle: o.projectedTitle, projectedDue: o.projectedDue,
-                           projectedNotes: o.projectedNotes, completedAt: o.completedAt, deletedAt: o.deletedAt, changeNote: o.changeNote, createdOn: o.createdOn, courseID: o.course?.id,
-                           courseCode: o.course?.code, sourceDocumentID: o.sourceDocument?.id, sourcePage: o.sourcePage)
-    }
-
-    func snapshot(_ d: SourceDocument) -> DocumentSnapshot {
-        DocumentSnapshot(id: d.id, filename: d.filename, sha256: d.sha256, kind: d.kind, status: d.status, queuedAt: d.queuedAt, ingestedAt: d.ingestedAt, deviceName: d.deviceName, failure: d.failure)
-    }
+    func snapshot(_ o: Obligation) -> ObligationSnapshot { ObligationSnapshot(o) }
+    func snapshot(_ d: SourceDocument) -> DocumentSnapshot { DocumentSnapshot(d) }
 }
 
 public enum StoreError: Error { case missingDocument }
