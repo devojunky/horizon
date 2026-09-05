@@ -40,6 +40,18 @@ public actor IngestCoordinator {
                                                kind: stored.url.pathExtension.lowercased(), deviceName: deviceName, courseID: courseID)
     }
 
+    /// A failure in the user's terms: no stored file names, no framework names.
+    static func explain(_ error: any Error, kind: String) -> String {
+        switch error {
+        case IngestError.unreadable: "The file could not be opened as a \(kind.uppercased()) document."
+        case IngestError.emptyDocument: "The document has no readable text or images."
+        case IngestError.unsupportedFile(let ext): "Horizon cannot read .\(ext) files."
+        case IngestError.extractionFailed: "The model found nothing in it to read."
+        case IngestError.modelUnavailable(let why): "The on-device model is unavailable: \(why)"
+        default: error.localizedDescription
+        }
+    }
+
     /// Where the next drain reads documents: on device, or in Private Cloud Compute (a user setting).
     public func setRoute(_ route: IngestOptions.RoutePolicy) { options.route = route }
 
@@ -70,8 +82,9 @@ public actor IngestCoordinator {
                 try? await store.markDocument(id: doc.id, status: .queued, failure: nil)   // background time ran out mid-document; read it again next time
                 break
             } catch {
-                try? await store.markDocument(id: doc.id, status: .failed, failure: error.localizedDescription)
-                reports.append(Report(document: doc, summary: nil, failure: error.localizedDescription))
+                let failure = Self.explain(error, kind: doc.kind)
+                try? await store.markDocument(id: doc.id, status: .failed, failure: failure)
+                reports.append(Report(document: doc, summary: nil, failure: failure))
             }
         }
         if let sync, !reports.isEmpty { _ = try? await sync.sync() }

@@ -107,7 +107,10 @@ struct CourseEditor: View {
                 } header: {
                     Text("Grade")
                 } footer: {
-                    Text("Weights set the points at stake on each item and the weight of its mark on the strip. Count is how many of the component there are; Drops is how many lowest scores are dropped.")
+                    let total = components.compactMap(\.weight).reduce(0, +)
+                    Text(total > 100.5 ? "The weights add up to \(total.formatted(.number.precision(.fractionLength(0...1))))%, more than a whole grade. "
+                         : "")
+                    + Text("Weights set the points at stake on each item and the colour of its mark on the strip. Count is how many of the component there are; Drops is how many lowest scores are dropped.")
                 }
                 Section {
                     ForEach($breaks) { $span in
@@ -133,6 +136,7 @@ struct CourseEditor: View {
                     }
                 }
             }
+            .paper()
             .navigationTitle(course == nil ? "New Course" : "Edit Course")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)

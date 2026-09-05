@@ -20,13 +20,13 @@ struct CourseView: View {
                 Section { Text(detail.joined(separator: " · ")).foregroundStyle(.secondary) }
             }
             if !course.gradeComponents.isEmpty {
-                Section("Grade") {
+                Section {
                     ForEach(course.gradeComponents, id: \.name) { component in
-                        HStack { Text(component.name); Spacer(); Design.points(component.weight.map { $0 * 100 }).monospacedDigit() }
+                        HStack { Text(component.name); Spacer(); Design.points(component.weight.map { $0 * 100 }).font(.body.weight(.semibold)) }
                     }
-                }
+                } header: { Kicker("Grade") }
             }
-            Section("Obligations") {
+            Section {
                 ForEach(obligations) { item in
                     Button { editing = item } label: { ObligationRow(obligation: item, showCourse: false) }
                         .buttonStyle(.plain)
@@ -35,18 +35,23 @@ struct CourseView: View {
                         }
                         .accessibilityHint("Opens the editor")
                 }
-            }
+                if obligations.isEmpty { Text("No items yet. Add a document, or an item by hand from the Coverage menu.").foregroundStyle(.secondary) }
+            } header: { Kicker("Items") }
             if let policies = course.policies, !policies.isEmpty {
-                Section("Policies") {
+                Section {
                     ForEach(policies) { policy in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(label(policy.kind)).font(.caption).foregroundStyle(.secondary)
                             Text(policy.text)
                         }
                     }
-                }
+                } header: { Kicker("Policies") }
             }
         }
+        .listStyle(.plain)
+        .listRowSeparatorTint(Design.rule)
+        .listRowBackground(Color.clear)
+        .paper()
         .navigationTitle(course.displayName)
         .toolbar {
             ToolbarItem(placement: .primaryAction) { ImportMenu(courseID: course.id) }

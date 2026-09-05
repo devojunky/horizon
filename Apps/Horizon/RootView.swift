@@ -1,6 +1,9 @@
 import SwiftUI
 import SwiftData
 import HorizonCore
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// The home screen is Coverage (SPEC §6.1). Intake status and the review queue sit above it; the strip and the day
 /// plan arrive in M4 and M5.
@@ -9,13 +12,21 @@ struct RootView: View {
     @Query(sort: \Obligation.due) private var obligations: [Obligation]
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
     @Query(filter: #Predicate<SourceDocument> { $0.course == nil }) private var looseDocuments: [SourceDocument]
+    @Query private var documents: [SourceDocument]
     @State private var addingByHand = false
     @State private var addingCourse = false
     @State private var linked: Obligation?
     @State private var path = NavigationPath()
     @State private var editing: EditMode = .inactive   // owned here and handed to the list, so the toolbar and the rows agree
+    @Environment(\.openURL) private var openURL
 
     private var live: [Obligation] { obligations.filter { $0.deletedAt == nil } }
+    /// Documents that could not be read, in one line: a failure must not vanish into Documents unannounced.
+    private var readFailure: String? {
+        let failed = documents.filter { $0.status == .failed }
+        guard let first = failed.first else { return nil }
+        return failed.count == 1 ? "Could not read \(first.filename): \(first.failure ?? "") Retry it from Documents." : "\(failed.count) documents could not be read. Retry them from Documents."
+    }
     private var pending: [Obligation] { live.filter { $0.state == .pendingReview } }
 
     var body: some View {
@@ -23,6 +34,23 @@ struct RootView: View {
             List {
                 if let reading = model.reading {
                     ReadingSection(reading: reading, cancel: { model.cancelReading() })
+                } else if model.remindersAuthorized == false {
+                    Section {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("Reminders access is off, so deadlines stay in Horizon and never reach your lists.", systemImage: "exclamationmark.triangle").foregroundStyle(Design.accent)
+                            #if os(iOS)
+                            Button("Open Settings") { if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) } }.buttonStyle(.bordered).controlSize(.small)
+                            #endif
+                        }
+                    }
+                    .listRowSeparator(.hidden)
+                } else if let failure = readFailure {   // from the store, so it stays until the document reads or is retried
+                    Section {
+                        NavigationLink(value: "documents") {
+                            Label(failure, systemImage: "exclamationmark.triangle").foregroundStyle(Design.accent)
+                        }
+                    }
+                    .listRowSeparator(.hidden)
                 } else if let status = model.statusLine ?? model.lastError {
                     Section {
                         Label { Text(status) } icon: {
@@ -45,7 +73,7 @@ struct RootView: View {
                     .listRowInsets(EdgeInsets(top: 16, leading: 20, bottom: 4, trailing: 20))
                 }
                 let unfiled = looseDocuments.filter { $0.status == .parsed && !($0.obligations ?? []).filter { $0.deletedAt == nil }.isEmpty }
-                if !unfiled.isEmpty, !courses.isEmpty {
+                if !unfiled.isEmpty {
                     NavigationLink { DocumentsView() } label: {
                         Text(unfiled.count == 1 ? "One document has no course yet" : "\(unfiled.count) documents have no course yet")
                             .font(.system(.title3, design: .serif, weight: .semibold))
@@ -53,16 +81,21 @@ struct RootView: View {
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 4, trailing: 20))
                 }
-                CoverageList(reading: model.reading != nil)
+                CoverageList(reading: model.reading != nil, hasUnfiled: !unfiled.isEmpty)
             }
             .listStyle(.plain)
+            .listRowBackground(Color.clear)
+            .paper()
             .animation(.default, value: model.reading != nil)
             .animation(.default, value: model.statusLine)
+            .animation(.default, value: readFailure)
             .animation(.default, value: model.lastError)
             .navigationDestination(for: Course.self) { CourseView(course: $0) }
+            .navigationDestination(for: String.self) { _ in DocumentsView() }   // "documents", for the debug flag
             .onChange(of: courses.count, initial: true) { _, count in
                 if MainTabs.debugFlag("--open-course"), count > 0, path.isEmpty, let first = courses.first { path.append(first) }
             }
+            .onAppear { if MainTabs.debugFlag("--open-documents"), path.isEmpty { path.append("documents") } }
             .navigationTitle("Coverage")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.large)

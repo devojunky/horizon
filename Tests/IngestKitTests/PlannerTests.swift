@@ -43,6 +43,38 @@ struct PlannerTests {
         #expect(blocks[1].kind == .meal && blocks[2].start == blocks[1].end)
     }
 
+    @Test func nothingDueAndNothingAskedNeedsNoModel() async {
+        let busy = [PlanBusy(title: "Lecture", start: Self.at(10), end: Self.at(12))]
+        let plan = await DayPlanner().plan(Self.input(now: Self.at(9), busy: busy))
+        #expect(plan.blocks.map(\.title) == ["Lecture"] && plan.route == nil && plan.note?.contains("nothing to plan") == true)
+        // After the day's end there is nothing to fill either.
+        let late = await DayPlanner().plan(Self.input(now: Self.at(22, 30), obligations: [PlanObligation(title: "Quiz 3", due: Self.at(23), points: 6)]))
+        #expect(late.blocks.isEmpty && late.note == "No free time left today.")
+    }
+
+    @Test func theStudentsInstructionsGoIntoThePromptAndAreTrimmed() {
+        var input = Self.input(obligations: [PlanObligation(title: "Quiz 3", due: Self.at(23), points: 6)])
+        #expect(input.instructions == nil)
+        input = PlanInput(date: input.date, now: input.now, busy: [], obligations: input.obligations, calendar: input.calendar, instructions: "  \n ")
+        #expect(input.instructions == nil)                                            // blank is nothing
+        input = PlanInput(date: input.date, now: input.now, busy: [], obligations: input.obligations, calendar: input.calendar, instructions: " No work after 9 pm. ")
+        let prompt = DayPlanner.prompt(for: input, gaps: DayPlanner.gaps(in: input), ranked: DayPlanner.ranked(input))
+        #expect(prompt.contains("The student's own instructions:\nNo work after 9 pm.\nPlan the free gaps."))
+        let long = PlanInput(date: input.date, now: input.now, busy: [], obligations: input.obligations, calendar: input.calendar, instructions: String(repeating: "x", count: 2000))
+        #expect(DayPlanner.prompt(for: long, gaps: [], ranked: []).count < 1800)      // capped for the on-device context
+    }
+
+    @Test func aPlanSavedWithoutAnIdStillLoads() throws {
+        let plan = DayPlan(blocks: [PlanBlock(start: Self.at(9), end: Self.at(10), title: "Quiz 3", reason: "Due tonight.", kind: .work)], route: .onDevice, note: nil)
+        let data = try JSONEncoder().encode(plan)
+        #expect(try JSONDecoder().decode(DayPlan.self, from: data) == plan)
+        var json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        json["id"] = nil
+        let old = try JSONSerialization.data(withJSONObject: json)
+        let loaded = try JSONDecoder().decode(DayPlan.self, from: old)
+        #expect(loaded.blocks == plan.blocks && loaded.route == .onDevice)
+    }
+
     @Test func fallbackPlansByTheNumbersWithAMeal() {
         let input = Self.input(now: Self.at(11), obligations: [PlanObligation(title: "Quiz 3", due: Self.at(23), points: 6), PlanObligation(title: "HW 4", due: Self.at(23).addingTimeInterval(86400), points: 1.5)])
         let gaps = DayPlanner.gaps(in: input)

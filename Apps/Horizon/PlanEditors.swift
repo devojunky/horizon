@@ -27,7 +27,6 @@ struct PlanBlockEditor: View {
         var seen: Set<String> = []
         return model.planCandidates.filter { seen.insert($0.title).inserted }
     }
-
     /// The picker shows the item whose title is in the field, or "Something else"; picking one fills the field.
     private var pickedTitle: Binding<String> {
         Binding(get: { candidates.contains { $0.title == title } ? title : "" }, set: { if !$0.isEmpty { title = $0 } })
@@ -60,14 +59,15 @@ struct PlanBlockEditor: View {
                     else if block?.kind == .fixed { Text("From your calendar. Changing it here does not change the event.") }
                 }
                 Section {
-                    TextField("Reason", text: $reason, axis: .vertical)
-                } footer: {
-                    Text("Why this, why now.")
+                    TextField("Why this, why now", text: $reason, axis: .vertical).lineLimit(2...6)
+                } header: {
+                    Text("Reason")
                 }
                 if block != nil {
                     Section { Button("Delete Block", role: .destructive) { if let block { model.deleteBlock(block.id); dismiss() } } }
                 }
             }
+            .paper()
             .navigationTitle(block == nil ? "New Block" : "Edit Block")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -114,14 +114,15 @@ struct PlanBlockEditor: View {
     }
 }
 
-/// The user's own words to the planner: standing rules or today's. Read on every plan; the plan on screen stays as it
-/// is until the next one.
-struct PlanInstructionsEditor: View {
+/// What the user tells the planner, in their own words: standing rules or today's. Read on every plan; the plan on
+/// screen stays as it is until the next one. Capped, because it shares a 4096-token on-device context with the rest.
+struct PlannerNotesEditor: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
     @State private var confirmingDiscard = false
     @FocusState private var focused: Bool
+    private let limit = 1500
     private var isDirty: Bool { text != model.planInstructions }
 
     var body: some View {
@@ -137,11 +138,18 @@ struct PlanInstructionsEditor: View {
                                     .foregroundStyle(.tertiary).padding(.top, 8).padding(.leading, 5).allowsHitTesting(false)
                             }
                         }
+                        .onChange(of: text) { _, value in if value.count > limit { text = String(value.prefix(limit)) } }
+                } header: {
+                    Text("What the planner should respect")
                 } footer: {
-                    Text("In your words, standing or for today. The planner reads them every time you plan; calendar events stay fixed. Applies the next time you plan.")
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Standing rules or today's, in your words. The planner reads this every time you plan; calendar events stay fixed either way. Takes effect the next time you plan.")
+                        if text.count > limit - 300 { Text("\(text.count) of \(limit) characters").monospacedDigit() }
+                    }
                 }
             }
-            .navigationTitle("Instructions")
+            .paper()
+            .navigationTitle("Tell the Planner")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif

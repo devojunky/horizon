@@ -79,6 +79,7 @@ struct ObligationEditor: View {
                     }
                 }
             }
+            .paper()
             .navigationTitle(isManual ? "Add by Hand" : "Edit Item")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)

@@ -6,7 +6,7 @@ Native iOS 27 / macOS 27 app: an intake engine that turns course documents into 
 ```
 Package.swift             SwiftPM. Targets: IngestKit, HorizonCore (libs), HorizonParse (CLI), IngestKitTests, HorizonCoreTests, IngestEvals
 project.yml               xcodegen spec for the app targets; Horizon.xcodeproj is generated and git-ignored
-Apps/Horizon/             SwiftUI app (iOS + macOS): AppModel (store/coordinator/sync wiring, live Reading state, cancel, PCC setting, the day plan kept for the day + its edits + the user's plan instructions), HorizonStripView (MainTabs + the M4 strip: weeks/days/items by zoom, heat cells), NowView (M5 day plan), PlanEditors (block editor, instructions), RootView (Coverage, ReadingSection with the creeping bar), CoverageView, ReviewView, ObligationEditor, CourseView, DocumentsView, ImportSources (Files / Photos / document camera), WatchedFolder (macOS)
+Apps/Horizon/             SwiftUI app (iOS + macOS): Design (tokens, type, shared pieces), AppModel (store/coordinator/sync wiring, live Reading state, cancel, PCC setting, the day plan kept for the day + its edits + what the user tells the planner), HorizonStripView (MainTabs + the M4 strip: weeks/days/items by zoom, heat cells, range tabs), NowView (M5 day plan as a timetable), PlanEditors (block editor, Tell the Planner), RootView (Coverage, ReadingSection with the creeping bar), CoverageView, ReviewView, ObligationEditor, CourseView, DocumentsView, ImportSources (Files / Photos / document camera), WatchedFolder (macOS)
 Apps/HorizonShare/        iOS share extension: copies the shared file into the App Group inbox; the app parses it
 Sources/HorizonCore/      storage + sync. Identifiers.swift (bundle/group/container ids), Model/Schema.swift (VersionedSchema V1),
   Store/HorizonStore      @ModelActor: ingest → upsert with field ownership, review queue, manual entry, soft delete, reconciliation
@@ -46,12 +46,14 @@ xcrun simctl install booted .build/DerivedData/Build/Products/Debug-iphonesimula
 xcrun simctl spawn booted log stream --level info --predicate 'subsystem == "com.daniel.horizon"'   # ingest/sync log (os.Logger, category ingest)
 xcrun simctl privacy booted grant reminders com.daniel.horizon && xcrun simctl launch booted com.daniel.horizon --ingest-sample   # DEBUG: read the bundled sample without a tap
 xcrun simctl launch booted com.daniel.horizon --tab-horizon --zoom-two-weeks   # DEBUG: open on the strip, zoomed to two weeks around today (--zoom-month for a month)
-xcrun simctl launch booted com.daniel.horizon --tab-now --plan                 # DEBUG: plan today; --edit-block opens the first block's editor, --plan-instructions the instructions sheet
+xcrun simctl launch booted com.daniel.horizon --tab-now --plan                 # DEBUG: plan today; --edit-block opens the first block's editor, --plan-instructions the Tell the Planner sheet
+xcrun simctl launch booted com.daniel.horizon --ingest-file /path/to/file      # DEBUG: read any file the simulator can see (broken files, duplicates); --open-documents opens Documents
 ```
 The simulator runs a 300M model, not the 3B one; use it to exercise the pipeline, not to judge extraction quality. A DEBUG menu item "Ingest sample syllabus" feeds `Apps/Horizon/Samples/sample-syllabus.pdf`.
 
 ## Rules of the codebase
 - The user never types a task (SPEC §2). No composer UI, ever.
+- The look is an editorial page (DECISIONS 2026-09-05): every screen sits on `Design.paper` (`.paper()` on lists and forms), titles are serif (`Design.installAppearance`, `.deck()`, `.display()`, `.numeral()`), sections get a `Kicker`, rules are hairlines, and `Design.accent` means weight or urgency only. Empty states are `EditorialEmpty`; something in progress is `WorkingLine`. Motion is earned: rows arriving, the level crossfade, the underline sliding, the "now" dot breathing; all of it respects Reduce Motion.
 - Every LanguageModelSession lives in `Extractor` (ingest) or `DayPlanner` (the day plan). Log `response.usage` on every call (it is; see `UsageRecord`).
 - The day plan is kept for the day only (UserDefaults `dayPlan`, dropped once the day ends); the user's plan instructions (`planInstructions`) persist and go into every plan prompt. The plan by the numbers cannot read them.
 - The strip's content follows the zoom: `Strip.level(daysAcross:)` decides weeks / days / items; load is colour (`Strip.heat`), never size.

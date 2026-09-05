@@ -131,10 +131,18 @@ final class AppModel {
     /// Files picked in the app or handed over by the system. Security-scoped URLs are opened for the copy only.
     /// `courseID` files the documents under a course before they are read (the course page's Add Document).
     func importFiles(_ urls: [URL], courseID: UUID? = nil) async {
+        var onFile: [String] = []
         for url in urls {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            do { _ = try await coordinator.enqueue(fileURL: url, courseID: courseID) } catch { lastError = error.localizedDescription }
+            do {
+                let document = try await coordinator.enqueue(fileURL: url, courseID: courseID)
+                if document.status == .parsed { onFile.append(document.filename) }   // the same file again: nothing to read
+            } catch { lastError = error.localizedDescription }
+        }
+        if !onFile.isEmpty {
+            cancelNotice = onFile.count == 1 ? "\(onFile[0]) is already on file." : "\(onFile.count) of those documents are already on file."
+            withAnimation { statusLine = cancelNotice }
         }
         await drainAndSync()
     }
@@ -182,16 +190,18 @@ final class AppModel {
             rerun = true   // finish the rest (and the Reminders sync) in a task that is not cancelled
             return
         }
-        if !reports.isEmpty { self.reports = reports + self.reports.prefix(20); cancelNotice = nil }
-            withAnimation { statusLine = "Syncing with Reminders…" }
-            do {
-                let report = try await sync.sync()
+        if !reports.isEmpty { self.reports = reports + self.reports.prefix(20); cancelNotice = nil }   // failed reads stay visible from the store (RootView)
+        withAnimation { statusLine = "Syncing with Reminders…" }
+        do {
+            let report = try await sync.sync()
+            withAnimation {
                 lastError = nil
-                withAnimation { statusLine = report.created + report.updated > 0 ? "\(report.created) added, \(report.updated) updated in Reminders" : cancelNotice }
-                try? await store.purgeTombstones()
-            } catch {
-                withAnimation { lastError = error.localizedDescription; statusLine = nil }
+                statusLine = report.created + report.updated > 0 ? "\(report.created) added, \(report.updated) updated in Reminders" : cancelNotice
             }
+            try? await store.purgeTombstones()
+        } catch {
+            withAnimation { lastError = error.localizedDescription; statusLine = nil }
+        }
     }
 
     func retry(documentID: UUID) async {
@@ -217,14 +227,16 @@ final class AppModel {
         defer { planning = false }
         let now = Date()
         var busy: [PlanBusy] = []
+        var calendarOff = false
         do {
-            if try await calendarSource.requestAccess() { busy = try await calendarSource.busy(on: now, calendar: .current) }
+            if try await calendarSource.requestAccess() { busy = try await calendarSource.busy(on: now, calendar: .current) } else { calendarOff = true }
         } catch { lastError = error.localizedDescription }
         let obligations = (try? await store.planObligations(from: now, days: 21)) ?? []   // three weeks out: enough to choose from
         let planner = DayPlanner(log: { message in Task { @MainActor in AppModel.log(message) } })
         let route: IngestOptions.RoutePolicy = readInCloud && cloudUnavailableReason == nil ? .privateCloudCompute : .onDeviceFirst
         let input = PlanInput(date: now, now: now, busy: busy, obligations: obligations, instructions: planInstructions)
-        let result = await planner.plan(input, route: route)
+        var result = await planner.plan(input, route: route)
+        if calendarOff { result.note = ([result.note, "Calendar access is off, so nothing on it counted as fixed."].compactMap { $0 }).joined(separator: " ") }
         withAnimation {
             plan = result; planEdited = false; planDay = Calendar.current.startOfDay(for: now)
             planCandidates = DayPlanner.ranked(input)

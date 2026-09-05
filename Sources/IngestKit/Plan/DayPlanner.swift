@@ -54,7 +54,8 @@ public struct PlanBlock: Sendable, Equatable, Identifiable, Codable {
     }
 }
 
-public struct DayPlan: Sendable, Equatable, Codable {
+public struct DayPlan: Sendable, Equatable, Codable, Identifiable {
+    public var id = UUID()
     public var blocks: [PlanBlock]
     /// Nil when the deterministic planner made it.
     public var route: ModelRoute?
@@ -62,6 +63,16 @@ public struct DayPlan: Sendable, Equatable, Codable {
     public var note: String?
     public init(blocks: [PlanBlock], route: ModelRoute? = nil, usage: UsageRecord? = nil, note: String? = nil) {
         self.blocks = blocks; self.route = route; self.usage = usage; self.note = note
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, blocks, route, usage, note }
+    public init(from decoder: any Decoder) throws {   // a plan saved before `id` existed still loads
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        blocks = try c.decode([PlanBlock].self, forKey: .blocks)
+        route = try c.decodeIfPresent(ModelRoute.self, forKey: .route)
+        usage = try c.decodeIfPresent(UsageRecord.self, forKey: .usage)
+        note = try c.decodeIfPresent(String.self, forKey: .note)
     }
 }
 
@@ -127,6 +138,9 @@ public actor DayPlanner {
         let gaps = Self.gaps(in: input)
         let ranked = Array(Self.ranked(input).prefix(12))
         guard !gaps.isEmpty else { return DayPlan(blocks: Self.fixedOnly(input), route: nil, usage: nil, note: "No free time left today.") }
+        guard !ranked.isEmpty || input.instructions != nil else {   // nothing due and nothing asked: the calendar is the plan
+            return DayPlan(blocks: Self.fixedOnly(input), route: nil, usage: nil, note: "Nothing is due in the coming weeks, so there is nothing to plan.")
+        }
         let prompt = Self.prompt(for: input, gaps: gaps, ranked: ranked)
         let started = ContinuousClock.now
         do {

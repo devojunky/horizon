@@ -14,7 +14,8 @@ struct ReviewView: View {
     var body: some View {
         List {
             if pending.isEmpty {
-                ContentUnavailableView("Nothing to review", systemImage: "checkmark.circle", description: Text("Everything the parser found was confident enough to write straight to Reminders."))
+                EditorialEmpty(title: "Nothing to review.", deck: "Everything the parser found was sure enough to go straight to Reminders.") { EmptyView() }
+                    .listRowSeparator(.hidden)
             }
             ForEach(pending) { item in
                 VStack(alignment: .leading, spacing: 8) {
@@ -33,6 +34,10 @@ struct ReviewView: View {
                 .swipeActions(edge: .trailing) { Button("Discard", systemImage: "trash", role: .destructive) { Task { await model.discard(item.id) } } }
             }
         }
+        .listStyle(.plain)
+        .listRowSeparatorTint(Design.rule)
+        .listRowBackground(Color.clear)
+        .paper()
         .navigationTitle("Review")
         .sheet(item: $editing) { ObligationEditor(mode: .review($0), courses: courses) }
     }

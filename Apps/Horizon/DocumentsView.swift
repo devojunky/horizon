@@ -17,8 +17,8 @@ struct DocumentsView: View {
                 if let why = model.cloudUnavailableReason {
                     Text("Private Cloud Compute is unavailable: \(why).").font(.footnote).foregroundStyle(.secondary)
                 }
-            }
-            Section("Documents") {
+            } header: { Kicker("This device") }
+            Section {
                 ForEach(documents) { doc in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(doc.filename).font(.body.weight(.medium))
@@ -43,8 +43,13 @@ struct DocumentsView: View {
                         ForEach(doc.warnings, id: \.self) { Text($0).font(.footnote).foregroundStyle(.secondary) }
                     }
                 }
-            }
+                if documents.isEmpty { Text("No documents yet.").foregroundStyle(.secondary) }
+            } header: { Kicker("Documents") }
         }
+        .listStyle(.plain)
+        .listRowSeparatorTint(Design.rule)
+        .listRowBackground(Color.clear)
+        .paper()
         .navigationTitle("Documents")
     }
 

@@ -21,6 +21,7 @@ struct HorizonApp: App {
         }
         let model = AppModel(container: container)
         _model = State(initialValue: model)
+        Design.installAppearance()
         #if os(iOS)
         BackgroundIngest.register(model: model)
         #endif
@@ -38,6 +39,10 @@ struct HorizonApp: App {
                     // `xcrun simctl launch booted com.daniel.horizon --ingest-sample` drives the sample read without a tap.
                     if CommandLine.arguments.contains("--ingest-sample"), let sample = Bundle.main.url(forResource: "sample-syllabus", withExtension: "pdf") {
                         await model.importFiles([sample]); return
+                    }
+                    // `--ingest-file <path>` reads any file the simulator can see: unreadable ones, duplicates, and so on.
+                    if let i = CommandLine.arguments.firstIndex(of: "--ingest-file"), i + 1 < CommandLine.arguments.count {
+                        await model.importFiles([URL(fileURLWithPath: CommandLine.arguments[i + 1])]); return
                     }
                     #endif
                     await model.drainAndSync()

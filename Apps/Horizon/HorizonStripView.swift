@@ -24,6 +24,18 @@ struct MainTabs: View {
     }
 }
 
+/// The three stops of the range control, by the days across the screen.
+private enum Stop: Hashable, CaseIterable {
+    case semester, month, twoWeeks
+    var title: String { switch self { case .semester: "Semester"; case .month: "Month"; case .twoWeeks: "Two Weeks" } }
+}
+
+/// A band of the strip: a course, or the items filed under none.
+private struct Band: Identifiable, Equatable {
+    var id: UUID?
+    var name: String
+}
+
 /// SPEC §6.2: one continuous strip of the term, one band per course. What it shows follows the zoom, the way Health's
 /// charts change with their range: the whole semester reads as weeks, a month as days, and only two weeks or less as
 /// the items themselves. Load is colour, not size: the accent deepens with the points at stake in a week, a day or an
@@ -52,12 +64,6 @@ struct HorizonStripView: View {
     /// Where the fingers came down, in content points, so zooming keeps that day under them.
     private struct PinchAnchor { var contentX: CGFloat; var offset: CGFloat; var zoom: CGFloat }
 
-    /// The three stops of the segmented control, by the days across the screen.
-    private enum Stop: Hashable, CaseIterable {
-        case semester, month, twoWeeks
-        var title: String { switch self { case .semester: "Semester"; case .month: "Month"; case .twoWeeks: "2 Weeks" } }
-    }
-
     private var items: [StripItem] {
         obligations.compactMap { o in
             guard let due = o.due else { return nil }
@@ -65,7 +71,13 @@ struct HorizonStripView: View {
                              points: o.pointsAtStake, state: o.state, completed: o.completedAt != nil)
         }
     }
-    private var bands: [Course] { courses.filter { c in obligations.contains { $0.course?.id == c.id } } }
+    /// One band per course with items, and one for items filed under no course (documents nobody has filed yet).
+    private var bands: [Band] {
+        let known = Set(courses.map(\.id))
+        var bands = courses.filter { c in obligations.contains { $0.course?.id == c.id } }.map { Band(id: $0.id, name: $0.displayName) }
+        if obligations.contains(where: { $0.course.map { !known.contains($0.id) } ?? true }) { bands.append(Band(id: nil, name: "Unfiled")) }
+        return bands
+    }
     private var span: ClosedRange<Date> {
         Strip.span(termStarts: courses.compactMap(\.termStart), termEnds: courses.compactMap(\.termEnd), items: items, now: Date(), calendar: calendar)
     }
@@ -106,11 +118,7 @@ struct HorizonStripView: View {
                 let scale = fit * clampedZoom
                 let bandHeight = max(72, min(160, geo.size.height * 0.5 / CGFloat(max(bands.count, 1))))   // few courses get tall bands
                 VStack(alignment: .leading, spacing: 16) {
-                    Picker("Range", selection: stop) {
-                        ForEach(Stop.allCases, id: \.self) { Text($0.title).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal, 20)
+                    RangeTabs(selection: stop).padding(.horizontal, 20)
                     StripHeader(scrub: scrub, level: level, cell: scrubbed, total: items.count, collisions: collisions, calendar: calendar)
                         .padding(.horizontal, 20)
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -164,18 +172,32 @@ struct HorizonStripView: View {
                             }
                             if listed.isEmpty { Text(scrub == nil ? "Nothing coming up." : "Nothing due.").foregroundStyle(.secondary) }
                         } header: {
-                            if scrub == nil { Text("Coming up") }
+                            if scrub == nil { Kicker("Coming up") }
                         }
+                        .listRowBackground(Color.clear)
                     }
                     .listStyle(.plain)
+                    .listRowSeparatorTint(Design.rule)
                     .animation(.default, value: scrub)
                 }
                 .padding(.top, 8)
+                .overlay {
+                    if items.isEmpty {
+                        ScrollView {
+                            EditorialEmpty(title: "Nothing on the horizon.", deck: "Add a syllabus or a schedule and the term appears here as one strip: weeks, then days, then the work itself as you zoom in.") {
+                                ImportMenu().buttonStyle(.borderedProminent)
+                            }
+                            .padding(.horizontal, 20)
+                        }
+                        .background(Design.paper)
+                    }
+                }
                 .onAppear {
                     if MainTabs.debugFlag("--zoom-two-weeks"), zoom == 1 { zoomTo(maxZoom) }
                     if MainTabs.debugFlag("--zoom-month"), zoom == 1 { zoomTo(zoom(for: .month)) }
                 }
             }
+            .background(Design.paper.ignoresSafeArea())
             .navigationTitle("Horizon")
             .sheet(item: $editing) { ObligationEditor(mode: .edit($0), courses: courses) }
             .onChange(of: level) { old, _ in
@@ -220,7 +242,7 @@ struct HorizonStripView: View {
     }
 
     private var accessibilitySummary: String {
-        let names = bands.map(\.displayName).joined(separator: ", ")
+        let names = bands.map(\.name).joined(separator: ", ")
         let showing = switch level { case .weeks: "by week"; case .days: "by day"; case .items: "item by item" }
         return "Semester strip \(showing), \(items.count) obligations across \(names). \(collisions.isEmpty ? "No pileups." : "\(collisions.count) pileups.")"
     }
@@ -228,8 +250,8 @@ struct HorizonStripView: View {
     /// Course names pinned to the leading edge, one per band, so they stay put while the strip scrolls.
     private func bandLabels(height bandHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(bands) { course in
-                Text(course.displayName)
+            ForEach(bands) { band in
+                Text(band.name)
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1)
                     .padding(.horizontal, 6).padding(.vertical, 2)
                     .background(.regularMaterial, in: Capsule())
@@ -239,6 +261,39 @@ struct HorizonStripView: View {
         }
         .padding(.leading, 8)
         .allowsHitTesting(false)
+    }
+}
+
+/// The three stops as a row of tabs with a sliding accent underline, the way a magazine names its sections; a pinch
+/// keeps the underline honest without snapping the zoom to a stop.
+private struct RangeTabs: View {
+    @Binding var selection: Stop
+    @Namespace private var underline
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 24) {
+                ForEach(Stop.allCases, id: \.self) { stop in
+                    let selected = stop == selection
+                    Button { withAnimation(.snappy) { selection = stop } } label: {
+                        VStack(spacing: 8) {
+                            Text(stop.title).font(.subheadline.weight(selected ? .semibold : .regular)).foregroundStyle(selected ? .primary : .secondary)
+                            ZStack {
+                                Color.clear.frame(height: 2)
+                                if selected { Rectangle().fill(Design.accent).frame(height: 2).matchedGeometryEffect(id: "underline", in: underline) }
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(selected ? [.isSelected] : [])
+                }
+                Spacer(minLength: 0)
+            }
+            Hairline()
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Range")
     }
 }
 
@@ -287,7 +342,7 @@ private struct StripHeader: View {
 /// level a mark per item, its colour its weight, named when there is room. Pileup hairlines, today, the scrubbed period.
 private struct StripCanvas: View {
     let items: [StripItem]
-    let bands: [Course]
+    let bands: [Band]
     let span: ClosedRange<Date>
     let scale: CGFloat
     let level: Strip.Level
@@ -318,7 +373,8 @@ private struct StripCanvas: View {
         Canvas { context, size in
             let bandCount = max(bands.count, 1)
             let bandIndex = Dictionary(uniqueKeysWithValues: bands.enumerated().map { ($1.id, $0) })
-            let byBand = Dictionary(grouping: items) { $0.courseID.flatMap { bandIndex[$0] } ?? 0 }
+            let loose = bandIndex[nil] ?? 0
+            let byBand = Dictionary(grouping: items) { item in item.courseID.flatMap { bandIndex[$0] } ?? loose }
             let pileupIDs = Set(collisions.flatMap { $0.items.map(\.id) })
 
             // The scrubbed week or day: a soft column behind everything else.
@@ -332,7 +388,7 @@ private struct StripCanvas: View {
             while cursor <= span.upperBound {
                 let comps = calendar.dateComponents([.day, .weekday], from: cursor)
                 if comps.day == 1 {
-                    context.draw(Text(cursor.formatted(.dateTime.month(.wide))).font(.subheadline.weight(.semibold)).foregroundStyle(.primary),
+                    context.draw(Text(cursor.formatted(.dateTime.month(.wide))).font(.system(.subheadline, design: .serif, weight: .semibold)).foregroundStyle(.primary),
                                  at: CGPoint(x: x(cursor) + 6, y: 6), anchor: .topLeading)
                     context.stroke(vertical(x(cursor), from: 0, to: size.height), with: .color(.secondary.opacity(0.35)), lineWidth: 1)
                 } else if comps.weekday == calendar.firstWeekday, scale >= 6 {
