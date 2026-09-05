@@ -28,8 +28,9 @@ struct MainTabs: View {
 /// charts change with their range: the whole semester reads as weeks, a month as days, and only two weeks or less as
 /// the items themselves. Load is colour, not size: the accent deepens with the points at stake in a week, a day or an
 /// item, and a cell carries its count. Days where heavy items pile up are called out. A pinch zooms around the fingers
-/// and a segmented control has the three stops; a tap or a press-and-drag scrubs a week or a day into the header. New
-/// marks fade in as a document resolves.
+/// and a segmented control has the three stops; a tap or a press-and-drag scrubs a week or a day into the header, whose
+/// height never changes, and lists its items under the strip (what is coming up when nothing is scrubbed); a row opens
+/// the editor. New marks fade in as a document resolves.
 struct HorizonStripView: View {
     @Query(filter: #Predicate<Obligation> { $0.deletedAt == nil && $0.due != nil }, sort: \Obligation.due) private var obligations: [Obligation]
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
@@ -44,6 +45,7 @@ struct HorizonStripView: View {
     @State private var animating = false
     @State private var centreOn: Date?               // a stop lands on the scrubbed day, else today
     @State private var previousLevel: (level: Strip.Level, at: Date)?   // the level just left, for the crossfade
+    @State private var editing: Obligation?
     private let calendar = Calendar.current
     private let axisHeight: CGFloat = 34
 
@@ -85,6 +87,16 @@ struct HorizonStripView: View {
         guard let scrub else { return nil }
         let period = Strip.period(containing: scrub, level: level, calendar: calendar)
         return Strip.cells(items.filter { period.contains($0.due) }, level: level, calendar: calendar).first ?? Strip.Cell(period: period, items: [], points: 0)
+    }
+    /// Under the strip: the scrubbed period's items, else what is coming up from today; in time order, heavier first on a tie.
+    private var listed: [Obligation] {
+        let byID = Dictionary(uniqueKeysWithValues: obligations.map { ($0.id, $0) })
+        let chosen: [StripItem]
+        if let scrubbed { chosen = scrubbed.items } else {
+            let today = calendar.startOfDay(for: Date())
+            chosen = items.filter { $0.due >= today && !$0.completed }
+        }
+        return chosen.sorted { $0.due != $1.due ? $0.due < $1.due : ($0.points ?? 0) > ($1.points ?? 0) }.compactMap { byID[$0.id] }
     }
 
     var body: some View {
@@ -143,7 +155,20 @@ struct HorizonStripView: View {
                             centreOn = nil
                         }
                     }
-                    Spacer(minLength: 0)
+                    List {
+                        Section {
+                            ForEach(listed) { obligation in
+                                Button { editing = obligation } label: { ObligationRow(obligation: obligation) }
+                                    .buttonStyle(.plain)
+                                    .accessibilityHint("Opens the editor")
+                            }
+                            if listed.isEmpty { Text(scrub == nil ? "Nothing coming up." : "Nothing due.").foregroundStyle(.secondary) }
+                        } header: {
+                            if scrub == nil { Text("Coming up") }
+                        }
+                    }
+                    .listStyle(.plain)
+                    .animation(.default, value: scrub)
                 }
                 .padding(.top, 8)
                 .onAppear {
@@ -152,6 +177,7 @@ struct HorizonStripView: View {
                 }
             }
             .navigationTitle("Horizon")
+            .sheet(item: $editing) { ObligationEditor(mode: .edit($0), courses: courses) }
             .onChange(of: level) { old, _ in
                 previousLevel = (old, Date())   // the old level fades out under the new one
                 runAnimation(for: 0.35)
@@ -216,7 +242,8 @@ struct HorizonStripView: View {
     }
 }
 
-/// The scrubbed week or day, or the semester at a glance. Type carries it; the accent marks a pileup.
+/// The scrubbed week or day, or the semester at a glance: a kicker, a two-line deck, one line under it. Always the same
+/// height, so the strip below never moves; the accent marks a pileup.
 private struct StripHeader: View {
     let scrub: Date?
     let level: Strip.Level
@@ -224,7 +251,6 @@ private struct StripHeader: View {
     let total: Int
     let collisions: [Strip.Collision]
     let calendar: Calendar
-    private let listed = 5
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -232,26 +258,13 @@ private struct StripHeader: View {
                 let pileup = collisions.contains { cell.period.contains($0.day) }
                 let kicker = pileup ? "Pileup" : level == .weeks ? "Week" : "Day"
                 Text(kicker).font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(pileup ? Design.accent : .secondary)
-                Text(title(scrub, period: cell.period)).deck().contentTransition(.numericText())
-                if cell.items.isEmpty {
-                    Text("Nothing due.").foregroundStyle(.secondary)
-                } else if level == .weeks {
-                    Text("\(cell.count) item\(cell.count == 1 ? "" : "s"), \(cell.points.formatted(.number.precision(.fractionLength(0...1))))% of grades at stake.")
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(cell.items.prefix(listed)) { item in
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(item.title).font(.body.weight(.medium)).lineLimit(1)
-                        Text(item.courseName).foregroundStyle(.secondary).lineLimit(1)
-                        Spacer()
-                        Design.points(item.points).font(.title3.weight(.medium))
-                    }
-                }
-                if cell.count > listed { Text("and \(cell.count - listed) more").font(.footnote).foregroundStyle(.secondary) }
+                Text(title(scrub, period: cell.period)).deck().lineLimit(2, reservesSpace: true).contentTransition(.numericText())
+                Text(cell.items.isEmpty ? "Nothing due." : "\(cell.count) item\(cell.count == 1 ? "" : "s"), \(cell.points.formatted(.number.precision(.fractionLength(0...1))))% of grades at stake.")
+                    .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
             } else {
                 Text("Semester").font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(.secondary)
-                Text(summary).deck()
-                Text("Tap to read a week or a day. Pinch to zoom.").font(.footnote).foregroundStyle(.secondary)
+                Text(summary).deck().lineLimit(2, reservesSpace: true)
+                Text("Tap to read a week or a day. Pinch to zoom.").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
