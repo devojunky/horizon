@@ -38,8 +38,8 @@ swift run horizon-parse Evals/Fixtures/01-calc2-pdf/source.pdf --verbose
 swift Scripts/make-fixtures.swift                        # after editing any source.md or expected.json "render"
 xcodegen generate                                        # after editing project.yml
 xcodebuild -project Horizon.xcodeproj -scheme Horizon -destination 'platform=iOS Simulator,name=iPhone 17 Pro Max' -derivedDataPath .build/DerivedData build
-xcrun simctl install booted .build/DerivedData/Build/Products/Debug-iphonesimulator/Horizon.app && xcrun simctl launch booted app.horizon
-xcrun simctl spawn booted log stream --level info --predicate 'subsystem == "app.horizon"'   # ingest/sync log (os.Logger, category ingest)
+xcrun simctl install booted .build/DerivedData/Build/Products/Debug-iphonesimulator/Horizon.app && xcrun simctl launch booted com.daniel.horizon
+xcrun simctl spawn booted log stream --level info --predicate 'subsystem == "com.daniel.horizon"'   # ingest/sync log (os.Logger, category ingest)
 ```
 The simulator runs a 300M model, not the 3B one; use it to exercise the pipeline, not to judge extraction quality. A DEBUG menu item "Ingest sample syllabus" feeds `Apps/Horizon/Samples/sample-syllabus.pdf`.
 

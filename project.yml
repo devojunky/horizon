@@ -1,7 +1,7 @@
 # Xcode project spec. Regenerate with `xcodegen generate` after any change; the .xcodeproj is not committed.
 name: Horizon
 options:
-  bundleIdPrefix: app.horizon
+  bundleIdPrefix: com.daniel
   deploymentTarget:
     iOS: "27.0"
     macOS: "27.0"
@@ -49,9 +49,9 @@ targets:
         NSRemindersFullAccessUsageDescription: Horizon writes your deadlines to a Reminders list called Horizon, so they still fire if you stop opening the app.
         NSCalendarsFullAccessUsageDescription: Horizon reads your calendar to plan around classes and appointments.
         CFBundleURLTypes:
-          - CFBundleURLName: app.horizon
+          - CFBundleURLName: com.daniel.horizon
             CFBundleURLSchemes: [horizon]
-        BGTaskSchedulerPermittedIdentifiers: [app.horizon.ingest]
+        BGTaskSchedulerPermittedIdentifiers: [com.daniel.horizon.ingest]
         UIBackgroundModes: [processing]
         LSSupportsOpeningDocumentsInPlace: true
         UISupportsDocumentBrowser: false
@@ -63,10 +63,10 @@ targets:
     entitlements:
       path: Apps/Horizon/Horizon.entitlements
       properties:
-        com.apple.security.application-groups: [group.app.horizon]
+        com.apple.security.application-groups: [group.com.daniel.horizon]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: app.horizon
+        PRODUCT_BUNDLE_IDENTIFIER: com.daniel.horizon
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
         ENABLE_PREVIEWS: YES
@@ -99,10 +99,10 @@ targets:
     entitlements:
       path: Apps/HorizonShare/HorizonShare.entitlements
       properties:
-        com.apple.security.application-groups: [group.app.horizon]
+        com.apple.security.application-groups: [group.com.daniel.horizon]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: app.horizon.share
+        PRODUCT_BUNDLE_IDENTIFIER: com.daniel.horizon.share
         GENERATE_INFOPLIST_FILE: NO
 schemes:
   Horizon:
