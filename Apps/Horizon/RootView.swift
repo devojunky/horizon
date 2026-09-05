@@ -24,8 +24,15 @@ struct RootView: View {
                 if let reading = model.reading {
                     ReadingSection(reading: reading, cancel: { model.cancelReading() })
                 } else if let status = model.statusLine ?? model.lastError {
-                    Section { Label(status, systemImage: model.lastError == nil ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle").foregroundStyle(model.lastError == nil ? .secondary : Design.accent) }
-                        .listRowSeparator(.hidden)
+                    Section {
+                        Label { Text(status) } icon: {
+                            if model.lastError != nil { Image(systemName: "exclamationmark.triangle") }
+                            else if model.busy { ProgressView().controlSize(.small) }   // syncing: something is happening
+                            else { Image(systemName: "arrow.triangle.2.circlepath") }
+                        }
+                        .foregroundStyle(model.lastError == nil ? .secondary : Design.accent)
+                    }
+                    .listRowSeparator(.hidden)
                 }
                 if !pending.isEmpty {
                     NavigationLink { ReviewView() } label: {
@@ -106,8 +113,8 @@ struct RootView: View {
 }
 
 /// The document resolving into obligations, as the model streams them (SPEC §9's one earned animation, plainly for now).
-/// A progress bar with a cancel button; the rows the model is streaming sit behind a disclosure, closed by default,
-/// and the choice is remembered.
+/// A spinner, a progress bar that keeps moving while the model thinks, and a cancel button; the rows the model is
+/// streaming sit behind a disclosure, closed by default, and the choice is remembered.
 struct ReadingSection: View {
     let reading: AppModel.Reading
     var cancel: () -> Void
@@ -117,6 +124,7 @@ struct ReadingSection: View {
         Section {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .center, spacing: 4) {
+                    ProgressView().padding(.trailing, 10).accessibilityHidden(true)   // the model is at work even when the bar is not
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Reading \(reading.filename)").font(.body.weight(.medium))
                         Text(progressLine).font(.footnote).foregroundStyle(.secondary).monospacedDigit()
@@ -131,7 +139,7 @@ struct ReadingSection: View {
                         .buttonStyle(.borderless).foregroundStyle(.secondary)
                         .accessibilityLabel("Cancel reading")
                 }
-                ProgressView(value: reading.fraction).tint(Design.accent)
+                CreepingProgressBar(real: reading.fraction, mark: reading.nextMark)
             }
             .padding(.vertical, 4)
             if showDetails {
@@ -153,6 +161,24 @@ struct ReadingSection: View {
         let total = reading.chunks + reading.images
         let part = total > 1 ? "part \(min(max(reading.chunk, 1), total)) of \(total) · " : ""
         return part + "\(reading.items.count) found so far"
+    }
+}
+
+/// The reading bar: the real figure, creeping toward the end of the current part while nothing arrives, so it never
+/// stands still (`ProgressCreep` is the arithmetic; a timeline draws it thirty times a second while it is on screen).
+private struct CreepingProgressBar: View {
+    let real: Double
+    let mark: Double
+    @State private var creep: ProgressCreep?
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1 / 30)) { context in
+            ProgressView(value: creep?.value(at: context.date) ?? real).tint(Design.accent)
+        }
+        .onAppear { creep = ProgressCreep(real: real, mark: mark, at: .now) }
+        .onChange(of: real) { _, value in creep?.update(real: value, mark: mark, at: .now) }
+        .onChange(of: mark) { _, value in creep?.update(real: real, mark: value, at: .now) }
+        .accessibilityValue("\(Int(real * 100)) percent")
     }
 }
 

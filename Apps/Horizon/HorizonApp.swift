@@ -48,7 +48,7 @@ struct HorizonApp: App {
                 #endif
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { Task { await model.drainAndSync() } }
+            if phase == .active { model.expirePlanIfStale(); Task { await model.drainAndSync() } }
             #if os(iOS)
             if phase == .background { BackgroundIngest.schedule() }
             #endif

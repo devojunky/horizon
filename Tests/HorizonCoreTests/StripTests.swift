@@ -37,6 +37,25 @@ struct StripTests {
         #expect(Fixture.calendar.dateComponents([.month, .day], from: bare.lowerBound) == DateComponents(month: 9, day: 14))
     }
 
+    @Test func levelFollowsTheDaysAcrossTheScreen() {
+        #expect(Strip.level(daysAcross: 137) == .weeks && Strip.level(daysAcross: 76) == .weeks)   // a semester, three months
+        #expect(Strip.level(daysAcross: 30) == .days && Strip.level(daysAcross: 60) == .days)      // a month, two
+        #expect(Strip.level(daysAcross: 14) == .items && Strip.level(daysAcross: 21) == .items)    // two weeks, three
+    }
+
+    @Test func cellsGroupItemsByWeekOrDayHeaviestFirst() {
+        let a = item("PS2", Fixture.day(10, 7), points: 4), b = item("Exam 1", Fixture.day(10, 7, hour: 9, minute: 0), points: 25)
+        let c = item("HW", Fixture.day(10, 8), points: 2, completed: true), d = item("Paper", Fixture.day(10, 20), points: nil)
+        let days = Strip.cells([a, c, b, d], level: .days, calendar: Fixture.calendar)
+        #expect(days.map(\.count) == [2, 1, 1] && days[0].items.map(\.title) == ["Exam 1", "PS2"])
+        #expect(days[0].points == 29 && days[1].points == 0)                                    // done items carry no load
+        #expect(Strip.cells([a, c, b, d], level: .items, calendar: Fixture.calendar) == days)     // the items level reads days too
+        let weeks = Strip.cells([a, c, b, d], level: .weeks, calendar: Fixture.calendar)
+        #expect(weeks.count == 2 && weeks[0].count == 3 && weeks[0].points == 29)
+        #expect(weeks[0].period == Strip.period(containing: Fixture.day(10, 8), level: .weeks, calendar: Fixture.calendar))
+        #expect(Strip.heat(points: 25) > Strip.heat(points: 4) && Strip.heat(points: nil) >= 0.2 && Strip.heat(points: 40) == 1)
+    }
+
     @Test func itemsOnADayComeHeaviestFirst() {
         let a = item("PS2", Fixture.day(10, 7), points: 4), b = item("Exam 1", Fixture.day(10, 7, hour: 9, minute: 0), points: 25), c = item("HW", Fixture.day(10, 8), points: 2)
         #expect(Strip.items(on: Fixture.day(10, 7, hour: 12, minute: 0), in: [a, c, b], calendar: Fixture.calendar).map(\.title) == ["Exam 1", "PS2"])

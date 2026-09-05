@@ -24,10 +24,12 @@ struct MainTabs: View {
     }
 }
 
-/// SPEC §6.2: one continuous strip of the term. A mark's height and width follow its points at stake, courses sit in
-/// bands, heavy marks carry their names, and days where heavy items pile up are called out in the accent. A pinch zooms
-/// around the fingers, from the whole semester to two weeks across the width; a tap or a press-and-drag scrubs a day
-/// into the header. New marks grow in as a document resolves.
+/// SPEC §6.2: one continuous strip of the term, one band per course. What it shows follows the zoom, the way Health's
+/// charts change with their range: the whole semester reads as weeks, a month as days, and only two weeks or less as
+/// the items themselves. Load is colour, not size: the accent deepens with the points at stake in a week, a day or an
+/// item, and a cell carries its count. Days where heavy items pile up are called out. A pinch zooms around the fingers
+/// and a segmented control has the three stops; a tap or a press-and-drag scrubs a week or a day into the header. New
+/// marks fade in as a document resolves.
 struct HorizonStripView: View {
     @Query(filter: #Predicate<Obligation> { $0.deletedAt == nil && $0.due != nil }, sort: \Obligation.due) private var obligations: [Obligation]
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
@@ -37,15 +39,22 @@ struct HorizonStripView: View {
     @State private var scrollOffset: CGFloat = 0
     @State private var position = ScrollPosition()
     @State private var scrub: Date?
-    @State private var reveals: [UUID: Date] = [:]  // when each mark first appeared, so new ones grow in
+    @State private var reveals: [UUID: Date] = [:]  // when each mark first appeared, so new ones fade in
     @State private var seeded = false
     @State private var animating = false
-    @State private var centreOn: Date?               // a menu zoom lands on the scrubbed day, else today
+    @State private var centreOn: Date?               // a stop lands on the scrubbed day, else today
+    @State private var previousLevel: (level: Strip.Level, at: Date)?   // the level just left, for the crossfade
     private let calendar = Calendar.current
     private let axisHeight: CGFloat = 34
 
     /// Where the fingers came down, in content points, so zooming keeps that day under them.
     private struct PinchAnchor { var contentX: CGFloat; var offset: CGFloat; var zoom: CGFloat }
+
+    /// The three stops of the segmented control, by the days across the screen.
+    private enum Stop: Hashable, CaseIterable {
+        case semester, month, twoWeeks
+        var title: String { switch self { case .semester: "Semester"; case .month: "Month"; case .twoWeeks: "2 Weeks" } }
+    }
 
     private var items: [StripItem] {
         obligations.compactMap { o in
@@ -59,23 +68,43 @@ struct HorizonStripView: View {
         Strip.span(termStarts: courses.compactMap(\.termStart), termEnds: courses.compactMap(\.termEnd), items: items, now: Date(), calendar: calendar)
     }
     private var days: Int { max(1, calendar.dateComponents([.day], from: span.lowerBound, to: span.upperBound).day ?? 1) }
+    private var maxZoom: CGFloat { max(1, CGFloat(days) / 14) }                 // two weeks across the width
+    private var clampedZoom: CGFloat { min(max(zoom, 1), maxZoom) }
+    private var level: Strip.Level { Strip.level(daysAcross: Double(days) / Double(clampedZoom)) }
     private var collisions: [Strip.Collision] { Strip.collisions(items, calendar: calendar) }
+    private func zoom(for stop: Stop) -> CGFloat {
+        switch stop { case .semester: 1; case .month: min(maxZoom, CGFloat(days) / 30); case .twoWeeks: maxZoom }
+    }
+    /// The stop nearest the current zoom, so a pinch keeps the control honest without snapping the zoom to it.
+    private var stop: Binding<Stop> {
+        Binding(get: { Stop.allCases.min { abs(log(zoom(for: $0) / clampedZoom)) < abs(log(zoom(for: $1) / clampedZoom)) } ?? .semester },
+                set: { zoomTo(zoom(for: $0)) })
+    }
+    /// The scrubbed period at this level, with its items.
+    private var scrubbed: Strip.Cell? {
+        guard let scrub else { return nil }
+        let period = Strip.period(containing: scrub, level: level, calendar: calendar)
+        return Strip.cells(items.filter { period.contains($0.due) }, level: level, calendar: calendar).first ?? Strip.Cell(period: period, items: [], points: 0)
+    }
 
     var body: some View {
         NavigationStack {
             GeometryReader { geo in
                 let fit = geo.size.width / CGFloat(days)
-                let maxZoom = max(1, CGFloat(days) / 14)                 // two weeks across the width
-                let scale = fit * min(max(zoom, 1), maxZoom)
+                let scale = fit * clampedZoom
                 let bandHeight = max(72, min(160, geo.size.height * 0.5 / CGFloat(max(bands.count, 1))))   // few courses get tall bands
                 VStack(alignment: .leading, spacing: 16) {
-                    StripHeader(scrub: scrub, items: scrub.map { Strip.items(on: $0, in: items, calendar: calendar) } ?? [],
-                                total: items.count, collisions: collisions, calendar: calendar)
+                    Picker("Range", selection: stop) {
+                        ForEach(Stop.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, 20)
+                    StripHeader(scrub: scrub, level: level, cell: scrubbed, total: items.count, collisions: collisions, calendar: calendar)
                         .padding(.horizontal, 20)
                     ScrollView(.horizontal, showsIndicators: false) {
                         TimelineView(.animation(minimumInterval: 1 / 30, paused: !animating)) { timeline in
-                            StripCanvas(items: items, bands: bands, span: span, scale: scale, collisions: collisions, scrub: scrub,
-                                        reveals: reveals, now: timeline.date, bandHeight: bandHeight, axisHeight: axisHeight, calendar: calendar)
+                            StripCanvas(items: items, bands: bands, span: span, scale: scale, level: level, previousLevel: previousLevel, collisions: collisions,
+                                        scrub: scrub, reveals: reveals, now: timeline.date, bandHeight: bandHeight, axisHeight: axisHeight, calendar: calendar)
                         }
                         .frame(width: CGFloat(days) * scale, height: axisHeight + bandHeight * CGFloat(max(bands.count, 1)))
                         .contentShape(Rectangle())
@@ -101,14 +130,14 @@ struct HorizonStripView: View {
                     .overlay(alignment: .topLeading) { bandLabels(height: bandHeight).padding(.top, axisHeight + 6) }
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(accessibilitySummary)
-                    .accessibilityHint("Tap a day to read it. Pinch to zoom.")
+                    .accessibilityHint("Tap to read a week or a day. Pinch to zoom.")
                     .onChange(of: centreOn) { _, target in
                         guard let target else { return }
                         Task { @MainActor in
                             try? await Task.sleep(for: .milliseconds(450))   // after the zoom animation, once the wider content exists
                             // Values captured by this closure can predate the first layout; read the geometry live.
                             let width = geo.size.width
-                            let live = width / CGFloat(days) * min(max(zoom, 1), max(1, CGFloat(days) / 14))
+                            let live = width / CGFloat(days) * clampedZoom
                             let target = x(of: target, scale: live) + live / 2 - width / 2
                             withAnimation { position.scrollTo(x: max(0, target)) }
                             centreOn = nil
@@ -117,31 +146,33 @@ struct HorizonStripView: View {
                     Spacer(minLength: 0)
                 }
                 .padding(.top, 8)
-                .onAppear { if MainTabs.debugFlag("--zoom-two-weeks"), zoom == 1 { zoomTo(maxZoom) } }
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        Menu("Zoom") {
-                            Button("Whole Semester") { withAnimation { zoom = 1; pinchBase = 1 } }
-                            Button("Month") { zoomTo(min(maxZoom, CGFloat(days) / 30)) }
-                            Button("Two Weeks") { zoomTo(maxZoom) }
-                        }
-                    }
+                .onAppear {
+                    if MainTabs.debugFlag("--zoom-two-weeks"), zoom == 1 { zoomTo(maxZoom) }
+                    if MainTabs.debugFlag("--zoom-month"), zoom == 1 { zoomTo(zoom(for: .month)) }
                 }
             }
             .navigationTitle("Horizon")
+            .onChange(of: level) { old, _ in
+                previousLevel = (old, Date())   // the old level fades out under the new one
+                runAnimation(for: 0.35)
+            }
             .onChange(of: obligations.map(\.id), initial: true) { _, ids in
                 let now = Date()
                 if !seeded { for id in ids { reveals[id] = .distantPast }; seeded = true; return }   // what is already on file simply is
                 let fresh = ids.filter { reveals[$0] == nil }
                 guard !fresh.isEmpty else { return }
                 for id in fresh { reveals[id] = now }
-                animating = true
-                Task { try? await Task.sleep(for: .seconds(0.9)); animating = false }
+                runAnimation(for: 0.9)
             }
         }
     }
 
-    /// A menu zoom lands on the scrubbed day, else today.
+    private func runAnimation(for seconds: Double) {
+        animating = true
+        Task { try? await Task.sleep(for: .seconds(seconds)); animating = false }
+    }
+
+    /// A stop lands on the scrubbed day, else today.
     private func zoomTo(_ level: CGFloat) {
         withAnimation { zoom = level; pinchBase = level }
         centreOn = scrub ?? Date()
@@ -151,10 +182,10 @@ struct HorizonStripView: View {
         CGFloat(date.timeIntervalSince(span.lowerBound) / 86_400) * scale
     }
 
-    /// The day under a touch; at the semester zoom a day is a few points wide, so an empty day yields to a neighbour with items.
+    /// The day under a touch; when a day is a few points wide, an empty day yields to a neighbour with items.
     private func day(atX x: CGFloat, scale: CGFloat) -> Date {
         let hit = calendar.date(byAdding: .day, value: Int(x / scale), to: span.lowerBound) ?? span.lowerBound
-        guard scale < 12, Strip.items(on: hit, in: items, calendar: calendar).isEmpty else { return hit }
+        guard level != .weeks, scale < 12, Strip.items(on: hit, in: items, calendar: calendar).isEmpty else { return hit }
         let fraction = (x / scale).truncatingRemainder(dividingBy: 1)
         for offset in fraction < 0.5 ? [-1, 1] : [1, -1] {
             if let day = calendar.date(byAdding: .day, value: offset, to: hit), !Strip.items(on: day, in: items, calendar: calendar).isEmpty { return day }
@@ -164,7 +195,8 @@ struct HorizonStripView: View {
 
     private var accessibilitySummary: String {
         let names = bands.map(\.displayName).joined(separator: ", ")
-        return "Semester strip, \(items.count) obligations across \(names). \(collisions.isEmpty ? "No pileups." : "\(collisions.count) pileups.")"
+        let showing = switch level { case .weeks: "by week"; case .days: "by day"; case .items: "item by item" }
+        return "Semester strip \(showing), \(items.count) obligations across \(names). \(collisions.isEmpty ? "No pileups." : "\(collisions.count) pileups.")"
     }
 
     /// Course names pinned to the leading edge, one per band, so they stay put while the strip scrolls.
@@ -184,39 +216,51 @@ struct HorizonStripView: View {
     }
 }
 
-/// The scrubbed day, or the semester at a glance. Type carries it; the accent marks a pileup.
+/// The scrubbed week or day, or the semester at a glance. Type carries it; the accent marks a pileup.
 private struct StripHeader: View {
     let scrub: Date?
-    let items: [StripItem]
+    let level: Strip.Level
+    let cell: Strip.Cell?
     let total: Int
     let collisions: [Strip.Collision]
     let calendar: Calendar
+    private let listed = 5
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let scrub {
-                let pileup = collisions.contains { calendar.isDate($0.day, inSameDayAs: scrub) }
-                Text(pileup ? "Pileup" : "Day").font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(pileup ? Design.accent : .secondary)
-                Text(scrub.formatted(.dateTime.weekday(.wide).month(.wide).day())).deck().contentTransition(.numericText())
-                if items.isEmpty {
+            if let scrub, let cell {
+                let pileup = collisions.contains { cell.period.contains($0.day) }
+                let kicker = pileup ? "Pileup" : level == .weeks ? "Week" : "Day"
+                Text(kicker).font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(pileup ? Design.accent : .secondary)
+                Text(title(scrub, period: cell.period)).deck().contentTransition(.numericText())
+                if cell.items.isEmpty {
                     Text("Nothing due.").foregroundStyle(.secondary)
+                } else if level == .weeks {
+                    Text("\(cell.count) item\(cell.count == 1 ? "" : "s"), \(cell.points.formatted(.number.precision(.fractionLength(0...1))))% of grades at stake.")
+                        .foregroundStyle(.secondary)
                 }
-                ForEach(items) { item in
+                ForEach(cell.items.prefix(listed)) { item in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(item.title).font(.body.weight(.medium))
+                        Text(item.title).font(.body.weight(.medium)).lineLimit(1)
                         Text(item.courseName).foregroundStyle(.secondary).lineLimit(1)
                         Spacer()
                         Design.points(item.points).font(.title3.weight(.medium))
                     }
                 }
+                if cell.count > listed { Text("and \(cell.count - listed) more").font(.footnote).foregroundStyle(.secondary) }
             } else {
                 Text("Semester").font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(.secondary)
                 Text(summary).deck()
-                Text("Tap a day to read it. Pinch to zoom.").font(.footnote).foregroundStyle(.secondary)
+                Text("Tap to read a week or a day. Pinch to zoom.").font(.footnote).foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .animation(.default, value: scrub)
+        .animation(.default, value: level)
+    }
+
+    private func title(_ scrub: Date, period: DateInterval) -> String {
+        level == .weeks ? "Week of \(period.start.formatted(.dateTime.month(.wide).day()))" : scrub.formatted(.dateTime.weekday(.wide).month(.wide).day())
     }
 
     private var summary: String {
@@ -225,13 +269,16 @@ private struct StripHeader: View {
     }
 }
 
-/// The strip itself: an axis of months, weeks and (when there is room) days; one band per course with a baseline; marks
-/// whose height and width carry their weight, named when heavy or when there is room; pileup hairlines; today; the scrubbed day.
+/// The strip itself: an axis of months, weeks and (when there is room) days; one band per course with a baseline; at
+/// the weeks and days levels a cell per period whose colour is its load and which carries its count; at the items
+/// level a mark per item, its colour its weight, named when there is room. Pileup hairlines, today, the scrubbed period.
 private struct StripCanvas: View {
     let items: [StripItem]
     let bands: [Course]
     let span: ClosedRange<Date>
     let scale: CGFloat
+    let level: Strip.Level
+    let previousLevel: (level: Strip.Level, at: Date)?
     let collisions: [Strip.Collision]
     let scrub: Date?
     let reveals: [UUID: Date]
@@ -239,23 +286,35 @@ private struct StripCanvas: View {
     let bandHeight: CGFloat
     let axisHeight: CGFloat
     let calendar: Calendar
+    private let crossfade = 0.3
+
+    private func x(_ date: Date) -> CGFloat { CGFloat(date.timeIntervalSince(span.lowerBound) / 86_400) * scale }
+    private func bandTop(_ i: Int) -> CGFloat { axisHeight + bandHeight * CGFloat(i) }
+    private func baseline(_ i: Int) -> CGFloat { bandTop(i) + bandHeight - 12 }
+    private func vertical(_ px: CGFloat, from y0: CGFloat, to y1: CGFloat) -> Path {
+        Path { p in p.move(to: CGPoint(x: px, y: y0)); p.addLine(to: CGPoint(x: px, y: y1)) }
+    }
+    /// How far a new mark has faded in (0.6 s); what was already on file is 1.
+    private func grow(_ item: StripItem) -> Double {
+        guard let start = reveals[item.id], start != .distantPast else { return 1 }
+        let t = min(1, max(0, now.timeIntervalSince(start) / 0.6))
+        return 1 - pow(1 - t, 3)
+    }
 
     var body: some View {
         Canvas { context, size in
-            func x(_ date: Date) -> CGFloat { CGFloat(date.timeIntervalSince(span.lowerBound) / 86_400) * scale }
-            func vertical(_ px: CGFloat, from y0: CGFloat, to y1: CGFloat) -> Path {
-                Path { p in p.move(to: CGPoint(x: px, y: y0)); p.addLine(to: CGPoint(x: px, y: y1)) }
-            }
-            let bandTop: (Int) -> CGFloat = { axisHeight + bandHeight * CGFloat($0) }
-            let baseline: (Int) -> CGFloat = { bandTop($0) + bandHeight - 12 }
             let bandCount = max(bands.count, 1)
+            let bandIndex = Dictionary(uniqueKeysWithValues: bands.enumerated().map { ($1.id, $0) })
+            let byBand = Dictionary(grouping: items) { $0.courseID.flatMap { bandIndex[$0] } ?? 0 }
+            let pileupIDs = Set(collisions.flatMap { $0.items.map(\.id) })
 
-            // The scrubbed day: a soft column behind everything else.
+            // The scrubbed week or day: a soft column behind everything else.
             if let scrub {
-                let sx = x(calendar.startOfDay(for: scrub))
-                context.fill(Path(CGRect(x: sx, y: axisHeight - 4, width: max(scale, 2), height: size.height - axisHeight + 4)), with: .color(.primary.opacity(0.07)))
+                let period = Strip.period(containing: scrub, level: level, calendar: calendar)
+                let sx = x(period.start)
+                context.fill(Path(CGRect(x: sx, y: axisHeight - 4, width: max(x(period.end) - sx, 2), height: size.height - axisHeight + 4)), with: .color(.primary.opacity(0.07)))
             }
-            // Axis: months always; weeks from a month's zoom; day numbers from two weeks'.
+            // Axis: months always; week lines from a month's zoom; day numbers once a day is wide enough, every day at the items level.
             var cursor = calendar.startOfDay(for: span.lowerBound)
             while cursor <= span.upperBound {
                 let comps = calendar.dateComponents([.day, .weekday], from: cursor)
@@ -263,65 +322,98 @@ private struct StripCanvas: View {
                     context.draw(Text(cursor.formatted(.dateTime.month(.wide))).font(.subheadline.weight(.semibold)).foregroundStyle(.primary),
                                  at: CGPoint(x: x(cursor) + 6, y: 6), anchor: .topLeading)
                     context.stroke(vertical(x(cursor), from: 0, to: size.height), with: .color(.secondary.opacity(0.35)), lineWidth: 1)
-                } else if comps.weekday == 2, scale >= 6 {
+                } else if comps.weekday == calendar.firstWeekday, scale >= 6 {
                     context.stroke(vertical(x(cursor), from: axisHeight - 8, to: size.height), with: .color(.secondary.opacity(0.12)), lineWidth: 1)
-                    if scale >= 18 {
-                        context.draw(Text(cursor.formatted(.dateTime.day())).font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: x(cursor) + 3, y: axisHeight - 10), anchor: .topLeading)
-                    }
+                }
+                if scale >= 24 || (scale >= 12 && comps.weekday == calendar.firstWeekday && comps.day != 1) {
+                    context.draw(Text(cursor.formatted(.dateTime.day())).font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: x(cursor) + scale / 2, y: axisHeight - 10), anchor: .top)
                 }
                 guard let next = calendar.date(byAdding: .day, value: 1, to: cursor) else { break }
                 cursor = next
             }
-            // Bands: a baseline each, the marks stand on it.
+            // Bands: a baseline each.
             for i in 0..<bandCount {
                 context.stroke(Path { p in p.move(to: CGPoint(x: 0, y: baseline(i))); p.addLine(to: CGPoint(x: size.width, y: baseline(i))) }, with: .color(.secondary.opacity(0.35)), lineWidth: 1)
             }
-            // Today: an accent line with its name.
+            // The content of the level, crossfading from the level just left.
+            var alpha = 1.0
+            if let previousLevel {
+                let t = min(1, max(0, now.timeIntervalSince(previousLevel.at) / crossfade))
+                if t < 1 { draw(previousLevel.level, alpha: 1 - t, byBand: byBand, pileupIDs: pileupIDs, in: &context); alpha = t }
+            }
+            draw(level, alpha: alpha, byBand: byBand, pileupIDs: pileupIDs, in: &context)
+            // Today: a dashed line with its name, in the primary colour so it reads over the cells.
             let today = Date()
             if span.contains(today) {
                 let tx = x(calendar.startOfDay(for: today)) + scale / 2
-                context.stroke(vertical(tx, from: axisHeight - 2, to: size.height - 12), with: .color(Design.accent), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
-                context.draw(Text("Today").font(.caption2.weight(.semibold)).foregroundStyle(Design.accent), at: CGPoint(x: tx, y: size.height - 1), anchor: .bottom)
+                context.stroke(vertical(tx, from: axisHeight - 2, to: size.height - 12), with: .color(.primary.opacity(0.7)), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                context.draw(Text("Today").font(.caption2.weight(.semibold)).foregroundStyle(.primary), at: CGPoint(x: tx, y: size.height - 1), anchor: .bottom)
             }
-            // Pileups: a hairline across every band, the day named above it.
-            let pileupIDs = Set(collisions.flatMap { $0.items.map(\.id) })
+            // Pileups: a hairline across every band, the day named above it in the accent.
             for collision in collisions {
                 let cx = x(collision.day) + scale / 2
-                context.stroke(vertical(cx, from: axisHeight - 2, to: size.height), with: .color(Design.accent), lineWidth: 1)
+                context.stroke(vertical(cx, from: axisHeight - 2, to: size.height - 12), with: .color(.primary.opacity(0.8)), lineWidth: 1.5)
                 context.draw(Text(collision.day.formatted(.dateTime.month(.abbreviated).day())).font(.caption2.weight(.bold)).foregroundStyle(Design.accent),
                              at: CGPoint(x: cx, y: axisHeight - 4), anchor: .bottom)
             }
-            // Marks: height and width carry the weight; review items are outlines; pileup items take the accent; heavy
-            // marks are named, and every mark is named once there is room, without overlapping the last name in the band.
-            let bandIndex = Dictionary(uniqueKeysWithValues: bands.enumerated().map { ($1.id, $0) })
-            var lastLabelEnd: [Int: CGFloat] = [:]
-            for item in items.sorted(by: { $0.due < $1.due }) {
-                let band = item.courseID.flatMap { bandIndex[$0] } ?? 0
-                let mass = Strip.mass(points: item.points)
-                var grow = 1.0
-                if let start = reveals[item.id], start != .distantPast {
-                    let t = min(1, max(0, now.timeIntervalSince(start) / 0.6))
-                    grow = 1 - pow(1 - t, 3)
-                }
-                let h = max(3, (bandHeight - 30) * mass * grow)
-                let w = max(3 + 5 * mass, min(scale * 0.7, 16) * (0.5 + mass))
-                let cx = x(item.due) + scale / 2
-                let rect = CGRect(x: cx - w / 2, y: baseline(band) - h, width: w, height: h)
-                let path = Path(roundedRect: rect, cornerRadius: min(3, w / 2))
-                let color: Color = pileupIDs.contains(item.id) ? Design.accent : .primary
-                switch item.state {
-                case .pendingReview, .awaitingDate: context.stroke(path, with: .color(color.opacity(0.8)), lineWidth: 1.5)
-                default: context.fill(path, with: .color(color.opacity(item.completed ? 0.25 : 0.9)))
-                }
-                let named = mass >= 0.5 || scale >= 20
-                if named, grow >= 1, cx - 30 >= (lastLabelEnd[band] ?? -.infinity) {
-                    let label = Text(item.title).font(.caption2.weight(mass >= 0.5 ? .semibold : .regular)).foregroundStyle(color.opacity(item.completed ? 0.4 : 1))
-                    let resolved = context.resolve(label)
-                    let width = resolved.measure(in: CGSize(width: 140, height: 30)).width
-                    context.draw(resolved, at: CGPoint(x: cx, y: rect.minY - 3), anchor: .bottom)
-                    lastLabelEnd[band] = cx + width / 2 + 6
-                }
+        }
+    }
+
+    private func draw(_ level: Strip.Level, alpha: Double, byBand: [Int: [StripItem]], pileupIDs: Set<UUID>, in context: inout GraphicsContext) {
+        for (band, mine) in byBand {
+            let cells = Strip.cells(mine, level: level, calendar: calendar)
+            switch level {
+            case .weeks, .days: drawCells(cells, band: band, alpha: alpha, in: &context)
+            case .items: drawMarks(cells, band: band, alpha: alpha, pileupIDs: pileupIDs, in: &context)
             }
+        }
+    }
+
+    /// One block per week or day, standing on the baseline: the accent at the load's intensity, the count inside when it fits.
+    private func drawCells(_ cells: [Strip.Cell], band: Int, alpha: Double, in context: inout GraphicsContext) {
+        let height = min(64, bandHeight - 30)
+        for cell in cells {
+            let x0 = x(cell.period.start) + 1, x1 = x(cell.period.end) - 1
+            let width = max(x1 - x0, 2)
+            let opacity = Strip.heat(points: cell.points) * alpha * (cell.items.map(grow).max() ?? 1)
+            let rect = CGRect(x: x0, y: baseline(band) - height, width: width, height: height)
+            context.fill(Path(roundedRect: rect, cornerRadius: min(4, width / 3)), with: .color(Design.accent.opacity(opacity)))
+            if width >= 12, height >= 16 {
+                let ink: Color = Strip.heat(points: cell.points) > 0.55 ? .black.opacity(0.75) : .primary
+                context.draw(Text("\(cell.count)").font(.caption2.weight(.semibold)).foregroundStyle(ink.opacity(alpha)), at: CGPoint(x: rect.midX, y: rect.midY))
+            }
+        }
+    }
+
+    /// One mark per item, stacked on the baseline when a day has several; its colour is its weight, review items are
+    /// outlines, done items grey. The heaviest is named when the name does not run into the last one in the band.
+    private func drawMarks(_ cells: [Strip.Cell], band: Int, alpha: Double, pileupIDs: Set<UUID>, in context: inout GraphicsContext) {
+        let w = min(scale * 0.6, 16), h: CGFloat = 12, gap: CGFloat = 3
+        let stack = max(1, Int((bandHeight - 30) / (h + gap)))
+        var lastLabelEnd: CGFloat = -.infinity
+        for cell in cells {
+            let cx = x(cell.period.start) + scale / 2
+            var top = baseline(band)
+            for item in cell.items.prefix(stack) {
+                let g = grow(item)
+                let rect = CGRect(x: cx - w / 2, y: top - h * g, width: w, height: h * g)
+                let path = Path(roundedRect: rect, cornerRadius: min(3, w / 2))
+                let color: Color = item.completed ? .secondary : Design.accent
+                let opacity = (item.completed ? 0.35 : Strip.heat(points: item.points)) * alpha
+                switch item.state {
+                case .pendingReview, .awaitingDate: context.stroke(path, with: .color(color.opacity(max(opacity, 0.6 * alpha))), lineWidth: 1.5)
+                default: context.fill(path, with: .color(color.opacity(opacity)))
+                }
+                top = rect.minY - gap
+            }
+            guard let first = cell.items.first, grow(first) >= 1, cx - 30 >= lastLabelEnd else { continue }
+            let heavy = (first.points ?? 0) >= Strip.heavyPoints
+            let more = cell.count > 1 ? " +\(cell.count - 1)" : ""
+            let label = Text(first.title + more).font(.caption2.weight(heavy ? .semibold : .regular)).foregroundStyle((pileupIDs.contains(first.id) ? Design.accent : .primary).opacity((first.completed ? 0.4 : 1) * alpha))
+            let resolved = context.resolve(label)
+            let width = resolved.measure(in: CGSize(width: 140, height: 30)).width
+            context.draw(resolved, at: CGPoint(x: cx, y: top - 1), anchor: .bottom)
+            lastLabelEnd = cx + width / 2 + 6
         }
     }
 }

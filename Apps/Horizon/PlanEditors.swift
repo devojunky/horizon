@@ -1,0 +1,162 @@
+import SwiftUI
+import IngestKit
+
+/// Edits one block of today's plan, or adds one. Cancel leads, Save trails and is off until something changed and
+/// the times make sense; swiping the sheet away with changes asks first (HIG sheets), like the item editor.
+struct PlanBlockEditor: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    /// Nil adds a block.
+    let block: PlanBlock?
+
+    @State private var title = ""
+    @State private var start = Date()
+    @State private var end = Date()
+    @State private var kind: PlanBlock.Kind = .work
+    @State private var reason = ""
+    @State private var baseline: Fields?
+    @State private var confirmingDiscard = false
+
+    private struct Fields: Equatable { var title: String; var start: Date; var end: Date; var kind: PlanBlock.Kind; var reason: String }
+    private var fields: Fields { Fields(title: title, start: start, end: end, kind: kind, reason: reason) }
+    private var isDirty: Bool { baseline.map { $0 != fields } ?? !title.isEmpty }
+    private var isValid: Bool { !title.trimmingCharacters(in: .whitespaces).isEmpty && end > start }
+
+    /// The items the plan chose from, one per title, for the picker.
+    private var candidates: [PlanObligation] {
+        var seen: Set<String> = []
+        return model.planCandidates.filter { seen.insert($0.title).inserted }
+    }
+
+    /// The picker shows the item whose title is in the field, or "Something else"; picking one fills the field.
+    private var pickedTitle: Binding<String> {
+        Binding(get: { candidates.contains { $0.title == title } ? title : "" }, set: { if !$0.isEmpty { title = $0 } })
+    }
+    private static func label(_ o: PlanObligation) -> String { o.course.map { "\(o.title) · \($0)" } ?? o.title }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    LabeledContent("Title") { TextField("Problem set 3", text: $title).multilineTextAlignment(.trailing) }
+                    if !candidates.isEmpty {
+                        Picker("Item", selection: pickedTitle) {
+                            Text("Something else").tag("")
+                            ForEach(candidates, id: \.title) { candidate in Text(Self.label(candidate)).tag(candidate.title) }
+                        }
+                    }
+                    Picker("Kind", selection: $kind) {
+                        Text("Work").tag(PlanBlock.Kind.work)
+                        Text("Meal").tag(PlanBlock.Kind.meal)
+                        Text("Rest").tag(PlanBlock.Kind.rest)
+                        if block?.kind == .fixed { Text("Calendar").tag(PlanBlock.Kind.fixed) }
+                    }
+                }
+                Section {
+                    DatePicker("Starts", selection: $start, displayedComponents: .hourAndMinute)
+                    DatePicker("Ends", selection: $end, displayedComponents: .hourAndMinute)
+                } footer: {
+                    if end <= start { Text("It ends before it starts.") }
+                    else if block?.kind == .fixed { Text("From your calendar. Changing it here does not change the event.") }
+                }
+                Section {
+                    TextField("Reason", text: $reason, axis: .vertical)
+                } footer: {
+                    Text("Why this, why now.")
+                }
+                if block != nil {
+                    Section { Button("Delete Block", role: .destructive) { if let block { model.deleteBlock(block.id); dismiss() } } }
+                }
+            }
+            .navigationTitle(block == nil ? "New Block" : "Edit Block")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { if isDirty { confirmingDiscard = true } else { dismiss() } } }
+                ToolbarItem(placement: .confirmationAction) { Button(block == nil ? "Add" : "Save") { save() }.disabled(!isValid || !isDirty) }
+            }
+            .interactiveDismissDisabled(isDirty)
+            .confirmationDialog("Discard changes?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
+                Button("Discard Changes", role: .destructive) { dismiss() }
+            }
+            .onAppear(perform: load)
+        }
+        #if os(macOS)
+        .frame(minWidth: 420, minHeight: 440)
+        #endif
+    }
+
+    private func load() {
+        defer { baseline = block == nil ? nil : fields }
+        if let block {
+            title = block.title; start = block.start; end = block.end; kind = block.kind; reason = block.reason
+            return
+        }
+        // A new block starts when the current one ends, or now, on a five-minute mark, and runs 50 minutes.
+        let now = Date()
+        let after = model.plan?.blocks.first { $0.start <= now && $0.end > now }?.end ?? now
+        let minute = Calendar.current.component(.minute, from: after)
+        start = Calendar.current.date(byAdding: .minute, value: (5 - minute % 5) % 5, to: after).map { Calendar.current.date(bySetting: .second, value: 0, of: $0) ?? $0 } ?? after
+        end = start.addingTimeInterval(50 * 60)
+    }
+
+    private func save() {
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        if var block {
+            block.title = title; block.start = start; block.end = end; block.kind = kind; block.reason = reason
+            model.updateBlock(block)
+        } else {
+            model.addBlock(PlanBlock(start: start, end: end, title: title, reason: reason, kind: kind))
+        }
+        dismiss()
+    }
+}
+
+/// The user's own words to the planner: standing rules or today's. Read on every plan; the plan on screen stays as it
+/// is until the next one.
+struct PlanInstructionsEditor: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+    @State private var confirmingDiscard = false
+    @FocusState private var focused: Bool
+    private var isDirty: Bool { text != model.planInstructions }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextEditor(text: $text)
+                        .frame(minHeight: 160)
+                        .focused($focused)
+                        .overlay(alignment: .topLeading) {
+                            if text.isEmpty {
+                                Text("No work after 9 pm. Lunch at 12:30. The essay before anything else.")
+                                    .foregroundStyle(.tertiary).padding(.top, 8).padding(.leading, 5).allowsHitTesting(false)
+                            }
+                        }
+                } footer: {
+                    Text("In your words, standing or for today. The planner reads them every time you plan; calendar events stay fixed. Applies the next time you plan.")
+                }
+            }
+            .navigationTitle("Instructions")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { if isDirty { confirmingDiscard = true } else { dismiss() } } }
+                ToolbarItem(placement: .confirmationAction) { Button("Save") { model.planInstructions = text.trimmingCharacters(in: .whitespacesAndNewlines); dismiss() }.disabled(!isDirty) }
+            }
+            .interactiveDismissDisabled(isDirty)
+            .confirmationDialog("Discard changes?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
+                Button("Discard Changes", role: .destructive) { dismiss() }
+            }
+            .onAppear { text = model.planInstructions; focused = text.isEmpty }
+        }
+        #if os(macOS)
+        .frame(minWidth: 420, minHeight: 320)
+        #endif
+    }
+}

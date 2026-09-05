@@ -48,10 +48,22 @@ final class AppModel {
         var fraction: Double = 0
         mutating func advance(to value: Double) { fraction = min(1, max(fraction, value)) }
         var total: Double { Double(max(chunks + images, 1)) }
+        /// Where the part being read ends; the bar creeps toward it while the model thinks (`ProgressCreep`).
+        var nextMark: Double { min(1, Double(max(chunk, 1)) / total) }
     }
-    /// Today's plan (SPEC §6.3). Never stored: it lives as long as the app does.
-    var plan: DayPlan?
+    /// Today's plan (SPEC §6.3), with the user's edits. Kept for the day, so a relaunch does not lose an edited plan;
+    /// discarded once the day ends. Tomorrow starts from nothing.
+    private(set) var plan: DayPlan?
+    private(set) var planEdited = false
+    /// The items the last plan chose from, for the block editor's picker.
+    private(set) var planCandidates: [PlanObligation] = []
+    private var planDay: Date?
     var planning = false
+    /// The user's own instructions to the planner, standing or for today. Persisted; read on every plan.
+    var planInstructions: String = UserDefaults.standard.string(forKey: "planInstructions") ?? "" {
+        didSet { UserDefaults.standard.set(planInstructions, forKey: "planInstructions") }
+    }
+    private struct SavedPlan: Codable { var day: Date; var plan: DayPlan; var candidates: [PlanObligation]; var edited: Bool }
     private let calendarSource: any CalendarSource = EventKitCalendarSource()
     private var drainTask: Task<Void, Never>?
     private var cancelledDocument: UUID?
@@ -75,6 +87,7 @@ final class AppModel {
         coordinator = IngestCoordinator(store: store, storage: DocumentStorage.appGroup() ?? .temporary(), sync: sync, options: options, deviceName: Self.deviceName,
                                         progress: { p in Task { @MainActor in box.model?.apply(p) } })
         box.model = self
+        loadPlan()
     }
 
     /// Breaks the init cycle between the coordinator's sink and self.
@@ -196,7 +209,8 @@ final class AppModel {
         await drainAndSync()   // its reminder goes with it
     }
 
-    /// One plan for the rest of today: calendar events are hard stops, the coming week's obligations fill the gaps.
+    /// One plan for the rest of today: calendar events are hard stops, the coming weeks' obligations fill the gaps, the
+    /// user's instructions steer the model. Replaces the plan on file, edits and all.
     func planToday() async {
         guard !planning else { return }
         planning = true
@@ -209,8 +223,64 @@ final class AppModel {
         let obligations = (try? await store.planObligations(from: now, days: 21)) ?? []   // three weeks out: enough to choose from
         let planner = DayPlanner(log: { message in Task { @MainActor in AppModel.log(message) } })
         let route: IngestOptions.RoutePolicy = readInCloud && cloudUnavailableReason == nil ? .privateCloudCompute : .onDeviceFirst
-        let result = await planner.plan(PlanInput(date: now, now: now, busy: busy, obligations: obligations), route: route)
-        withAnimation { plan = result }
+        let input = PlanInput(date: now, now: now, busy: busy, obligations: obligations, instructions: planInstructions)
+        let result = await planner.plan(input, route: route)
+        withAnimation {
+            plan = result; planEdited = false; planDay = Calendar.current.startOfDay(for: now)
+            planCandidates = DayPlanner.ranked(input)
+        }
+        persistPlan()
+    }
+
+    // MARK: Editing the plan
+
+    /// A block changed by hand: put back in time order. Edits are the user's; Plan Again asks before replacing them.
+    func updateBlock(_ block: PlanBlock) {
+        guard var p = plan, let i = p.blocks.firstIndex(where: { $0.id == block.id }) else { return }
+        p.blocks[i] = block
+        setEdited(p)
+    }
+
+    func addBlock(_ block: PlanBlock) {
+        var p = plan ?? DayPlan(blocks: [])
+        p.blocks.append(block)
+        if planDay == nil { planDay = Calendar.current.startOfDay(for: Date()) }
+        setEdited(p)
+    }
+
+    func deleteBlock(_ id: UUID) {
+        guard var p = plan else { return }
+        p.blocks.removeAll { $0.id == id }
+        setEdited(p)
+    }
+
+    private func setEdited(_ p: DayPlan) {
+        var p = p
+        p.blocks.sort { $0.start < $1.start }
+        withAnimation { plan = p; planEdited = true }
+        persistPlan()
+    }
+
+    /// The plan is today's or nothing: called when the app comes forward and when Now appears.
+    func expirePlanIfStale() {
+        guard let planDay, planDay != Calendar.current.startOfDay(for: Date()) else { return }
+        withAnimation { plan = nil; planEdited = false; planCandidates = [] }
+        self.planDay = nil
+        persistPlan()
+    }
+
+    private func persistPlan() {
+        let key = "dayPlan"
+        guard let plan, let planDay, let data = try? JSONEncoder().encode(SavedPlan(day: planDay, plan: plan, candidates: planCandidates, edited: planEdited)) else {
+            UserDefaults.standard.removeObject(forKey: key); return
+        }
+        UserDefaults.standard.set(data, forKey: key)
+    }
+
+    private func loadPlan() {
+        guard let data = UserDefaults.standard.data(forKey: "dayPlan"), let saved = try? JSONDecoder().decode(SavedPlan.self, from: data) else { return }
+        guard saved.day == Calendar.current.startOfDay(for: Date()) else { UserDefaults.standard.removeObject(forKey: "dayPlan"); return }
+        plan = saved.plan; planDay = saved.day; planCandidates = saved.candidates; planEdited = saved.edited
     }
 
     func deleteCourse(_ id: UUID) async {

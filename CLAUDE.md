@@ -6,12 +6,13 @@ Native iOS 27 / macOS 27 app: an intake engine that turns course documents into 
 ```
 Package.swift             SwiftPM. Targets: IngestKit, HorizonCore (libs), HorizonParse (CLI), IngestKitTests, HorizonCoreTests, IngestEvals
 project.yml               xcodegen spec for the app targets; Horizon.xcodeproj is generated and git-ignored
-Apps/Horizon/             SwiftUI app (iOS + macOS): AppModel (store/coordinator/sync wiring, live Reading state, cancel, PCC setting), HorizonStripView (MainTabs + the M4 strip), NowView (M5 day plan), RootView (Coverage), CoverageView, ReviewView, ObligationEditor, CourseView, DocumentsView, ImportSources (Files / Photos / document camera), WatchedFolder (macOS)
+Apps/Horizon/             SwiftUI app (iOS + macOS): AppModel (store/coordinator/sync wiring, live Reading state, cancel, PCC setting, the day plan kept for the day + its edits + the user's plan instructions), HorizonStripView (MainTabs + the M4 strip: weeks/days/items by zoom, heat cells), NowView (M5 day plan), PlanEditors (block editor, instructions), RootView (Coverage, ReadingSection with the creeping bar), CoverageView, ReviewView, ObligationEditor, CourseView, DocumentsView, ImportSources (Files / Photos / document camera), WatchedFolder (macOS)
 Apps/HorizonShare/        iOS share extension: copies the shared file into the App Group inbox; the app parses it
 Sources/HorizonCore/      storage + sync. Identifiers.swift (bundle/group/container ids), Model/Schema.swift (VersionedSchema V1),
   Store/HorizonStore      @ModelActor: ingest → upsert with field ownership, review queue, manual entry, soft delete, reconciliation
   Coverage/Coverage.swift  M3 gap detection (days silent, cadence gaps, never-ingested platforms, suspicion)
-  Strip/Strip.swift        M4 strip logic: mass, pileups (collisions), span, items on a day
+  Strip/Strip.swift        M4 strip logic: mass/heat, pileups (collisions), span, items on a day, levels (weeks/days/items by days across) and cells
+  Ingest/ProgressCreep     the reading bar's arithmetic: creeps toward the next mark while the real figure stands still, never backwards
   Sync/ReminderStore      the Reminders side of EventKit (protocol + impl); Sync/CalendarSource = the calendar side, read-only, for the day plan; Sync/Projector = fetch-then-write projector, Reconciler, SyncCoordinator
   Ingest/IngestCoordinator  inbox → parser → store → Reminders
 Sources/IngestKit/        documents in → IngestResult out. No storage, no EventKit, no UI.
@@ -44,13 +45,16 @@ xcodebuild -project Horizon.xcodeproj -scheme Horizon -destination 'platform=iOS
 xcrun simctl install booted .build/DerivedData/Build/Products/Debug-iphonesimulator/Horizon.app && xcrun simctl launch booted com.daniel.horizon
 xcrun simctl spawn booted log stream --level info --predicate 'subsystem == "com.daniel.horizon"'   # ingest/sync log (os.Logger, category ingest)
 xcrun simctl privacy booted grant reminders com.daniel.horizon && xcrun simctl launch booted com.daniel.horizon --ingest-sample   # DEBUG: read the bundled sample without a tap
-xcrun simctl launch booted com.daniel.horizon --tab-horizon --zoom-two-weeks   # DEBUG: open on the strip, zoomed to two weeks around today
+xcrun simctl launch booted com.daniel.horizon --tab-horizon --zoom-two-weeks   # DEBUG: open on the strip, zoomed to two weeks around today (--zoom-month for a month)
+xcrun simctl launch booted com.daniel.horizon --tab-now --plan                 # DEBUG: plan today; --edit-block opens the first block's editor, --plan-instructions the instructions sheet
 ```
 The simulator runs a 300M model, not the 3B one; use it to exercise the pipeline, not to judge extraction quality. A DEBUG menu item "Ingest sample syllabus" feeds `Apps/Horizon/Samples/sample-syllabus.pdf`.
 
 ## Rules of the codebase
 - The user never types a task (SPEC §2). No composer UI, ever.
 - Every LanguageModelSession lives in `Extractor` (ingest) or `DayPlanner` (the day plan). Log `response.usage` on every call (it is; see `UsageRecord`).
+- The day plan is kept for the day only (UserDefaults `dayPlan`, dropped once the day ends); the user's plan instructions (`planInstructions`) persist and go into every plan prompt. The plan by the numbers cannot read them.
+- The strip's content follows the zoom: `Strip.level(daysAcross:)` decides weeks / days / items; load is colour (`Strip.heat`), never size.
 - Dates: the model emits `dateAsWritten` (copied text) and `dueDate` (ISO). `DateResolver` re-parses the wording; the wording wins on disagreement (a model year slip is forgiven; a model date the document also names means review), except that wording naming several dates without "due" lets the model choose among them. TBD wording rejects a model date outright. A date that neither the wording nor the document mentions is dropped (text pages) or sent to review (image pages). A date printed before the item on a row with a later date is `dateAmbiguous` → review.
 - Year: term label, else `IngestOptions.defaultYear` / `--year`, else today. The data detector's own year guess is never used.
 - Date-only deadlines are stored at 23:59 local with `dueHasTime == false`.

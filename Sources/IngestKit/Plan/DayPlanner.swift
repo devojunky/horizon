@@ -5,14 +5,14 @@ import FoundationModels
 // are filled with the work that matters most first, with a reason on every block. The model proposes; the planner
 // keeps it inside the gaps and falls back to a deterministic plan when the model is unavailable or unusable.
 
-public struct PlanBusy: Sendable, Equatable {
+public struct PlanBusy: Sendable, Equatable, Codable {
     public var title: String
     public var start: Date
     public var end: Date
     public init(title: String, start: Date, end: Date) { self.title = title; self.start = start; self.end = end }
 }
 
-public struct PlanObligation: Sendable, Equatable {
+public struct PlanObligation: Sendable, Equatable, Codable {
     public var title: String
     public var course: String?
     public var due: Date
@@ -32,13 +32,17 @@ public struct PlanInput: Sendable {
     /// The day the plan may use, as hours.
     public var dayStart = 8
     public var dayEnd = 22
-    public init(date: Date, now: Date, busy: [PlanBusy], obligations: [PlanObligation], calendar: Calendar = .current) {
+    /// The student's own instructions, in their words: standing rules or today's. They outrank the planner's habits
+    /// but not the fixed events, and they need the model (the plan by the numbers cannot read them).
+    public var instructions: String?
+    public init(date: Date, now: Date, busy: [PlanBusy], obligations: [PlanObligation], calendar: Calendar = .current, instructions: String? = nil) {
         self.date = date; self.now = now; self.busy = busy; self.obligations = obligations; self.calendar = calendar
+        self.instructions = instructions.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 }
     }
 }
 
-public struct PlanBlock: Sendable, Equatable, Identifiable {
-    public enum Kind: String, Sendable { case work, meal, rest, fixed }
+public struct PlanBlock: Sendable, Equatable, Identifiable, Codable {
+    public enum Kind: String, Sendable, Codable, CaseIterable { case work, meal, rest, fixed }
     public var id = UUID()
     public var start: Date
     public var end: Date
@@ -50,12 +54,15 @@ public struct PlanBlock: Sendable, Equatable, Identifiable {
     }
 }
 
-public struct DayPlan: Sendable, Equatable {
+public struct DayPlan: Sendable, Equatable, Codable {
     public var blocks: [PlanBlock]
     /// Nil when the deterministic planner made it.
     public var route: ModelRoute?
     public var usage: UsageRecord?
     public var note: String?
+    public init(blocks: [PlanBlock], route: ModelRoute? = nil, usage: UsageRecord? = nil, note: String? = nil) {
+        self.blocks = blocks; self.route = route; self.usage = usage; self.note = note
+    }
 }
 
 @Generable
@@ -83,7 +90,8 @@ public actor DayPlanner {
     You plan one student's day. Fixed events are hard stops: never place anything over them. Fill the free gaps, in order, \
     with the work that matters most first: the nearest deadlines, weighted by points at stake. Blocks are 25 to 90 minutes; \
     leave short rests between long stretches. If the day has no meal yet, the first block after 11:30 or after 17:30 is a meal. \
-    Every block has a one-sentence reason that names the deadline or the need. Use titles exactly as given.
+    Every block has a one-sentence reason that names the deadline or the need. Use titles exactly as given. \
+    The student's own instructions, when given, outrank the habits above: follow them, except that fixed events stay hard stops.
     """
 
     private let log: @Sendable (String) -> Void
@@ -129,12 +137,14 @@ public actor DayPlanner {
                                      durationMs: Int((ContinuousClock.now - started) / .milliseconds(1)))
             log("plan: \(draft.blocks.count) proposed, \(blocks.count) kept, in \(record.inputTokens) out \(record.outputTokens) \(record.durationMs)ms")
             if blocks.isEmpty {
-                return DayPlan(blocks: Self.fallback(input, gaps: gaps, ranked: ranked), route: nil, usage: record, note: "The model's plan did not fit the day; this one is by the numbers.")
+                let unread = input.instructions == nil ? "" : " Your instructions were not followed."
+                return DayPlan(blocks: Self.fallback(input, gaps: gaps, ranked: ranked), route: nil, usage: record, note: "The model's plan did not fit the day; this one is by the numbers." + unread)
             }
             return DayPlan(blocks: Self.merge(blocks, fixed: Self.fixedOnly(input)), route: used, usage: record, note: nil)
         } catch {
             log("plan: model unavailable (\(error.localizedDescription)); planning by the numbers")
-            return DayPlan(blocks: Self.fallback(input, gaps: gaps, ranked: ranked), route: nil, usage: nil, note: "Planned by the numbers; the model was not available.")
+            let unread = input.instructions == nil ? "" : " Your instructions need the model."
+            return DayPlan(blocks: Self.fallback(input, gaps: gaps, ranked: ranked), route: nil, usage: nil, note: "Planned by the numbers; the model was not available." + unread)
         }
     }
 
@@ -172,6 +182,10 @@ public actor DayPlanner {
                 let worth = o.points.map { " · worth \($0.formatted(.number.precision(.fractionLength(0...1))))% of the grade" } ?? ""
                 lines.append("- \(o.title)\(o.course.map { " (\($0))" } ?? "") · \(when)\(worth)")
             }
+        }
+        if let instructions = input.instructions {   // capped: the on-device context is 4096 tokens and the schema and obligations need most of it
+            lines.append("The student's own instructions:")
+            lines.append(String(instructions.prefix(1500)))
         }
         lines.append("Plan the free gaps.")
         return lines.joined(separator: "\n")
