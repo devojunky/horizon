@@ -1,9 +1,9 @@
 import Foundation
 import CryptoKit
 
-enum Normalize {
+public enum Normalize {
     /// Lowercased, punctuation stripped, whitespace collapsed. Used for fuzzy keys.
-    static func key(_ s: String) -> String {
+    public static func key(_ s: String) -> String {
         let lowered = s.lowercased()
         var out = ""
         var lastSpace = true
@@ -23,7 +23,7 @@ enum Normalize {
         "asgn": ["assignment"], "assn": ["assignment"], "proj": ["project"], "mt": ["midterm"], "rp": ["response", "paper"],
     ]
 
-    static func tokens(_ s: String) -> Set<String> {
+    public static func tokens(_ s: String) -> Set<String> {
         Set(key(s).split(separator: " ").flatMap { canonical[String($0)] ?? [String($0)] })
     }
 
@@ -32,7 +32,7 @@ enum Normalize {
     }
 
     /// Token Jaccard similarity; 0 when numbers are present on both sides and disjoint ("Homework 3" vs "Homework 4").
-    static func similarity(_ a: String, _ b: String) -> Double {
+    public static func similarity(_ a: String, _ b: String) -> Double {
         let ta = tokens(a), tb = tokens(b)
         guard !ta.isEmpty, !tb.isEmpty else { return 0 }
         let na = numbers(a), nb = numbers(b)
@@ -44,7 +44,7 @@ enum Normalize {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    static func collapseWhitespace(_ s: String) -> String {
+    public static func collapseWhitespace(_ s: String) -> String {
         s.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 }

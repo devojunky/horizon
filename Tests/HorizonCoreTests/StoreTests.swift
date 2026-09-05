@@ -1,0 +1,146 @@
+import Foundation
+import Testing
+import IngestKit
+@testable import HorizonCore
+
+struct StoreTests {
+    @Test func ingestCreatesCourseComponentsPoliciesAndStates() async throws {
+        let store = try Fixture.store()
+        let summary = try await Fixture.ingest(Fixture.calculus(quizStatus: .needsReview), into: store)
+        #expect(summary.created == 5 && summary.pendingReview == 1 && summary.courseCode == "MA-UY 1124")
+        let course = try await store.courses().first!
+        #expect(course.title == "Calculus II" && course.gradeComponents.map(\.name) == ["Homework", "Quizzes", "Final Exam"] && course.lastIngested != nil)
+        let states = Dictionary(uniqueKeysWithValues: try await store.obligations().map { ($0.title, $0.state) })
+        #expect(states == ["HW 1": .readyToProject, "HW 2": .readyToProject, "Quiz 1": .pendingReview, "Midterm 1": .readyToProject, "Final Exam": .awaitingDate])
+        let queue = try await store.reviewQueue().map(\.title)
+        let docStatus = try await store.documents().first?.status
+        #expect(queue == ["Quiz 1"] && docStatus == .parsed)
+    }
+
+    @Test func sameDocumentTwiceIsRecordedOnce() async throws {
+        let store = try Fixture.store()
+        let a = try await store.enqueueDocument(filename: "calc.pdf", sha256: "abc", kind: "pdf", deviceName: "iPhone")
+        let b = try await store.enqueueDocument(filename: "calc (1).pdf", sha256: "abc", kind: "pdf", deviceName: "iPhone")
+        let count = try await store.documents().count
+        #expect(a.id == b.id && count == 1)
+    }
+
+    @Test func reviewConfirmWithEditsSetsOverrides() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(quizStatus: .needsReview), into: store)
+        let quiz = try await store.reviewQueue().first!
+        try await store.confirm(id: quiz.id, edits: ObligationEdits(title: "Quiz 1 (chapters 1–2)", due: .some(Fixture.day(9, 18))))
+        let confirmed = try await store.obligations().first { $0.id == quiz.id }!
+        #expect(confirmed.state == .readyToProject && confirmed.userOverrides == [.title, .due] && confirmed.title == "Quiz 1 (chapters 1–2)")
+        let remaining = try await store.reviewQueue()
+        #expect(remaining.isEmpty)
+    }
+
+    @Test func courselessDocumentsMatchOnReingest() async throws {
+        let store = try Fixture.store()
+        var shot = Fixture.calculus(sha: "shot1"); shot.course = nil; shot.gradeComponents = []
+        try await Fixture.ingest(shot, into: store)
+        var again = Fixture.calculus(sha: "shot2"); again.course = nil; again.gradeComponents = []   // a second crop of the same list
+        let summary = try await Fixture.ingest(again, into: store)
+        #expect(summary.created == 0 && summary.unchanged == 5)
+        let count = try await store.obligations().count
+        #expect(count == 5)
+    }
+
+    @Test func coursesWithDifferentCodesStaySeparate() async throws {
+        let store = try Fixture.store()
+        var lecture = Fixture.calculus(sha: "lec"); lecture.course?.code = "CHEM 2301"; lecture.course?.title = "Organic Chemistry I"
+        var lab = Fixture.calculus(sha: "lab"); lab.course?.code = "CHEM 2311"; lab.course?.title = "Organic Chemistry I Lab"
+        try await Fixture.ingest(lecture, into: store)
+        try await Fixture.ingest(lab, into: store)
+        let courses = try await store.courses()
+        #expect(courses.count == 2)
+    }
+
+    @Test func similarTitlesDoNotCaptureEachOther() async throws {
+        // "Essay draft" (9/20) next to an existing "Essay" (10/1): a new row, not a retitled old one.
+        let store = try Fixture.store()
+        var first = Fixture.calculus(sha: "e1")
+        first.obligations = [ParsedObligation(title: "Essay", dateAsWritten: "Oct 1", due: Fixture.day(10, 1), status: .ready)]
+        try await Fixture.ingest(first, into: store)
+        var revised = Fixture.calculus(sha: "e2")
+        revised.obligations = [ParsedObligation(title: "Essay", dateAsWritten: "Oct 1", due: Fixture.day(10, 1), status: .ready),
+                               ParsedObligation(title: "Essay draft", dateAsWritten: "Sep 20", due: Fixture.day(9, 20), status: .ready)]
+        let summary = try await Fixture.ingest(revised, into: store)
+        #expect(summary.created == 1 && summary.updated == 0)
+        // And an identical re-ingest of "Project" (TBA) beside "Project proposal" (9/20) changes nothing.
+        var tbd = Fixture.calculus(sha: "p1")
+        tbd.obligations = [ParsedObligation(title: "Project", dateAsWritten: "TBA", due: nil, status: .awaitingDate),
+                           ParsedObligation(title: "Project proposal", dateAsWritten: "Sep 20", due: Fixture.day(9, 20), status: .ready)]
+        try await Fixture.ingest(tbd, into: store)
+        var same = tbd; same.document = DocumentInfo(name: "p.pdf", sha256: "p2", kind: .pdf, pageCount: 1)
+        let repeat_ = try await Fixture.ingest(same, into: store)
+        #expect(repeat_.created == 0 && repeat_.updated == 0)
+    }
+
+    @Test func failedDocumentsCanBeQueuedAgain() async throws {
+        let store = try Fixture.store()
+        let doc = try await store.enqueueDocument(filename: "s.pdf", sha256: "f1", kind: "pdf", deviceName: "A")
+        try await store.markDocument(id: doc.id, status: .failed, failure: "no model")
+        let again = try await store.enqueueDocument(filename: "s.pdf", sha256: "f1", kind: "pdf", deviceName: "A")
+        #expect(again.id == doc.id && again.status == .queued && again.failure == nil)
+    }
+
+    @Test func tbdResolvesOnReingest() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        var revised = Fixture.calculus(sha: "v2")
+        revised.obligations[4] = ParsedObligation(title: "Final Exam", componentName: "Final Exam", dateAsWritten: "Dec 18", due: Fixture.day(12, 18), status: .ready)
+        try await Fixture.ingest(revised, into: store)
+        let final = try await store.obligations().first { $0.title == "Final Exam" }!
+        let total = try await store.obligations().count
+        #expect(final.state == .readyToProject && final.due != nil && total == 5)   // matched the TBD row, no duplicate
+    }
+
+    @Test func tombstonesPurgeAfter180Days() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let hw1 = try await store.obligations().first { $0.title == "HW 1" }!
+        try await store.softDelete(id: hw1.id)
+        let early = try await store.purgeTombstones(now: Date())
+        let late = try await store.purgeTombstones(now: Date().addingTimeInterval(181 * 86400))
+        let left = try await store.obligations(includeDeleted: true).count
+        #expect(early == 0 && late == 1 && left == 4)
+    }
+
+    @Test func coordinatorKeepsDocumentsQueuedWhileTheModelLoads() async throws {
+        let store = try Fixture.store()
+        let storage = DocumentStorage.temporary()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("s-\(UUID().uuidString).txt")
+        try "syllabus".write(to: file, atomically: true, encoding: .utf8)
+        let notReady = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac") { _ in throw IngestError.modelNotReady("loading") }
+        _ = try await notReady.enqueue(fileURL: file)
+        let reports = await notReady.drain()
+        let doc = try await store.documents().first!
+        #expect(reports.count == 1 && doc.status == .queued && doc.failure?.contains("Waiting") == true)   // still queued: retried next drain
+
+        let noCloud = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac") { _ in throw IngestError.cloudUnavailable("offline") }
+        _ = await noCloud.drain()
+        let parked = try await store.documents().first!
+        #expect(parked.status == .awaitingCloudParse)   // a genuine cloud need waits for BGProcessingTask
+
+        let parses = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac") { _ in Fixture.calculus() }
+        let done = await parses.drain()
+        let parsed = try await store.documents().first!
+        #expect(done.first?.summary?.created == 5 && parsed.status == .parsed)
+    }
+
+    @Test func coordinatorDrainsQueuedFilesAndSkipsOtherDevicesFiles() async throws {
+        let store = try Fixture.store()
+        let storage = DocumentStorage.temporary()
+        let coordinator = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac")
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("note-\(UUID().uuidString).txt")
+        try "not a syllabus".write(to: file, atomically: true, encoding: .utf8)
+        let doc = try await coordinator.enqueue(fileURL: file)
+        #expect(doc.status == .queued && storage.exists(sha256: doc.sha256, extension: "txt"))
+        // A document recorded by another device, whose bytes are not here, is left alone.
+        _ = try await store.enqueueDocument(filename: "elsewhere.pdf", sha256: "0000", kind: "pdf", deviceName: "iPad")
+        let queued = try await store.queuedDocuments().count
+        #expect(queued == 2)
+    }
+}

@@ -1,0 +1,2 @@
+// Copy to Config/Local.xcconfig (git-ignored) and fill in your team.
+DEVELOPMENT_TEAM = 

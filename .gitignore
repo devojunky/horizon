@@ -7,3 +7,5 @@ xcuserdata/
 .claude/skills/HIGAgentSkills/
 .claude/settings.local.json
 Evals/Results/
+Config/Local.xcconfig
+*.xcodeproj

@@ -1,8 +1,17 @@
 import Foundation
 import FoundationModels
-import Vision  // enables the OCRTool cross-import overlay
+import Vision  // enables the OCRTool cross-import overlay (absent in the iOS simulator SDK)
 import CoreGraphics
 import ImageIO
+
+/// The system OCR tool where the SDK has it; on the simulator the model reads the image without it.
+func ocrTools() -> [any Tool] {
+    #if canImport(_Vision_FoundationModels)
+    [OCRTool()]
+    #else
+    []
+    #endif
+}
 
 struct ExtractionOutcome: Sendable {
     enum Kind: Sendable { case text, image }
@@ -34,8 +43,10 @@ actor Extractor {
         switch route {
         case .onDevice:
             let model = SystemLanguageModel.default
-            guard case .available = model.availability else {
-                throw IngestError.modelUnavailable(String(describing: model.availability))
+            switch model.availability {
+            case .available: break
+            case .unavailable(.modelNotReady): throw IngestError.modelNotReady("assets are still loading")
+            case .unavailable(let reason): throw IngestError.modelUnavailable(String(describing: reason))
             }
             let instructions = try await model.tokenCount(for: Instructions(IngestInstructions.text))
             let schema = try await model.tokenCount(for: ChunkExtraction.generationSchema)
@@ -104,7 +115,7 @@ actor Extractor {
         for attempt in 0..<2 {
             let candidate = attempt == 0 ? image : (Self.halved(image) ?? image)
             do {
-                return try await respond(chunk: imageIndex, page: page, kind: .image, tools: [OCRTool()]) {
+                return try await respond(chunk: imageIndex, page: page, kind: .image, tools: ocrTools()) {
                     Prompt {
                         text
                         Attachment(candidate, orientation: orientation).label(Self.imageLabel)

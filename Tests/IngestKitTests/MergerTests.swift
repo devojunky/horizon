@@ -62,12 +62,27 @@ struct MergerTests {
         let r = Self.merge([Self.outcome(0, components: [Self.component("Homework", 15), Self.component("Projects", 20), Self.component("Quizzes", 65, platform: "webassign")], obligations: [
             Self.ob("HW 1", "Wed 9/9", iso: "2026-09-09", platform: "lms"),                       // its own sentence says Gradescope, beating the grading row and the model
             Self.ob("Project 1", "Fri Oct 16, 11:59 PM", iso: "2026-10-16", platform: "not_stated"),   // its own sentence says Brightspace
-            Self.ob("Quiz 1", "Thu 9/17", iso: "2026-09-17", platform: "not_stated"),                   // grading row says Gradescope even though the model read it as WebAssign
+            Self.ob("Quiz 1", "Thu 9/17", iso: "2026-09-17", platform: "gradescope"),                   // grading row says Gradescope even though the model read it as WebAssign
             Self.ob("Project 2", "Fri Dec 4, 11:59 PM", iso: "2026-12-04", platform: "not_stated"),      // table row
             Self.ob("HW 2", "TBA", platform: "lms"),                                                     // grading row says WebAssign, beating the model
         ])], text: text)
         let platforms = Dictionary(uniqueKeysWithValues: r.obligations.map { ($0.title, $0.platform) })
         #expect(platforms == ["HW 1": .gradescope, "Project 1": .lms, "Quiz 1": .gradescope, "Project 2": .lms, "HW 2": .webAssign])
+        // Neither the item's row nor its grading row names a platform: the model's "lms" guess is not evidence in a text document.
+        let guess = Self.merge([Self.outcome(0, components: [Self.component("Quizzes", 12, platform: "lms")], obligations: [Self.ob("Quiz 1", "Thu 9/17", iso: "2026-09-17", platform: "lms")])])
+        #expect(guess.obligations[0].platform == .syllabusOnly)
+    }
+
+    @Test func gradingRowWeightBeatsTheModels() {
+        let r = Self.merge([Self.outcome(0, components: [Self.component("Homework", 10), Self.component("Quizzes", 10)])])   // the model misread 15% and 12%
+        #expect(r.gradeComponents.map(\.weight) == [0.15, 0.12])
+    }
+
+    @Test func modelDateOnAnotherRowIsNotHeldAgainstTheItem() {
+        // The model's ISO date (9/30) is HW 4's date, not on HW 3's row: a stray misread, not an ambiguity.
+        let text = "Week 3: HW 3 due 9/23.\nWeek 4: HW 4 due 9/30."
+        let r = Self.merge([Self.outcome(0, obligations: [Self.ob("HW 3", "9/23", iso: "2026-09-30")])], text: text)
+        #expect(r.obligations[0].status == .ready && Self.day(r.obligations[0].due) == 23)
     }
 
     @Test func gradeTableRowsTheModelSkippedAreRecovered() {
@@ -280,14 +295,15 @@ struct MergerTests {
     }
 
     @Test func weightsBeyondHundredPercentAreIgnored() {
+        let text = "MA-UY 1124 Calculus II. HW 1 due Wed 9/9."   // no grading table: the model's figures are all there is
         let r = Self.merge([
             Self.outcome(0, components: [Self.component("Homework", 15), Self.component("Quizzes", 12), Self.component("Midterm 1", 20), Self.component("Midterm 2", 20), Self.component("Final Exam", 33)]),
             Self.outcome(1, components: [Self.component("Midterm", 15), Self.component("Homework", 10)]),
-        ])
+        ], text: text)
         #expect(r.gradeComponents.map(\.name) == ["Homework", "Quizzes", "Midterm 1", "Midterm 2", "Final Exam"])
         #expect(r.gradeComponents[0].weight == 0.15)
         #expect(r.warnings.count == 2)
-        let unweighted = Self.merge([Self.outcome(0, components: [Self.component("Homework", 67), Self.component("Final Exam", 33)]), Self.outcome(1, components: [Self.component("quiz", nil)])])
+        let unweighted = Self.merge([Self.outcome(0, components: [Self.component("Homework", 67), Self.component("Final Exam", 33)]), Self.outcome(1, components: [Self.component("quiz", nil)])], text: text)
         #expect(unweighted.gradeComponents.map(\.name) == ["Homework", "Final Exam"])
     }
 

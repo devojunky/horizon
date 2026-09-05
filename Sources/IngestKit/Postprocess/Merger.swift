@@ -38,7 +38,7 @@ enum Merger {
         for facts in extractions.flatMap(\.gradeComponents) {
             let key = Normalize.key(facts.name)
             guard !key.isEmpty else { continue }
-            let weight = (facts.weightPercent ?? source.percentage(onLineMentioning: facts.name)).map { $0 / 100 }
+            let weight = (source.percentage(onLineMentioning: facts.name) ?? facts.weightPercent).map { $0 / 100 }   // the row's own figure first
             if let i = components.firstIndex(where: { Normalize.key($0.name) == key }) {
                 if components[i].weight == nil { components[i].weight = weight }
                 if components[i].expectedCount == nil { components[i].expectedCount = facts.count }
@@ -53,7 +53,7 @@ enum Merger {
                 components.append(ParsedGradeComponent(name: facts.name, weight: weight, expectedCount: facts.count,
                                                        cadence: Cadence(rawValue: facts.cadence), dropLowest: facts.dropLowest))
             }
-            if facts.platform != "not_stated", componentPlatforms[key] == nil { componentPlatforms[key] = platform(facts.platform) }
+            if facts.platform != "not_stated", componentPlatforms[key] == nil, !source.hasText { componentPlatforms[key] = platform(facts.platform) }
         }
         // Rows of the grade table the model skipped, read straight from the document.
         if components.compactMap(\.weight).reduce(0, +) < 0.99 {
@@ -66,7 +66,7 @@ enum Merger {
                 }
             }
         }
-        for c in components {   // the grading row's own wording beats the model's reading of it
+        for c in components {   // the grading row's own wording is the authority on where a component is submitted
             if let p = source.platform(onLineMentioning: c.name) { componentPlatforms[Normalize.key(c.name)] = p }
         }
         let componentKeys = Set(components.map { Normalize.key($0.name) })
@@ -140,8 +140,13 @@ enum Merger {
                     let model = facts.dueDate.flatMap { resolver.ymd(iso: $0) }
                     let item = resolution.date.map { options.calendar.dateComponents([.month, .day], from: $0) }
                     let yearSlip = model != nil && item != nil && model?.month == item?.month && model?.day == item?.day
-                    let modelInSource = model.flatMap { options.calendar.date(from: $0) }.map { d in resolver.mentions(d).contains(where: source.contains) } ?? false
-                    if !yearSlip, modelInSource || !(writtenInSource && spans.count == 1) { confidence -= 0.3 }
+                    let modelMentions = model.flatMap { options.calendar.date(from: $0) }.map(resolver.mentions) ?? []
+                    let modelOnRow: Bool = if let row = source.segment(mentioning: title) {
+                        modelMentions.contains { (" " + Source.normalize(row) + " ").contains(" \($0) ") }
+                    } else {
+                        modelMentions.contains(where: source.contains)
+                    }
+                    if !yearSlip, modelOnRow || !(writtenInSource && spans.count == 1) { confidence -= 0.3 }
                 }
                 if flags.contains(.dateOutsideTerm) { confidence -= 0.15 }
                 // No wording to check, or an image Vision could not read: the model is on its own, so review.
@@ -150,12 +155,11 @@ enum Merger {
                     confidence = min(confidence, options.reviewThreshold - 0.05)
                 }
                 confidence = min(1, max(0, confidence))
-                // Platform: the item's own row, then its grading row, then (for a screenshot of a platform page) the one
-                // platform the page names, then the model's guess.
+                // Platform: the item's own row, then its grading row. A screenshot may add the one platform the page
+                // names, then the model's reading of the picture; for text the model's guess is not evidence ("lms" is its default).
                 let platform = source.platform(onLineMentioning: title)
                     ?? componentName.flatMap { componentPlatforms[Normalize.key($0)] }
-                    ?? (outcome.kind == .image ? source.uniquePlatform : nil)
-                    ?? platform(facts.platform)
+                    ?? (outcome.kind == .image ? (source.uniquePlatform ?? platform(facts.platform)) : (source.hasText ? .syllabusOnly : platform(facts.platform)))
                 let status: ObligationStatus = resolution.date == nil ? (tbd ? .awaitingDate : .needsReview)
                     : (confidence < options.reviewThreshold ? .needsReview : .ready)
                 let item = ParsedObligation(id: UUID(), title: title, platform: platform,

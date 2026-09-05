@@ -51,8 +51,8 @@ public actor Ingestor {
             extractor = try await Extractor.make(route: .privateCloudCompute, sampleText: document.fullText, log: log)
         case .onDeviceFirst:
             do { extractor = try await Extractor.make(route: .onDevice, sampleText: document.fullText, log: log) }
-            catch let error as IngestError {
-                warnings.append("\(error.localizedDescription); using Private Cloud Compute")
+            catch IngestError.modelUnavailable(let why) {   // a device that will never have the model; "not ready" propagates for a retry
+                warnings.append("On-device model unavailable (\(why)); using Private Cloud Compute")
                 extractor = try await Extractor.make(route: .privateCloudCompute, sampleText: document.fullText, log: log)
             }
         }

@@ -1,0 +1,4 @@
+// Shared build settings. Local.xcconfig (git-ignored) may set DEVELOPMENT_TEAM.
+#include? "Local.xcconfig"
+SWIFT_VERSION = 6.0
+SWIFT_STRICT_CONCURRENCY = complete
