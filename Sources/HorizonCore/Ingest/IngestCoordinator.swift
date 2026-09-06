@@ -52,6 +52,12 @@ public actor IngestCoordinator {
         }
     }
 
+    /// Removes a document, its stored file, and the items that came from it (soft-deleted; the next sync removes their reminders).
+    public func deleteDocument(id: UUID) async throws {
+        guard let record = try await store.deleteDocument(id: id) else { return }
+        storage.remove(sha256: record.sha256, extension: record.kind)
+    }
+
     /// Where the next drain reads documents: on device, or in Private Cloud Compute (a user setting).
     public func setRoute(_ route: IngestOptions.RoutePolicy) { options.route = route }
 

@@ -204,6 +204,11 @@ final class AppModel {
         }
     }
 
+    func deleteDocument(_ id: UUID) async {
+        do { try await coordinator.deleteDocument(id: id) } catch { lastError = error.localizedDescription }
+        await drainAndSync()   // the reminders of what came from it go with it
+    }
+
     func retry(documentID: UUID) async {
         try? await store.markDocument(id: documentID, status: .queued)
         await drainAndSync()

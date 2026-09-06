@@ -80,6 +80,11 @@ public struct DocumentStorage: Sendable {
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
+    /// Removes a stored file; a file that is already gone is not an error.
+    public func remove(sha256: String, extension ext: String) {
+        try? FileManager.default.removeItem(at: url(sha256: sha256, extension: ext))
+    }
+
     public func exists(sha256: String, extension ext: String) -> Bool {
         FileManager.default.fileExists(atPath: url(sha256: sha256, extension: ext).path)
     }

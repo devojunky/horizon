@@ -20,6 +20,7 @@ struct ProgressCreepTests {
         let before = creep.value(at: Self.at(30))
         creep.update(real: 0.4, mark: 0.6, at: Self.at(30))
         #expect(creep.value(at: Self.at(30)) == before)                             // continuous at the change
+        #expect(creep.value(at: Self.at(30.3)) > before && creep.value(at: Self.at(30.3)) < 0.4)   // easing, not snapping
         #expect(creep.value(at: Self.at(31)) > 0.399)                               // and up to the figure within a second
         #expect(creep.value(at: Self.at(31)) < 0.6)
         // A real figure the creep had already passed holds the bar where it was.

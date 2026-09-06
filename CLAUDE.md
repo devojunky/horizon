@@ -47,7 +47,7 @@ xcrun simctl spawn booted log stream --level info --predicate 'subsystem == "com
 xcrun simctl privacy booted grant reminders com.daniel.horizon && xcrun simctl launch booted com.daniel.horizon --ingest-sample   # DEBUG: read the bundled sample without a tap
 xcrun simctl launch booted com.daniel.horizon --tab-horizon --zoom-two-weeks   # DEBUG: open on the strip, zoomed to two weeks around today (--zoom-month for a month)
 xcrun simctl launch booted com.daniel.horizon --tab-now --plan                 # DEBUG: plan today; --edit-block opens the first block's editor, --plan-instructions the Tell the Planner sheet
-xcrun simctl launch booted com.daniel.horizon --ingest-file /path/to/file      # DEBUG: read any file the simulator can see (broken files, duplicates); --open-documents opens Documents
+xcrun simctl launch booted com.daniel.horizon --ingest-file /path/to/file      # DEBUG: read any file the simulator can see (broken files, duplicates); --open-documents opens Documents, --confirm-delete-document its delete dialog
 ```
 The simulator runs a 300M model, not the 3B one; use it to exercise the pipeline, not to judge extraction quality. A DEBUG menu item "Ingest sample syllabus" feeds `Apps/Horizon/Samples/sample-syllabus.pdf`.
 

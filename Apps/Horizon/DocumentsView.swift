@@ -7,6 +7,7 @@ struct DocumentsView: View {
     @Environment(AppModel.self) private var model
     @Query(sort: \SourceDocument.queuedAt, order: .reverse) private var documents: [SourceDocument]
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
+    @State private var deleting: SourceDocument?
 
     var body: some View {
         List {
@@ -43,6 +44,9 @@ struct DocumentsView: View {
                         }
                         ForEach(doc.warnings, id: \.self) { Text($0).font(.footnote).foregroundStyle(.secondary) }
                     }
+                    .swipeActions(edge: .trailing) {
+                        Button("Delete", systemImage: "trash", role: .destructive) { deleting = doc }
+                    }
                 }
                 if documents.isEmpty { Text("No documents yet.").foregroundStyle(.secondary) }
             } header: { Kicker("Documents") }
@@ -50,7 +54,23 @@ struct DocumentsView: View {
         }
         .listStyle(.plain)
         .paper()
+        .confirmationDialog("Delete \(deleting?.filename ?? "this document")?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
+            Button("Delete Document", role: .destructive) { if let doc = deleting { Task { await model.deleteDocument(doc.id) } } }
+        } message: {
+            Text(deleteMessage)
+        }
         .navigationTitle("Documents")
+        .onAppear { if MainTabs.debugFlag("--confirm-delete-document") { deleting = documents.first } }
+    }
+
+    /// What goes with the document: the items it is the source of, and their reminders.
+    private var deleteMessage: String {
+        let count = (deleting?.obligations ?? []).filter { $0.deletedAt == nil }.count
+        switch count {
+        case 0: return "Nothing on file came from it."
+        case 1: return "The one item that came from it, and its reminder, are removed as well. Items another document has since updated stay."
+        default: return "The \(count) items that came from it, and their reminders, are removed as well. Items another document has since updated stay."
+        }
     }
 
     private func status(_ doc: SourceDocument) -> String {

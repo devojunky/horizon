@@ -261,6 +261,21 @@ public actor HorizonStore {
 
     public func documents() throws -> [DocumentSnapshot] { try fetchDocuments().map(snapshot) }
 
+    /// Removes a document and retires the items it is the source of (soft-deleted, so their reminders go on the next
+    /// sync). An item another document has since fed stays. Returns the record, so the file can be removed too.
+    @discardableResult
+    public func deleteDocument(id: UUID) throws -> DocumentSnapshot? {
+        guard let doc = try fetchDocument(id: id) else { return nil }
+        let record = snapshot(doc)
+        let now = Date()
+        for item in doc.obligations ?? [] where item.deletedAt == nil { item.deletedAt = now; item.updatedAt = now }
+        let course = doc.course
+        modelContext.delete(doc)
+        if let course { recomputePoints(for: course) }
+        try modelContext.save()
+        return record
+    }
+
     public func markDocument(id: UUID, status: DocumentStatus, failure: String? = nil) throws {
         guard let doc = try fetchDocument(id: id) else { return }
         doc.status = status; doc.failure = failure

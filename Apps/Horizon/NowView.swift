@@ -22,7 +22,7 @@ struct NowView: View {
                     ScrollView { WorkingLine(kicker: "Planning", line: "Reading your calendar and the coming weeks…") }
                 } else if let plan = model.plan {
                     TimelineView(.periodic(from: .now, by: 60)) { context in
-                        PlanList(plan: plan, now: context.date, footer: footer(plan), revealed: revealed == plan.id, reduceMotion: reduceMotion,
+                        PlanList(plan: plan, now: context.date, revealed: revealed == plan.id, reduceMotion: reduceMotion,
                                  edit: { editing = $0 }, delete: { model.deleteBlock($0) })
                     }
                     .onAppear { reveal(plan.id) }
@@ -90,25 +90,12 @@ struct NowView: View {
         }
     }
 
-    private func footer(_ plan: DayPlan) -> String {
-        var parts: [String] = []
-        if let note = plan.note { parts.append(note) }
-        switch plan.route {
-        case .privateCloudCompute?: parts.append("Planned in Private Cloud Compute.")
-        case .onDevice?: parts.append("Planned on device.")
-        case nil: break
-        }
-        if model.planEdited { parts.append("Edited by hand.") }
-        parts.append("Kept for today; tomorrow starts from nothing.")
-        return parts.joined(separator: " ")
-    }
 }
 
-/// The timetable: the day and the time in the header, one row per block, the footer's provenance.
+/// The timetable: the day and the time in the header (and the planner's note, when it has one), one row per block.
 private struct PlanList: View {
     let plan: DayPlan
     let now: Date
-    let footer: String
     let revealed: Bool
     let reduceMotion: Bool
     var edit: (PlanBlock) -> Void
@@ -136,14 +123,15 @@ private struct PlanList: View {
                     Text("Nothing planned. Add a block, or plan again.").foregroundStyle(.secondary).listRowSeparator(.hidden)
                 }
             } header: {
-                HStack {
-                    Kicker(now.formatted(.dateTime.weekday(.wide).month(.wide).day()))
-                    Spacer()
-                    Kicker(now.formatted(date: .omitted, time: .shortened))
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Kicker(now.formatted(.dateTime.weekday(.wide).month(.wide).day()))
+                        Spacer()
+                        Kicker(now.formatted(date: .omitted, time: .shortened))
+                    }
+                    if let note = plan.note { Text(note).font(.footnote).foregroundStyle(.secondary).textCase(nil) }
                 }
                 .padding(.bottom, 4)
-            } footer: {
-                Text(footer).font(.footnote).foregroundStyle(.secondary).padding(.top, 10)
             }
             .onPaper()
         }

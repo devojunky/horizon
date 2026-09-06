@@ -125,6 +125,28 @@ struct StoreTests {
         #expect(try await store.documents().first { $0.sha256 == "loose" }?.courseID == calc.id)
     }
 
+    @Test func deletingADocumentRetiresWhatCameFromItAndNothingElse() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let calc = try await store.courses().first!
+        // A schedule refreshes HW 1 and adds HW 3; the syllabus stays the source of everything else.
+        let doc = try await store.enqueueDocument(filename: "schedule.pdf", sha256: "sched3", kind: "pdf", deviceName: "A", courseID: calc.id)
+        var schedule = Fixture.calculus(sha: "sched3"); schedule.course = nil; schedule.gradeComponents = []; schedule.policies = []
+        schedule.obligations = [ParsedObligation(title: "HW 1", platform: .webAssign, componentName: "Homework", dateAsWritten: "9/10", due: Fixture.day(9, 10), status: .ready, pointsAtStake: nil, sourcePage: 1),
+                                ParsedObligation(title: "HW 3", platform: .webAssign, componentName: "Homework", dateAsWritten: "9/24", due: Fixture.day(9, 24), status: .ready, pointsAtStake: nil, sourcePage: 1)]
+        try await store.ingest(schedule, documentID: doc.id, calendar: Fixture.calendar)
+        let syllabus = try await store.documents().first { $0.sha256 == "abc" }!
+        let before = try await store.obligations().filter { $0.deletedAt == nil }.map(\.title)
+        #expect(before.contains("HW 3") && before.contains("Quiz 1"))
+        let record = try await store.deleteDocument(id: syllabus.id)
+        #expect(record?.filename == "calc.pdf")
+        let live = try await store.obligations().filter { $0.deletedAt == nil }.map(\.title)
+        #expect(live.sorted() == ["HW 1", "HW 3"])                                  // the schedule's items stay, the syllabus's go
+        #expect(try await store.documents().map(\.sha256) == ["sched3"])
+        #expect(try await store.obligations(includeDeleted: true).contains { $0.title == "Quiz 1" && $0.deletedAt != nil })   // a tombstone, so its reminder goes
+        #expect(try await store.deleteDocument(id: syllabus.id) == nil)              // gone is gone
+    }
+
     @Test func sameDocumentTwiceIsRecordedOnce() async throws {
         let store = try Fixture.store()
         let a = try await store.enqueueDocument(filename: "calc.pdf", sha256: "abc", kind: "pdf", deviceName: "iPhone")

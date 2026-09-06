@@ -32,7 +32,8 @@ public struct ProgressCreep: Equatable, Sendable {
     public func value(at time: Date) -> Double {
         let elapsed = max(0, time.timeIntervalSince(since))
         let floor = max(from, real)                                          // the creep may have run past a small real step
-        let step = from + (floor - from) * (1 - exp(-elapsed / 0.15))       // up to the real figure in well under a second
+        let t = min(1, elapsed / 0.6)
+        let step = from + (floor - from) * t * t * (3 - 2 * t)              // eases in and out over 0.6 s, so a step never jolts
         let target = floor + (mark - floor) * reach
         let creep = max(0, target - floor) * (1 - exp(-elapsed / pace))
         return min(1, step + creep)

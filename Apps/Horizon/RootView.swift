@@ -155,7 +155,8 @@ struct RootView: View {
 struct ReadingSection: View {
     let reading: AppModel.Reading
     var cancel: () -> Void
-    @AppStorage("showReadingDetails") private var showDetails = false
+    @AppStorage("showReadingDetails") private var remembered = false
+    @State private var showDetails = false   // local, so the change animates; the choice is remembered separately
 
     var body: some View {
         Section {
@@ -167,8 +168,9 @@ struct ReadingSection: View {
                         Text(progressLine).font(.footnote).foregroundStyle(.secondary).monospacedDigit()
                     }
                     Spacer()
-                    Button { withAnimation { showDetails.toggle() } } label: {
-                        Image(systemName: showDetails ? "chevron.up" : "chevron.down").font(.body.weight(.semibold)).frame(width: 44, height: 44).contentShape(Rectangle())
+                    Button { withAnimation(.snappy) { showDetails.toggle() }; remembered = showDetails } label: {
+                        Image(systemName: "chevron.down").font(.body.weight(.semibold)).rotationEffect(.degrees(showDetails ? 180 : 0))
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
                     }
                     .buttonStyle(.borderless).foregroundStyle(.secondary)
                     .accessibilityLabel(showDetails ? "Hide what is being read" : "Show what is being read")
@@ -193,6 +195,8 @@ struct ReadingSection: View {
         }
         .onPaper()
         .animation(.default, value: reading.items)
+        .animation(.snappy, value: showDetails)
+        .onAppear { showDetails = remembered }
     }
 
     private var progressLine: String {
@@ -210,7 +214,7 @@ private struct CreepingProgressBar: View {
     @State private var creep: ProgressCreep?
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30)) { context in
+        TimelineView(.animation) { context in   // every frame: the bar's motion is the point of it
             ProgressView(value: creep?.value(at: context.date) ?? real).tint(Design.accent)
         }
         .onAppear { creep = ProgressCreep(real: real, mark: mark, at: .now) }
