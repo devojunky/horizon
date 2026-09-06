@@ -614,6 +614,35 @@ struct MergerTests {
         #expect(r.obligations[0].status == .needsReview && r.obligations[1].status == .ready)   // a bare verb is reviewed, never shipped
     }
 
+    @Test func anInventedNumberedSeriesWithScheduleDatesIsDropped() {
+        let text = """
+        MA-UY 1124 Calculus II, Fall 2026
+        For each class day there will be a WebAssign assignment, due on Fridays.
+        Week 7: Tuesday, October 13, integration by parts. Week 8: Tuesday, October 20, trigonometric integrals.
+        Quiz 3 is on Friday, October 16.
+        """
+        let r = Self.merge([Self.outcome(0, obligations: [Self.ob("HW 1", "Tuesday, October 13", iso: "2026-10-13"), Self.ob("HW 2", "Tuesday, October 20", iso: "2026-10-20"),
+                                                          Self.ob("Quiz 3", "Friday, October 16", iso: "2026-10-16")])], text: text)
+        #expect(r.obligations.map(\.title) == ["Quiz 3"])   // the document numbers no homework: HW 1 and HW 2 are made up, dates and all
+        // A misnamed item on a line that asks for something survives, under the line's own name.
+        let asks = text + "\nHW 5 is due Friday, October 23."
+        let kept = Self.merge([Self.outcome(0, obligations: [Self.ob("HW 3", "Friday, October 23", iso: "2026-10-23")])], text: asks)
+        #expect(kept.obligations.count == 1)
+    }
+
+    @Test func recoveredPoliciesAreWholeSentencesWithoutHeadings() {
+        let text = """
+        MA-UY 1124 Calculus II, Fall 2026
+        Attendance
+        Class participation and attendance are an important part of the course. Please come prepared.
+        Exam Policies
+        Students will be allowed a maximum of one make-up exam throughout the entire semester per course for an excused reason listed below. There will be no remote makeup exams.
+        """
+        let r = Self.merge([Self.outcome(0, policies: [PolicyFacts(kind: "makeup_exam", text: "for an excused reason listed below. There will be no remote makeup exams.")])], text: text)
+        #expect(r.policies.first { $0.kind == .attendance }?.text == "Class participation and attendance are an important part of the course.")   // no "Attendance" heading glued on
+        #expect(r.policies.first { $0.kind == .makeupExam }?.text.hasPrefix("Students will be allowed a maximum of one make-up exam") == true)   // the whole sentence, not the cut
+    }
+
     @Test func anInventedSeriesOfTBDItemsIsDropped() {
         let text = """
         MA-UY 1124 Calculus II, Fall 2026

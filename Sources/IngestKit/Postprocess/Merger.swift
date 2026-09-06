@@ -181,6 +181,12 @@ enum Merger {
                         flags.append(.titleNotInSource); confidence = min(confidence, options.reviewThreshold - 0.05)
                     }
                 }
+                if strict, Self.isTopicOrSession(title) { skippedTopics += 1; continue }   // renamed to its line's label, and that label is a session ("Week 6")
+                // "HW 3" on a lecture-schedule date ("Week 7: Tuesday, October 13, integration by parts"), in a document that never
+                // numbers a homework at all: the model made the series up. A date on a line that asks for something ("Sept 17:
+                // bring the signed form to class") keeps its misnamed item for review instead.
+                if strict, flags.contains(.titleNotInSource), let series = Self.seriesWord(title), !source.numbersSeries(series),
+                   let date = resolution.date, source.linesMentioning(resolver.mentions(date)).allSatisfy(Self.isScheduleLine) { dropped += 1; continue }
                 let componentName = matchComponent(facts.component, in: components) ?? inferComponent(fromTitle: title, in: components)
                 if let requested = facts.component, !requested.isEmpty {
                     if componentName != nil { confidence += 0.05 } else { flags.append(.unknownComponent) }
@@ -349,7 +355,27 @@ enum Merger {
         init(text: String) {
             key = Source.normalize(text)
             lines = text.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-            sentences = text.replacingOccurrences(of: "\n", with: " ").components(separatedBy: ". ").map { $0.trimmingCharacters(in: .whitespaces) }.filter { $0.count > 8 }
+            sentences = Source.sentences(from: lines)
+        }
+
+        /// Lines joined into paragraphs and split into sentences, with headings and title lines (short, nothing at the
+        /// end) kept apart: "Attendance" does not glue onto the sentence after it, and a wrapped sentence stays whole.
+        static func sentences(from lines: [String]) -> [String] {
+            var paragraphs: [String] = [], current = "", previousIsHeading = false
+            for raw in lines {
+                let line = raw.trimmingCharacters(in: .whitespaces)
+                guard !line.isEmpty else { continue }
+                let heading = line.split(separator: " ").count <= 8 && !(line.last.map { ".!?:;,".contains($0) } ?? false)
+                if current.isEmpty || previousIsHeading {
+                    if !current.isEmpty { paragraphs.append(current) }
+                    current = line
+                } else {
+                    current += " " + line
+                }
+                previousIsHeading = heading
+            }
+            if !current.isEmpty { paragraphs.append(current) }
+            return paragraphs.flatMap { $0.components(separatedBy: ". ") }.map { $0.trimmingCharacters(in: .whitespaces) }.filter { $0.count > 8 }
         }
 
         static func normalize(_ s: String) -> String {
@@ -600,10 +626,17 @@ enum Merger {
         /// contains it, else its sentences rebuilt from the document's closest ones; nil when none of it is in the document.
         func verbatim(_ quoted: String) -> String? {
             let cleaned = Normalize.collapseWhitespace(quoted)
-            if contains(cleaned) { return cleaned }
             var rebuilt: [String] = []
             for piece in cleaned.components(separatedBy: ". ").map({ $0.trimmingCharacters(in: .whitespaces) }) where !piece.isEmpty {
-                if contains(piece) { rebuilt.append(piece); continue }
+                if contains(piece) {
+                    // A quote that starts mid-sentence ("for an excused reason listed below") becomes the document's whole sentence.
+                    if piece.first?.isLowercase == true, let full = sentences.first(where: { Source.normalize($0).contains(Source.normalize(piece)) }) {
+                        rebuilt.append(full.hasSuffix(".") ? String(full.dropLast()) : full)
+                    } else {
+                        rebuilt.append(piece)
+                    }
+                    continue
+                }
                 if let best = sentences.map({ ($0, Normalize.similarity($0, piece)) }).max(by: { $0.1 < $1.1 }), best.1 >= 0.5 {
                     rebuilt.append(best.0.hasSuffix(".") ? String(best.0.dropLast()) : best.0)
                 }
@@ -611,6 +644,18 @@ enum Merger {
             guard !rebuilt.isEmpty else { return nil }
             let text = rebuilt.joined(separator: ". ")
             return text.last.map { ".!?".contains($0) } == true ? text : text + "."
+        }
+
+        /// The lines that carry any of these mentions of a date.
+        func linesMentioning(_ mentions: [String]) -> [String] {
+            let needles = mentions.map(Source.normalize).filter { !$0.isEmpty }
+            return lines.filter { line in let k = Source.normalize(line); return needles.contains { k.contains($0) } }
+        }
+
+        /// Whether the document itself numbers a series of this kind anywhere ("HW 4", "homework 12", "Problem Set 2").
+        func numbersSeries(_ word: String) -> Bool {
+            let forms = Merger.seriesForms[word] ?? [word]
+            return forms.contains { form in key.range(of: #"\b"# + NSRegularExpression.escapedPattern(for: form) + #"s? ?#?\d{1,2}\b"#, options: .regularExpression) != nil }
         }
 
         /// A line that names the item and says TBD, TBA or the like on the same line ("Final Exam, TBD (when Tandon decides…)").
@@ -670,8 +715,30 @@ enum Merger {
         let deliverable = #"\b(quiz|quizzes|test|tests|exam|exams|midterm|midterms|final|finals|homework|hw|assignment|assignments|project|paper|essay|lab|labs|report|presentation|presentations|problem set|problem sets|pset|ps\d+|due|submit|submission|worksheet|discussion post|response|proposal|draft|portfolio|deadline)\b"#
         guard key.range(of: deliverable, options: .regularExpression) == nil else { return false }
         if key.range(of: #"^ (first|last|final) (day|lecture|lectures|class|classes|session|meeting|week) "#, options: .regularExpression) != nil { return true }   // "First lecture", "Last day of class"
-        return key.range(of: #"^ (chapter|chapters|ch|lecture|lectures|topic|topics|module|modules|reading|readings|read|review|introduction|course synthesis|syllabus|welcome|overview)\b"#, options: .regularExpression) != nil
+        return key.range(of: #"^ (chapter|chapters|ch|lecture|lectures|topic|topics|module|modules|reading|readings|read|review|introduction|course synthesis|syllabus|welcome|overview|week|weeks|unit|day|session)\b"#, options: .regularExpression) != nil
     }
+
+    /// The word of a numbered series name ("HW 3" → "hw", "Problem Set 2" → "problem set"); nil for any other title.
+    static func seriesWord(_ title: String) -> String? {
+        let key = Normalize.key(title)
+        guard let m = key.firstMatch(of: /^([a-z]+(?: [a-z]+)?) \d{1,2}$/) else { return nil }
+        let word = String(m.output.1)
+        return seriesForms.keys.contains(word) || seriesForms.values.contains(where: { $0.contains(word) }) ? word : nil
+    }
+    /// A line of a lecture schedule: "Week 7: …", "Lecture 12 …", or a dated line that asks for nothing and names no deliverable.
+    static func isScheduleLine(_ line: String) -> Bool {
+        let key = " " + Normalize.key(line) + " "
+        if key.range(of: #"^ (week|weeks|lecture|lectures|class|session|day|unit|module) \d{1,2} "#, options: .regularExpression) != nil { return true }
+        let asks = key.range(of: #"\b(due|submit|submitted|bring|turn in|hand in|complete|upload|post|deadline|opt out|register|sign up)\b"#, options: .regularExpression) != nil
+        let deliverable = key.range(of: #"\b(quiz|quizzes|test|tests|exam|exams|midterm|midterms|final|finals|homework|hw|assignment|assignments|project|paper|essay|lab|labs|report|presentation|presentations|problem set|problem sets|pset|worksheet|proposal|draft|portfolio)\b"#, options: .regularExpression) != nil
+        return !asks && !deliverable
+    }
+
+    /// The ways a document may spell each series word.
+    static let seriesForms: [String: [String]] = [
+        "hw": ["hw", "homework"], "homework": ["hw", "homework"], "ps": ["ps", "pset", "problem set"], "pset": ["ps", "pset", "problem set"], "problem set": ["ps", "pset", "problem set"],
+        "quiz": ["quiz"], "lab": ["lab"], "assignment": ["assignment"], "project": ["project"], "exercise": ["exercise"], "essay": ["essay"], "paper": ["paper"], "worksheet": ["worksheet"],
+    ]
 
     /// A one-word title that names no deliverable ("Respond", "Read", "Prepare"): a verb from a sentence, not an item's name.
     static func isBareWord(_ title: String) -> Bool {
