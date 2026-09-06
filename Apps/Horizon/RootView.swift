@@ -44,6 +44,7 @@ struct RootView: View {
                         }
                     }
                     .listRowSeparator(.hidden)
+                    .onPaper()
                 } else if let failure = readFailure {   // from the store, so it stays until the document reads or is retried
                     Section {
                         NavigationLink(value: "documents") {
@@ -51,6 +52,7 @@ struct RootView: View {
                         }
                     }
                     .listRowSeparator(.hidden)
+                    .onPaper()
                 } else if let status = model.statusLine ?? model.lastError {
                     Section {
                         Label { Text(status) } icon: {
@@ -61,6 +63,7 @@ struct RootView: View {
                         .foregroundStyle(model.lastError == nil ? .secondary : Design.accent)
                     }
                     .listRowSeparator(.hidden)
+                    .onPaper()
                 }
                 if !pending.isEmpty {
                     NavigationLink { ReviewView() } label: {
@@ -70,6 +73,7 @@ struct RootView: View {
                         }
                     }
                     .listRowSeparator(.hidden)
+                    .onPaper()
                     .listRowInsets(EdgeInsets(top: 16, leading: 20, bottom: 4, trailing: 20))
                 }
                 let unfiled = looseDocuments.filter { $0.status == .parsed && !($0.obligations ?? []).filter { $0.deletedAt == nil }.isEmpty }
@@ -79,12 +83,12 @@ struct RootView: View {
                             .font(.system(.title3, design: .serif, weight: .semibold))
                     }
                     .listRowSeparator(.hidden)
+                    .onPaper()
                     .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 4, trailing: 20))
                 }
                 CoverageList(reading: model.reading != nil, hasUnfiled: !unfiled.isEmpty)
             }
             .listStyle(.plain)
-            .listRowBackground(Color.clear)
             .paper()
             .animation(.default, value: model.reading != nil)
             .animation(.default, value: model.statusLine)
@@ -187,6 +191,7 @@ struct ReadingSection: View {
                 }
             }
         }
+        .onPaper()
         .animation(.default, value: reading.items)
     }
 

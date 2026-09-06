@@ -17,7 +17,10 @@ struct CourseView: View {
         List {
             let detail = [course.code == course.displayName ? nil : course.code, course.term, course.instructor].compactMap { $0 }.filter { !$0.isEmpty }
             if !detail.isEmpty {   // the title names the course; this line carries what else the document said
-                Section { Text(detail.joined(separator: " · ")).foregroundStyle(.secondary) }
+                Text(detail.joined(separator: " · ")).foregroundStyle(.secondary)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 8, trailing: 20))
+                    .onPaper()
             }
             if !course.gradeComponents.isEmpty {
                 Section {
@@ -25,6 +28,7 @@ struct CourseView: View {
                         HStack { Text(component.name); Spacer(); Design.points(component.weight.map { $0 * 100 }).font(.body.weight(.semibold)) }
                     }
                 } header: { Kicker("Grade") }
+                .onPaper()
             }
             Section {
                 ForEach(obligations) { item in
@@ -37,6 +41,7 @@ struct CourseView: View {
                 }
                 if obligations.isEmpty { Text("No items yet. Add a document, or an item by hand from the Coverage menu.").foregroundStyle(.secondary) }
             } header: { Kicker("Items") }
+            .onPaper()
             if let policies = course.policies, !policies.isEmpty {
                 Section {
                     ForEach(policies) { policy in
@@ -46,11 +51,10 @@ struct CourseView: View {
                         }
                     }
                 } header: { Kicker("Policies") }
+                .onPaper()
             }
         }
         .listStyle(.plain)
-        .listRowSeparatorTint(Design.rule)
-        .listRowBackground(Color.clear)
         .paper()
         .navigationTitle(course.displayName)
         .toolbar {

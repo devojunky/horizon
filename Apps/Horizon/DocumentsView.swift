@@ -18,6 +18,7 @@ struct DocumentsView: View {
                     Text("Private Cloud Compute is unavailable: \(why).").font(.footnote).foregroundStyle(.secondary)
                 }
             } header: { Kicker("This device") }
+            .onPaper()
             Section {
                 ForEach(documents) { doc in
                     VStack(alignment: .leading, spacing: 3) {
@@ -45,10 +46,9 @@ struct DocumentsView: View {
                 }
                 if documents.isEmpty { Text("No documents yet.").foregroundStyle(.secondary) }
             } header: { Kicker("Documents") }
+            .onPaper()
         }
         .listStyle(.plain)
-        .listRowSeparatorTint(Design.rule)
-        .listRowBackground(Color.clear)
         .paper()
         .navigationTitle("Documents")
     }

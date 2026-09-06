@@ -145,7 +145,7 @@ private struct PlanList: View {
             } footer: {
                 Text(footer).font(.footnote).foregroundStyle(.secondary).padding(.top, 10)
             }
-            .listRowBackground(Color.clear)
+            .onPaper()
         }
         .listStyle(.plain)
     }

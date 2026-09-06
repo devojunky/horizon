@@ -174,10 +174,9 @@ struct HorizonStripView: View {
                         } header: {
                             if scrub == nil { Kicker("Coming up") }
                         }
-                        .listRowBackground(Color.clear)
+                        .onPaper()
                     }
                     .listStyle(.plain)
-                    .listRowSeparatorTint(Design.rule)
                     .animation(.default, value: scrub)
                 }
                 .padding(.top, 8)

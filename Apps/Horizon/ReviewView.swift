@@ -16,6 +16,7 @@ struct ReviewView: View {
             if pending.isEmpty {
                 EditorialEmpty(title: "Nothing to review.", deck: "Everything the parser found was sure enough to go straight to Reminders.") { EmptyView() }
                     .listRowSeparator(.hidden)
+                    .onPaper()
             }
             ForEach(pending) { item in
                 VStack(alignment: .leading, spacing: 8) {
@@ -30,13 +31,12 @@ struct ReviewView: View {
                     .controlSize(.small)
                 }
                 .padding(.vertical, 4)
+                .onPaper()
                 .swipeActions(edge: .leading) { Button("Confirm", systemImage: "checkmark") { Task { await model.confirm(item.id) } }.tint(Design.accent) }
                 .swipeActions(edge: .trailing) { Button("Discard", systemImage: "trash", role: .destructive) { Task { await model.discard(item.id) } } }
             }
         }
         .listStyle(.plain)
-        .listRowSeparatorTint(Design.rule)
-        .listRowBackground(Color.clear)
         .paper()
         .navigationTitle("Review")
         .sheet(item: $editing) { ObligationEditor(mode: .review($0), courses: courses) }

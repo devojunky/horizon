@@ -36,7 +36,7 @@ struct CoverageList: View {
                 ImportMenu().buttonStyle(.borderedProminent)
             }
             .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
+            .onPaper()
             .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
         }
         ForEach(stories) { story in
@@ -44,8 +44,7 @@ struct CoverageList: View {
                 CoverageStory(story: story)
             }
             .listRowSeparator(.visible)
-            .listRowSeparatorTint(Design.rule)
-            .listRowBackground(Color.clear)
+            .onPaper()
             .listRowInsets(EdgeInsets(top: 20, leading: 20, bottom: 20, trailing: 20))
         }
         .onMove { from, to in

@@ -13,7 +13,7 @@ enum Design {
     static let accentSoft = accent.opacity(0.16)
     static let quiet = Color.secondary
     /// The page behind everything.
-    static let paper = dynamic(light: (0.976, 0.965, 0.941), dark: (0.094, 0.090, 0.082))
+    static let paper = dynamic(light: (0.976, 0.965, 0.941), dark: (0.082, 0.078, 0.071))
     /// A sheet laid on the page: form cells, chips.
     static let card = dynamic(light: (1.0, 0.996, 0.988), dark: (0.145, 0.139, 0.128))
     /// Hairline rules.
@@ -65,6 +65,9 @@ extension View {
     func numeral() -> some View { font(.system(.title, design: .serif, weight: .semibold)).monospacedDigit() }
     /// The page: paper behind a list or a form, the system background hidden.
     func paper() -> some View { scrollContentBackground(.hidden).background(Design.paper.ignoresSafeArea()) }
+    /// A row or a section on the paper: no cell colour of its own, hairline separators. Row modifiers only take
+    /// effect on rows and sections, never on the List, so every section of a plain list on the paper carries this.
+    func onPaper() -> some View { listRowBackground(Color.clear).listRowSeparatorTint(Design.rule) }
 }
 
 /// A caps kicker over a headline or a section.
