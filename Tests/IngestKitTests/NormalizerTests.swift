@@ -76,6 +76,8 @@ struct NormalizerTests {
         #expect(once == "Students will be allowed a maximum of one make-up exam throughout the semester. " + sentence + " For medical reasons")
         #expect(DocumentNormalizer.collapseRepeatedPhrase(String(repeating: "No", count: 17) + " calculators will be allowed for exams.") == "No calculators will be allowed for exams.")
         #expect(DocumentNormalizer.collapseRepeatedPhrase("10% 10% 10% 10% 10% 10%") == "10% 10% 10% 10% 10% 10%")   // cells, not a stutter
+        #expect(DocumentNormalizer.collapseRepeatedPhrase("request a make-up exam within two days of the missed exam within two days of the missed exam.") == "request a make-up exam within two days of the missed exam.")   // a long clause twice
+        #expect(DocumentNormalizer.collapseRepeatedPhrase("the the the") == "the the the")   // short and only thrice: prose
         let collapsed = DocumentNormalizer.collapseRepeats(text)
         #expect(collapsed.components(separatedBy: "\n").filter { $0.hasPrefix("must be taken within one week") }.count == 1)
         #expect(collapsed.contains("must be taken within a week") && !collapsed.contains("must be takenmust be taken"))

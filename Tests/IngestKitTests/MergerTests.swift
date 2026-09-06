@@ -643,6 +643,16 @@ struct MergerTests {
         #expect(r.policies.first { $0.kind == .makeupExam }?.text.hasPrefix("Students will be allowed a maximum of one make-up exam") == true)   // the whole sentence, not the cut
     }
 
+    @Test func aHyphenWrappedWordIsWholeInASentence() {
+        let text = """
+        MA-UY 1124 Calculus II, Fall 2026
+        Students must email the Math De-
+        partment in order to request a make-up exam within two days of the missed exam.
+        """
+        let r = Self.merge([Self.outcome(0, policies: [PolicyFacts(kind: "makeup_exam", text: "partment in order to request a make-up exam within two days of the missed exam.")])], text: text)
+        #expect(r.policies.first?.text == "Students must email the Math Department in order to request a make-up exam within two days of the missed exam.")
+    }
+
     @Test func anInventedSeriesOfTBDItemsIsDropped() {
         let text = """
         MA-UY 1124 Calculus II, Fall 2026

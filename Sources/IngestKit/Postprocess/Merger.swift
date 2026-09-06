@@ -369,10 +369,12 @@ enum Merger {
                 if current.isEmpty || previousIsHeading {
                     if !current.isEmpty { paragraphs.append(current) }
                     current = line
+                } else if current.hasSuffix("-"), line.first?.isLowercase == true {   // a word wrapped with a hyphen: "De-" + "partment"
+                    current = String(current.dropLast()) + line
                 } else {
                     current += " " + line
                 }
-                previousIsHeading = heading
+                previousIsHeading = heading && !line.hasSuffix("-")
             }
             if !current.isEmpty { paragraphs.append(current) }
             return paragraphs.flatMap { $0.components(separatedBy: ". ") }.map { $0.trimmingCharacters(in: .whitespaces) }.filter { $0.count > 8 }
