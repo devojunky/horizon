@@ -47,7 +47,7 @@ xcrun simctl spawn booted log stream --level info --predicate 'subsystem == "com
 xcrun simctl privacy booted grant reminders com.daniel.horizon && xcrun simctl launch booted com.daniel.horizon --ingest-sample   # DEBUG: read the bundled sample without a tap
 xcrun simctl launch booted com.daniel.horizon --tab-horizon --zoom-two-weeks   # DEBUG: open on the strip, zoomed to two weeks around today (--zoom-month for a month)
 xcrun simctl launch booted com.daniel.horizon --tab-now --plan                 # DEBUG: plan today; --edit-block opens the first block's editor, --plan-instructions the Tell the Planner sheet
-xcrun simctl launch booted com.daniel.horizon --ingest-file /path/to/file      # DEBUG: read any file the simulator can see (broken files, duplicates); --open-documents opens Documents, --confirm-delete-document its delete dialog
+xcrun simctl launch booted com.daniel.horizon --ingest-file /path/to/file      # DEBUG: read any file the simulator can see (broken files, duplicates); --open-documents opens Documents, --confirm-delete-document its delete dialog, --delete-first-course deletes the first course
 ```
 The simulator runs a 300M model, not the 3B one; use it to exercise the pipeline, not to judge extraction quality. A DEBUG menu item "Ingest sample syllabus" feeds `Apps/Horizon/Samples/sample-syllabus.pdf`.
 
@@ -64,7 +64,7 @@ The simulator runs a 300M model, not the 3B one; use it to exercise the pipeline
 - Prompt or schema changes must be followed by an eval run. Pass = mean recall ≥ 0.9 and zero `.ready` errors (spurious or wrong-dated items that would ship without review); errors that land in review are reported, not fatal.
 - Provenance: every obligation carries `sourcePage`; policies carry `verbatim`; same-title-two-dates items carry `conflictingDate`.
 - Keep the schema small: it is sent with every chunk on a 4096-token on-device context.
-- Storage: SwiftData in the App Group, CloudKit-shaped from V1 (optional/defaulted fields, no unique attributes, optional relationships with inverses). Soft deletes only (`deletedAt`). `HorizonStore` is the only writer; `ReminderProjector` is the only Reminders writer and re-fetches the Horizon list before every write.
+- Storage: SwiftData in the App Group, CloudKit-shaped from V1 (optional/defaulted fields, no unique attributes, optional relationships with inverses). Soft deletes only (`deletedAt`) for obligations and courses; a tombstone that went with its deleted course or document is `retiredWithSource` and does not capture a re-read item (a user's own deletion does). Documents are hard-deleted (with their files) when deleted or when their course is. `HorizonStore` is the only writer; `ReminderProjector` is the only Reminders writer and re-fetches the Horizon list before every write.
 - Field ownership: documents own title/due/platform/component unless the field is in `userOverrides`; Reminders owns completion; hand edits (review editor, manual entry, edits made in Reminders) set overrides. A re-ingest that changes an owned field goes back to review with a `changeNote`.
 - Manual entry is a fallback reached from the overflow menu, never a primary action; such items carry `origin = manual`.
 - Several documents can feed one course: `enqueueDocument(courseID:)` files a document, the coordinator hands the parser `IngestOptions.knownCourse` from `HorizonStore.knownCourse(for:)`, and `assignDocument` files a loose one later. Points at stake are recomputed per course in the store (`PointsAtStake.perItem`, shared with the merger).

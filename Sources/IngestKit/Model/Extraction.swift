@@ -3,17 +3,19 @@ import FoundationModels
 // Model-facing schema. Strings only for dates; resolution happens deterministically in DateResolver.
 // The schema is sent with every chunk on a 4096-token context: every description here costs input tokens on every call.
 
+// Property order is generation order. The short lists come before the items: when the model runs away on a series
+// ("HW 1 … HW 36") and the output is cut, the policies and breaks have already been written.
 @Generable(description: "Facts stated in one chunk of a course document. Null or empty for anything not stated in the chunk.")
 struct ChunkExtraction {
     var course: CourseFacts?
-    @Guide(description: "Rows of a grade breakdown table present in this chunk.")
+    @Guide(description: "Rows of a grade breakdown table present in this chunk.", .maximumCount(12))   // a table, not "HW 1…HW 36"
     var gradeComponents: [GradeComponentFacts]
-    @Guide(description: "Graded or required items in this chunk that have a specific date or an explicit TBD.")
-    var obligations: [ObligationFacts]
     @Guide(description: "Policies, one sentence each, quoted word for word.", .maximumCount(6))
     var policies: [PolicyFacts]
-    @Guide(description: "Holidays, breaks, cancelled sessions.")
+    @Guide(description: "Holidays, breaks, cancelled sessions.", .maximumCount(8))
     var noClassDates: [NoClassFacts]
+    @Guide(description: "Graded or required items printed in this chunk with a specific date or an explicit TBD. Never a series the chunk does not print item by item.", .maximumCount(24))
+    var obligations: [ObligationFacts]
 }
 
 @Generable

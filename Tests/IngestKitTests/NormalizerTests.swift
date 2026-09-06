@@ -69,6 +69,13 @@ struct NormalizerTests {
 
     @Test func repeatedLinesCollapse() {
         let text = "Exams\nmust be taken within one week of the original exam date\nmust be taken within one week of the original exam date\nmust be taken within one week of the original exam date\nmust be takenmust be takenmust be takenmust be taken within a week\nExam 1 Tuesday, October 6th, 2026\n1\n1"
+        // A whole sentence stuttered seventeen times, twice on one line, and a short word run.
+        let sentence = "Makeups will not be granted to students who do not notify the Math Department in a timely manner."
+        let stuttered = "Students will be allowed a maximum of one make-up exam" + String(repeating: "a maximum of one make-up exam", count: 16) + " throughout the semester. " + String(repeating: sentence, count: 17) + " For medical reasons"
+        let once = DocumentNormalizer.collapseRepeatedPhrase(stuttered)
+        #expect(once == "Students will be allowed a maximum of one make-up exam throughout the semester. " + sentence + " For medical reasons")
+        #expect(DocumentNormalizer.collapseRepeatedPhrase(String(repeating: "No", count: 17) + " calculators will be allowed for exams.") == "No calculators will be allowed for exams.")
+        #expect(DocumentNormalizer.collapseRepeatedPhrase("10% 10% 10% 10% 10% 10%") == "10% 10% 10% 10% 10% 10%")   // cells, not a stutter
         let collapsed = DocumentNormalizer.collapseRepeats(text)
         #expect(collapsed.components(separatedBy: "\n").filter { $0.hasPrefix("must be taken within one week") }.count == 1)
         #expect(collapsed.contains("must be taken within a week") && !collapsed.contains("must be takenmust be taken"))

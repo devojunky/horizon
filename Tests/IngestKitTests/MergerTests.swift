@@ -12,7 +12,7 @@ struct MergerTests {
     """
     static func outcome(_ chunk: Int, kind: ExtractionOutcome.Kind = .text, course: CourseFacts? = nil, components: [GradeComponentFacts] = [],
                         obligations: [ObligationFacts] = [], policies: [PolicyFacts] = [], noClass: [NoClassFacts] = []) -> ExtractionOutcome {
-        ExtractionOutcome(kind: kind, page: chunk, extraction: ChunkExtraction(course: course, gradeComponents: components, obligations: obligations, policies: policies, noClassDates: noClass),
+        ExtractionOutcome(kind: kind, page: chunk, extraction: ChunkExtraction(course: course, gradeComponents: components, policies: policies, noClassDates: noClass, obligations: obligations),
                           usage: UsageRecord(step: "text", chunk: chunk, route: .onDevice, inputTokens: 1, cachedTokens: 0, outputTokens: 1, reasoningTokens: 0, durationMs: 1))
     }
     static func ob(_ title: String, _ written: String, iso: String? = nil, platform: String = "not_stated", component: String? = nil, confidence: String = "high") -> ObligationFacts {
@@ -593,9 +593,9 @@ struct MergerTests {
 
     @Test func rollingContextCarriesCourseAndComponents() {
         var context = RollingContext()
-        context.absorb(ChunkExtraction(course: Self.course, gradeComponents: [Self.component("Homework", 15, platform: "webassign"), Self.component("Quizzes", 12)], obligations: [], policies: [], noClassDates: []))
+        context.absorb(ChunkExtraction(course: Self.course, gradeComponents: [Self.component("Homework", 15, platform: "webassign"), Self.component("Quizzes", 12)], policies: [], noClassDates: [], obligations: []))
         context.absorb(ChunkExtraction(course: CourseFacts(code: "OTHER", title: nil, instructor: nil, term: nil, termStart: nil, termEnd: nil, room: nil, meetings: []),
-                                       gradeComponents: [Self.component("Homework", 10)], obligations: [], policies: [], noClassDates: []))
+                                       gradeComponents: [Self.component("Homework", 10)], policies: [], noClassDates: [], obligations: []))
         #expect(context.courseLine == "MA-UY 1124 Calculus II" && context.termLine == "Fall 2026 (2026-09-02 to 2026-12-14)")
         #expect(context.componentLines == ["Homework (webassign)", "Quizzes"])
     }

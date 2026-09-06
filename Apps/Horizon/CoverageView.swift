@@ -56,7 +56,7 @@ struct CoverageList: View {
         .confirmationDialog("Delete \(deleting?.displayName ?? "this course")?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
             Button("Delete Course", role: .destructive) { if let course = deleting { Task { await model.deleteCourse(course.course.id) } } }
         } message: {
-            Text("Its items and their reminders are removed as well. Reading its syllabus again brings it back.")
+            Text("Its items, their reminders, and its documents are removed as well. Sharing its syllabus again reads it afresh and brings it back.")
         }
     }
 }

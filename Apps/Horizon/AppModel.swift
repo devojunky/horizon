@@ -301,7 +301,7 @@ final class AppModel {
     }
 
     func deleteCourse(_ id: UUID) async {
-        do { try await store.deleteCourse(id: id) } catch { lastError = error.localizedDescription }
+        do { try await coordinator.deleteCourse(id: id) } catch { lastError = error.localizedDescription }
         await drainAndSync()   // its items' reminders go with it
     }
 

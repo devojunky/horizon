@@ -111,23 +111,32 @@ enum DocumentNormalizer {
         }.joined(separator: "\n")
     }
 
-    /// "must be takenmust be takenmust be taken within…" → "must be taken within…": a phrase of 8–60 characters
-    /// repeated three or more times back to back keeps one copy.
+    /// "must be takenmust be takenmust be taken within…" → "must be taken within…": a phrase repeated back to back keeps
+    /// one copy. A phrase of 8 to 200 characters needs three copies; a short word ("NoNoNoNo…") five. Every run in the
+    /// line is collapsed, since a text layer can stutter twice on one line (a whole sentence seventeen times bloats a
+    /// chunk past the model's context and buries what follows it).
     static func collapseRepeatedPhrase(_ line: String) -> String {
+        var line = line
+        while let collapsed = collapseFirstRepeat(in: line) { line = collapsed }
+        return line
+    }
+
+    private static func collapseFirstRepeat(in line: String) -> String? {
         let chars = Array(line)
-        guard chars.count >= 24 else { return line }
-        for start in 0..<min(chars.count - 24, 40) {
-            for length in 8...min(60, (chars.count - start) / 3) {
+        guard chars.count >= 10 else { return nil }
+        for start in 0..<(chars.count - 9) {   // anywhere in the line: a stutter can begin after a clean clause
+            for length in 2...min(200, (chars.count - start) / 3) {
                 let phrase = chars[start..<(start + length)]
-                guard phrase.filter(\.isLetter).count >= 3 else { continue }   // words, not a run of "10%" cells
+                let letters = phrase.filter(\.isLetter).count
+                guard letters >= (length < 8 ? 2 : 3) else { continue }   // words, not a run of "10%" cells
                 var repeats = 1
                 while start + (repeats + 1) * length <= chars.count, chars[(start + repeats * length)..<(start + (repeats + 1) * length)].elementsEqual(phrase) { repeats += 1 }
-                if repeats >= 3 {
+                if repeats >= (length < 8 ? 5 : 3) {
                     return String(chars[..<start]) + String(phrase) + String(chars[(start + repeats * length)...])
                 }
             }
         }
-        return line
+        return nil
     }
 
     private static func imagePage(_ image: CGImage, orientation: CGImagePropertyOrientation?) -> NormalizedDocument.Page {

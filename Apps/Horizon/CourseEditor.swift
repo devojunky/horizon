@@ -129,7 +129,7 @@ struct CourseEditor: View {
                     Section {
                         Button("Delete Course", role: .destructive) { confirmingDelete = true }
                     } footer: {
-                        Text("Its items and their reminders are removed as well. Reading its syllabus again brings it back.")
+                        Text("Its items, their reminders, and its documents are removed as well. Sharing its syllabus again reads it afresh and brings it back.")
                     }
                     .confirmationDialog("Delete \(course.displayName)?", isPresented: $confirmingDelete, titleVisibility: .visible) {
                         Button("Delete Course", role: .destructive) { Task { await model.deleteCourse(course.id); dismiss() } }

@@ -52,6 +52,11 @@ public actor IngestCoordinator {
         }
     }
 
+    /// Retires a course with its items and documents, and removes the documents' files.
+    public func deleteCourse(id: UUID) async throws {
+        for record in try await store.deleteCourse(id: id) { storage.remove(sha256: record.sha256, extension: record.kind) }
+    }
+
     /// Removes a document, its stored file, and the items that came from it (soft-deleted; the next sync removes their reminders).
     public func deleteDocument(id: UUID) async throws {
         guard let record = try await store.deleteDocument(id: id) else { return }

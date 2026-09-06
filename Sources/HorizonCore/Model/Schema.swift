@@ -31,6 +31,9 @@ public enum HorizonSchemaV1: VersionedSchema {
         public var userOverrides: [String] = []
         /// Soft delete: the course and its items leave every screen and Reminders; a document naming it again revives it.
         public var deletedAt: Date?
+        /// Retired because its course or its document was deleted, not by the user's hand: a document that names it
+        /// again may recreate it. A tombstone the user made (in Reminders or here) stays deleted on a re-read.
+        public var retiredWithSource: Bool = false
         /// The user's own order on the Coverage screen; courses without one follow, most suspicious first.
         public var sortOrder: Int?
         @Relationship(deleteRule: .cascade, inverse: \Obligation.course) public var obligations: [Obligation]?
@@ -71,6 +74,9 @@ public enum HorizonSchemaV1: VersionedSchema {
         public var completedAt: Date?
         /// Soft delete. Every query filters on `deletedAt == nil`; tombstones purge after 180 days.
         public var deletedAt: Date?
+        /// Retired because its course or its document was deleted, not by the user's hand: a document that names it
+        /// again may recreate it. A tombstone the user made (in Reminders or here) stays deleted on a re-read.
+        public var retiredWithSource: Bool = false
         /// Another date the same item was given (two documents disagree); surfaced, never resolved silently.
         public var conflictingDate: Date?
         /// Human-readable diff after a re-ingest changed a document-owned field; cleared when the user confirms.

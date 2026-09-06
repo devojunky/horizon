@@ -49,7 +49,10 @@ public actor HorizonStore {
         }
 
         // Candidates: this course's rows, or the course-less rows when the document names no course. Each is matched once.
-        var pool = try course.map { $0.obligations ?? [] } ?? fetchObligations().filter { $0.course == nil }
+        // Tombstones the user made stay matched (deleted stays deleted); rows retired with a deleted course or document
+        // are out of the running, so a document read again brings its items back as new rows.
+        var pool = try (course.map { $0.obligations ?? [] } ?? fetchObligations().filter { $0.course == nil })
+            .filter { $0.deletedAt == nil || !Self.retired($0) }
         for parsed in result.obligations {
             if let index = Self.match(parsed, in: pool, calendar: calendar) {
                 let existing = pool.remove(at: index)
@@ -71,6 +74,12 @@ public actor HorizonStore {
         if let course { recomputePoints(for: course) }
         try modelContext.save()
         return summary
+    }
+
+    /// A tombstone that went with its source rather than by the user's hand: flagged as such, or (before the flag
+    /// existed) a document's item whose document is gone.
+    static func retired(_ item: Obligation) -> Bool {
+        item.retiredWithSource || (item.origin == .document && item.sourceDocument == nil)
     }
 
     /// Points at stake per item, over everything on file for the course (its documents together): weight over a stated
@@ -147,7 +156,26 @@ public actor HorizonStore {
             if !kept.contains("meetings"), !p.meetings.isEmpty { course.meetings = p.meetings }
         }
         if !kept.contains("gradeComponents"), !result.gradeComponents.isEmpty {
-            course.gradeComponents = result.gradeComponents.map { GradeComponent(name: $0.name, weight: $0.weight, expectedCount: $0.expectedCount, cadence: $0.cadence, dropLowest: $0.dropLowest) }
+            // A whole grade table (weights that add up to about 100%) is the course's table; a partial one, such as
+            // the components a schedule mentions, adds to what is on file and updates the facts it states.
+            let parsed = result.gradeComponents.map { GradeComponent(name: $0.name, weight: $0.weight, expectedCount: $0.expectedCount, cadence: $0.cadence, dropLowest: $0.dropLowest) }
+            let total = parsed.compactMap(\.weight).reduce(0, +)
+            if course.gradeComponents.isEmpty || (0.9...1.1).contains(total) {
+                course.gradeComponents = parsed
+            } else {
+                var merged = course.gradeComponents
+                for component in parsed {
+                    if let i = merged.firstIndex(where: { Normalize.key($0.name) == Normalize.key(component.name) }) {
+                        merged[i].weight = component.weight ?? merged[i].weight
+                        merged[i].expectedCount = component.expectedCount ?? merged[i].expectedCount
+                        merged[i].cadence = component.cadence ?? merged[i].cadence
+                        merged[i].dropLowest = component.dropLowest ?? merged[i].dropLowest
+                    } else {
+                        merged.append(component)
+                    }
+                }
+                course.gradeComponents = merged
+            }
         }
         if !kept.contains("noClassDates"), !result.noClassDates.isEmpty {
             course.noClassDates = result.noClassDates.map { ClosedDateRange(start: $0.start, end: $0.end ?? $0.start, label: $0.dateAsWritten) }
@@ -268,7 +296,10 @@ public actor HorizonStore {
         guard let doc = try fetchDocument(id: id) else { return nil }
         let record = snapshot(doc)
         let now = Date()
-        for item in doc.obligations ?? [] where item.deletedAt == nil { item.deletedAt = now; item.updatedAt = now }
+        for item in doc.obligations ?? [] {
+            if item.deletedAt == nil { item.deletedAt = now; item.updatedAt = now }
+            item.retiredWithSource = true
+        }
         let course = doc.course
         modelContext.delete(doc)
         if let course { recomputePoints(for: course) }
@@ -395,13 +426,22 @@ public actor HorizonStore {
     }
 
     /// Retires a course: it and its items leave every screen, and the items' reminders go on the next sync.
-    public func deleteCourse(id: UUID) throws {
-        guard let course = try fetchCourse(id: id) else { return }
+    /// Retires a course: its items are soft-deleted (their reminders go on the next sync) and its documents are removed,
+    /// so the same file shared again is read afresh and the course comes back. Returns the documents, so their files can go.
+    @discardableResult
+    public func deleteCourse(id: UUID) throws -> [DocumentSnapshot] {
+        guard let course = try fetchCourse(id: id) else { return [] }
         let now = Date()
         course.deletedAt = now
         course.sortOrder = nil
-        for item in course.obligations ?? [] where item.deletedAt == nil { item.deletedAt = now; item.updatedAt = now }
+        for item in course.obligations ?? [] {
+            if item.deletedAt == nil { item.deletedAt = now; item.updatedAt = now }
+            item.retiredWithSource = true   // including tombstones from before: the course goes, and with it every reason to keep them matched
+        }
+        let documents = (course.documents ?? []).map(snapshot)
+        for document in course.documents ?? [] { modelContext.delete(document) }
         try modelContext.save()
+        return documents
     }
 
     /// The user's order for the Coverage screen; every course listed gets its position, the rest keep none.

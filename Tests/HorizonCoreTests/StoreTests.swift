@@ -51,8 +51,13 @@ struct StoreTests {
         try await store.deleteCourse(id: calc.id)
         #expect(try await store.courses().isEmpty)
         #expect(try await store.obligations().allSatisfy { $0.deletedAt != nil })
-        try await Fixture.ingest(Fixture.calculus(sha: "again"), into: store)
+        _ = try await store.enqueueDocument(filename: "loose.pdf", sha256: "loose-failed", kind: "pdf", deviceName: "A")
+        try await store.markDocument(id: try await store.documents().first { $0.sha256 == "loose-failed" }!.id, status: .failed, failure: "x")
+        try await store.deleteCourse(id: calc.id)                     // once more, with a loose document on file
+        #expect(try await store.documents().map(\.sha256) == ["loose-failed"])   // the course's document goes; a loose one stays
+        try await Fixture.ingest(Fixture.calculus(), into: store)
         #expect(try await store.courses().map(\.id) == [calc.id])   // the same row, back
+        #expect(try await store.obligations().count == 5)             // with its items
     }
 
     @Test func coursesKeepTheUsersOrder() async throws {
@@ -123,6 +128,64 @@ struct StoreTests {
         #expect(quiz.courseID == calc.id && quiz.componentName == "Quizzes")
         #expect(quiz.pointsAtStake == 6)   // 12% over the two quizzes now on file
         #expect(try await store.documents().first { $0.sha256 == "loose" }?.courseID == calc.id)
+    }
+
+    @Test func aDocumentReadAgainAfterItsCourseOrItselfWasDeletedBringsItsItemsBack() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let calc = try await store.courses().first!
+        let originally = try await store.obligations().count
+        #expect(originally == 5)
+        // The user discards one item by hand: that one stays gone on every later read.
+        let quiz = try await store.obligations().first { $0.title == "Quiz 1" }!
+        try await store.softDelete(id: quiz.id)
+        try await store.deleteCourse(id: calc.id)
+        #expect(try await store.obligations().isEmpty)
+        try await Fixture.ingest(Fixture.calculus(), into: store)   // the same syllabus, shared again
+        let back = try await store.obligations()
+        #expect(back.map(\.title).sorted() == ["Final Exam", "HW 1", "HW 2", "Midterm 1", "Quiz 1"])   // the course went with its documents: a fresh start, discarded quiz included
+        #expect(!back.contains { $0.id == quiz.id })                                                    // as new rows: the old ones stay tombstones for Reminders
+        #expect(try await store.obligations(includeDeleted: true).count == originally + 5)
+        // The same after deleting the document itself.
+        let doc = try await store.documents().first!
+        try await store.deleteDocument(id: doc.id)
+        #expect(try await store.obligations().isEmpty)
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        #expect(try await store.obligations().map(\.title).sorted() == ["Final Exam", "HW 1", "HW 2", "Midterm 1", "Quiz 1"])
+    }
+
+    @Test func aPartialGradeTableMergesAndACompleteOneReplaces() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let calc = try await store.courses().first!
+        // A schedule filed under the course knows two components and states one weight: the syllabus's table stays.
+        let doc = try await store.enqueueDocument(filename: "schedule.pdf", sha256: "sched4", kind: "pdf", deviceName: "A", courseID: calc.id)
+        var schedule = Fixture.calculus(sha: "sched4"); schedule.course = nil; schedule.policies = []
+        schedule.gradeComponents = [ParsedGradeComponent(name: "Homework", weight: 0.15, expectedCount: 12), ParsedGradeComponent(name: "Labs", weight: nil)]
+        try await store.ingest(schedule, documentID: doc.id, calendar: Fixture.calendar)
+        var course = try await store.courses().first!
+        #expect(course.gradeComponents.map(\.name) == ["Homework", "Quizzes", "Final Exam", "Labs"])
+        #expect(course.gradeComponents.first?.expectedCount == 12)                            // a stated fact updates
+        // A reissued syllabus with a whole table replaces it.
+        var reissue = Fixture.calculus(sha: "v2")
+        reissue.gradeComponents = [ParsedGradeComponent(name: "Homework", weight: 0.2), ParsedGradeComponent(name: "Midterm", weight: 0.3), ParsedGradeComponent(name: "Final Exam", weight: 0.5)]
+        try await Fixture.ingest(reissue, into: store)
+        course = try await store.courses().first!
+        #expect(course.gradeComponents.map(\.name) == ["Homework", "Midterm", "Final Exam"])
+    }
+
+    @Test func aTombstoneWhoseDocumentIsGoneNoLongerCapturesARereadItem() async throws {
+        // Data from before the flag existed: the user discarded an item, then deleted its document from Documents.
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let hw1 = try await store.obligations().first { $0.title == "HW 1" }!
+        try await store.softDelete(id: hw1.id)                                         // by hand: stays deleted on a re-read
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        #expect(try await store.obligations().map(\.title).contains("HW 1") == false)
+        let doc = try await store.documents().first!
+        try await store.deleteDocument(id: doc.id)                                     // the document goes, and its tombstones with it
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        #expect(try await store.obligations().map(\.title).contains("HW 1"))            // a fresh read is a fresh start
     }
 
     @Test func deletingADocumentRetiresWhatCameFromItAndNothingElse() async throws {

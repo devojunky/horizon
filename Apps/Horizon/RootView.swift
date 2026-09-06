@@ -99,7 +99,10 @@ struct RootView: View {
             .onChange(of: courses.count, initial: true) { _, count in
                 if MainTabs.debugFlag("--open-course"), count > 0, path.isEmpty, let first = courses.first { path.append(first) }
             }
-            .onAppear { if MainTabs.debugFlag("--open-documents"), path.isEmpty { path.append("documents") } }
+            .onAppear {
+                if MainTabs.debugFlag("--open-documents"), path.isEmpty { path.append("documents") }
+                if MainTabs.debugFlag("--delete-first-course"), let first = courses.first { Task { await model.deleteCourse(first.id) } }   // DEBUG: the re-read flow without a tap
+            }
             .navigationTitle("Coverage")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.large)
