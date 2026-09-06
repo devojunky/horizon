@@ -12,7 +12,7 @@ struct MergerTests {
     """
     static func outcome(_ chunk: Int, kind: ExtractionOutcome.Kind = .text, course: CourseFacts? = nil, components: [GradeComponentFacts] = [],
                         obligations: [ObligationFacts] = [], policies: [PolicyFacts] = [], noClass: [NoClassFacts] = []) -> ExtractionOutcome {
-        ExtractionOutcome(kind: kind, page: chunk, extraction: ChunkExtraction(course: course, gradeComponents: components, policies: policies, noClassDates: noClass, obligations: obligations),
+        ExtractionOutcome(kind: kind, page: chunk, extraction: ChunkExtraction(course: course, gradeComponents: components, obligations: obligations, policies: policies, noClassDates: noClass),
                           usage: UsageRecord(step: "text", chunk: chunk, route: .onDevice, inputTokens: 1, cachedTokens: 0, outputTokens: 1, reasoningTokens: 0, durationMs: 1))
     }
     static func ob(_ title: String, _ written: String, iso: String? = nil, platform: String = "not_stated", component: String? = nil, confidence: String = "high") -> ObligationFacts {
@@ -602,6 +602,18 @@ struct MergerTests {
         #expect(r.warnings.contains { $0.hasPrefix("3 policy sentence(s) dropped") } && r.warnings.contains { $0.contains("dropped scores read from the document") })
     }
 
+    @Test func sessionLinesAndBareVerbsNeverShipReady() {
+        let text = """
+        BI-UY 1002 Biology, Fall 2026
+        First lecture: Wednesday, September 2. Last lecture: Friday, December 11.
+        Respond to the discussion prompt by Wednesday, September 2. Quiz 1 is on Friday, September 11.
+        """
+        let r = Self.merge([Self.outcome(0, obligations: [Self.ob("First lecture", "Wednesday, September 2", iso: "2026-09-02"), Self.ob("Last lecture", "Friday, December 11", iso: "2026-12-11"),
+                                                          Self.ob("Respond", "Wednesday, September 2", iso: "2026-09-02"), Self.ob("Quiz 1", "Friday, September 11", iso: "2026-09-11")])], text: text)
+        #expect(r.obligations.map(\.title) == ["Respond", "Quiz 1"])                          // the lectures are sessions, skipped
+        #expect(r.obligations[0].status == .needsReview && r.obligations[1].status == .ready)   // a bare verb is reviewed, never shipped
+    }
+
     @Test func anInventedSeriesOfTBDItemsIsDropped() {
         let text = """
         MA-UY 1124 Calculus II, Fall 2026
@@ -626,9 +638,9 @@ struct MergerTests {
 
     @Test func rollingContextCarriesCourseAndComponents() {
         var context = RollingContext()
-        context.absorb(ChunkExtraction(course: Self.course, gradeComponents: [Self.component("Homework", 15, platform: "webassign"), Self.component("Quizzes", 12)], policies: [], noClassDates: [], obligations: []))
+        context.absorb(ChunkExtraction(course: Self.course, gradeComponents: [Self.component("Homework", 15, platform: "webassign"), Self.component("Quizzes", 12)], obligations: [], policies: [], noClassDates: []))
         context.absorb(ChunkExtraction(course: CourseFacts(code: "OTHER", title: nil, instructor: nil, term: nil, termStart: nil, termEnd: nil, room: nil, meetings: []),
-                                       gradeComponents: [Self.component("Homework", 10)], policies: [], noClassDates: [], obligations: []))
+                                       gradeComponents: [Self.component("Homework", 10)], obligations: [], policies: [], noClassDates: []))
         #expect(context.courseLine == "MA-UY 1124 Calculus II" && context.termLine == "Fall 2026 (2026-09-02 to 2026-12-14)")
         #expect(context.componentLines == ["Homework (webassign)", "Quizzes"])
     }

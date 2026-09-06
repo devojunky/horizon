@@ -121,6 +121,7 @@ enum Merger {
                 var title = Self.ownName(Normalize.collapseWhitespace(facts.title))
                 guard !title.isEmpty else { continue }
                 if strict, Self.isTopicOrSession(title) { skippedTopics += 1; continue }   // a lecture topic, a reading, a class session
+                let bareWord = strict && Self.isBareWord(title)                                // "Respond": review, never ready
                 let resolution = resolver.resolve(iso: facts.dueDate, asWritten: facts.dateAsWritten)
                 var flags = resolution.flags
                 let tbd = resolution.date == nil && (DateResolver.isTBD(facts.dateAsWritten) || facts.dueDate == nil)
@@ -239,6 +240,7 @@ enum Merger {
                 let platform = source.platform(onLineMentioning: title)
                     ?? componentName.flatMap { componentPlatforms[Normalize.key($0)] }
                     ?? (outcome.kind == .image ? (source.uniquePlatform ?? platform(facts.platform)) : (source.hasText ? .syllabusOnly : platform(facts.platform)))
+                if bareWord { flags.append(.titleFromLine); confidence = min(confidence, options.reviewThreshold - 0.05) }   // last word: nothing below raises it back
                 let status: ObligationStatus = resolution.date == nil ? (tbd ? .awaitingDate : .needsReview)
                     : (confidence < options.reviewThreshold ? .needsReview : .ready)
                 let item = ParsedObligation(id: UUID(), title: title, platform: platform,
@@ -667,7 +669,15 @@ enum Merger {
         if key.range(of: #"\b(work session|review session|planning time|in class|in person|online session|class meeting|group work|office hours|no class|no classes|holiday|reading day|finals week|exam preparation|examination preparation|exam review|review for the|review for)\b"#, options: .regularExpression) != nil { return true }
         let deliverable = #"\b(quiz|quizzes|test|tests|exam|exams|midterm|midterms|final|finals|homework|hw|assignment|assignments|project|paper|essay|lab|labs|report|presentation|presentations|problem set|problem sets|pset|ps\d+|due|submit|submission|worksheet|discussion post|response|proposal|draft|portfolio|deadline)\b"#
         guard key.range(of: deliverable, options: .regularExpression) == nil else { return false }
+        if key.range(of: #"^ (first|last|final) (day|lecture|lectures|class|classes|session|meeting|week) "#, options: .regularExpression) != nil { return true }   // "First lecture", "Last day of class"
         return key.range(of: #"^ (chapter|chapters|ch|lecture|lectures|topic|topics|module|modules|reading|readings|read|review|introduction|course synthesis|syllabus|welcome|overview)\b"#, options: .regularExpression) != nil
+    }
+
+    /// A one-word title that names no deliverable ("Respond", "Read", "Prepare"): a verb from a sentence, not an item's name.
+    static func isBareWord(_ title: String) -> Bool {
+        let key = Normalize.key(title)
+        guard !key.isEmpty, !key.contains(" "), !key.contains(where: \.isNumber) else { return false }
+        return (" " + key + " ").range(of: #"\b(quiz|quizzes|test|tests|exam|exams|midterm|midterms|final|finals|homework|hw|assignment|assignments|project|projects|paper|papers|essay|essays|lab|labs|report|reports|presentation|presentations|pset|worksheet|proposal|draft|portfolio|thesis|dissertation|capstone|reflection|journal|memo|outline|abstract|poster|demo)\b"#, options: .regularExpression) == nil
     }
 
     /// "", "null", "none", "n/a": the model had no wording to copy, whatever date it then chose.

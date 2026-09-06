@@ -260,7 +260,7 @@ actor Extractor {
                                termStart: facts.termStart ?? nil, termEnd: facts.termEnd ?? nil, room: facts.room ?? nil, meetings: [])
         }
         guard course != nil || !obligations.isEmpty || !components.isEmpty || !policies.isEmpty else { return nil }
-        return ChunkExtraction(course: course, gradeComponents: components, policies: policies, noClassDates: noClass, obligations: obligations)
+        return ChunkExtraction(course: course, gradeComponents: components, obligations: obligations, policies: policies, noClassDates: noClass)
     }
 
     /// The model stopped at `maximumResponseTokens`, leaving the structured response unfinished.
