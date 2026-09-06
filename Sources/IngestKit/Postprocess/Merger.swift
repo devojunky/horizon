@@ -147,7 +147,7 @@ enum Merger {
                     } else if strict {
                         // A dateless item must be a supported TBD, and not merely a grade-table row restated.
                         let namesComponent = componentKeys.contains(Normalize.key(title)) && !DateResolver.isTBD(facts.dateAsWritten)
-                        if !writtenInSource || !tbd || namesComponent { dropped += 1; continue }
+                        if !writtenInSource || !tbd || namesComponent || !source.contains(title) { dropped += 1; continue }   // "HW 1 … HW 9, TBD" that the document never prints
                     } else if !tbd {
                         dropped += 1; continue
                     }
@@ -278,15 +278,43 @@ enum Merger {
                                                                   termStart: resolver.termStart, termEnd: resolver.termEnd, onFile: onFile)
         }
 
-        // Policies: exact wording only. A paraphrase is replaced by the best-matching source sentences or marked non-verbatim.
+        // Policies: the document's own sentences, about the rule they are filed under. The small model's paraphrases and
+        // boilerplate ("Attendance is mandatory and will be monitored") are dropped, not kept; a real sentence filed under
+        // the wrong rule is re-filed by its words, and one that names no rule is dropped; a rule the model never quoted
+        // is read from the document itself, the way a skipped grade-table row is. Without any text to check against
+        // (an image and no OCR), the model's words are kept and marked as unchecked.
         var policies: [ParsedPolicy] = []
-        for facts in extractions.flatMap(\.policies) where !Normalize.key(facts.text).isEmpty {
-            let (text, verbatim) = source.verbatim(facts.text)
+        var droppedPolicies = 0
+        func accept(_ text: String, kind: PolicyKind, verbatim: Bool) {
             let key = Normalize.key(text)
-            if !policies.contains(where: { Normalize.key($0.text) == key }) {
-                policies.append(ParsedPolicy(kind: policyKind(facts.kind), text: text, verbatim: verbatim))
+            guard !key.isEmpty, text.count <= 320 else { return }
+            if let i = policies.firstIndex(where: { key.contains(Normalize.key($0.text)) }) {   // the same rule, said longer: keep the longer
+                if Normalize.key(policies[i].text) != key { policies[i] = ParsedPolicy(kind: policies[i].kind, text: text, verbatim: verbatim) }
+                return
+            }
+            guard !policies.contains(where: { Normalize.key($0.text).contains(key) }) else { return }   // a fragment of one already kept
+            guard policies.filter({ $0.kind == kind }).count < 3, policies.count < 12 else { return }
+            policies.append(ParsedPolicy(kind: kind, text: text, verbatim: verbatim))
+        }
+        for facts in extractions.flatMap(\.policies) where !Normalize.key(facts.text).isEmpty {
+            let text: String
+            if source.hasText {
+                guard let own = source.verbatim(facts.text) else { droppedPolicies += 1; continue }
+                text = own
+            } else {
+                text = Normalize.collapseWhitespace(facts.text)
+            }
+            guard let kind = Self.policyKind(of: text, suggested: policyKind(facts.kind)) else { droppedPolicies += 1; continue }
+            accept(text, kind: kind, verbatim: source.hasText)
+        }
+        if source.hasText {
+            for kind in [PolicyKind.lateWork, .makeupExam, .attendance, .dropRule, .extraCredit] where !policies.contains(where: { $0.kind == kind }) {
+                guard let sentence = source.policySentence(for: kind) else { continue }
+                accept(sentence, kind: kind, verbatim: true)
+                warnings.append("Policy on \(Self.policyName(kind)) read from the document; the model skipped it")
             }
         }
+        if droppedPolicies > 0 { warnings.append("\(droppedPolicies) policy sentence(s) dropped: not the document's words, or not about a rule") }
 
         // No-class dates: the wording must appear in the source.
         var noClass: [ParsedNoClass] = []
@@ -564,21 +592,27 @@ enum Merger {
             return tables.enumerated().max { a, b in (matches(a.element), -a.offset) < (matches(b.element), -b.offset) }?.element ?? []
         }
 
-        /// The source's own wording for a model-quoted policy, sentence by sentence; `verbatim == false` when a sentence has no close match.
-        func verbatim(_ quoted: String) -> (String, Bool) {
+        /// The source's own wording for a model-quoted policy, sentence by sentence: the quote itself when the document
+        /// contains it, else its sentences rebuilt from the document's closest ones; nil when none of it is in the document.
+        func verbatim(_ quoted: String) -> String? {
             let cleaned = Normalize.collapseWhitespace(quoted)
-            if contains(cleaned) { return (cleaned, true) }
-            var rebuilt: [String] = [], allMatched = true
+            if contains(cleaned) { return cleaned }
+            var rebuilt: [String] = []
             for piece in cleaned.components(separatedBy: ". ").map({ $0.trimmingCharacters(in: .whitespaces) }) where !piece.isEmpty {
                 if contains(piece) { rebuilt.append(piece); continue }
                 if let best = sentences.map({ ($0, Normalize.similarity($0, piece)) }).max(by: { $0.1 < $1.1 }), best.1 >= 0.5 {
                     rebuilt.append(best.0.hasSuffix(".") ? String(best.0.dropLast()) : best.0)
-                } else {
-                    rebuilt.append(piece); allMatched = false
                 }
             }
+            guard !rebuilt.isEmpty else { return nil }
             let text = rebuilt.joined(separator: ". ")
-            return (text.last.map { ".!?".contains($0) } == true ? text : text + ".", allMatched)
+            return text.last.map { ".!?".contains($0) } == true ? text : text + "."
+        }
+
+        /// The document's first sentence that states a rule of this kind, for a rule the model never quoted.
+        func policySentence(for kind: PolicyKind) -> String? {
+            guard let sentence = sentences.first(where: { $0.count >= 20 && $0.count <= 320 && Merger.states(kind, $0) }) else { return nil }
+            return sentence.last.map { ".!?".contains($0) } == true ? sentence : sentence + "."
         }
     }
 
@@ -710,6 +744,33 @@ enum Merger {
         case "mylab": .myLab
         default: .syllabusOnly
         }
+    }
+
+    /// The words a sentence must use to be a rule of a kind.
+    static func policyPattern(_ kind: PolicyKind) -> String {
+        switch kind {
+        case .lateWork: #"(?i)\b(late|lateness|extensions?|penalt\w*|past due|after the due)\b"#
+        case .makeupExam: #"(?i)\b(make-?ups?|missed (an )?exams?|excused|absence requests?|reschedul\w*|exam conflicts?)\b"#
+        case .attendance: #"(?i)\b(attendance|attend|absences?|tardy|on time)\b"#
+        case .dropRule: #"(?i)(\bdrop(s|ped)?\b.{0,40}\blowest\b|\blowest\b.{0,40}\bdrop(s|ped)?\b|\breplaced with\b)"#
+        case .extraCredit: #"(?i)\b(extra credit|bonus)\b"#
+        case .other: #"(?i)\b(calculators?|academic (integrity|dishonesty)|plagiari\w*|cheat\w*|collaborat\w*|phones?|laptops?|regrad\w*|curv(e|ed)|accommodat\w*)\b"#
+        }
+    }
+
+    static func states(_ kind: PolicyKind, _ sentence: String) -> Bool {
+        sentence.range(of: policyPattern(kind), options: .regularExpression) != nil
+    }
+
+    /// The kind a sentence is about: the model's, when the sentence uses its words; else the first kind whose words it
+    /// uses; else none, and the sentence is no policy.
+    static func policyKind(of sentence: String, suggested: PolicyKind) -> PolicyKind? {
+        if states(suggested, sentence) { return suggested }
+        return [PolicyKind.dropRule, .makeupExam, .lateWork, .attendance, .extraCredit, .other].first { states($0, sentence) }
+    }
+
+    static func policyName(_ kind: PolicyKind) -> String {
+        switch kind { case .lateWork: "late work"; case .makeupExam: "make-up exams"; case .attendance: "attendance"; case .dropRule: "dropped scores"; case .extraCredit: "extra credit"; case .other: "other rules" }
     }
 
     static func policyKind(_ raw: String) -> PolicyKind {

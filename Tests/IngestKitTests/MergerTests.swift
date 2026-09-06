@@ -574,11 +574,38 @@ struct MergerTests {
         let r = Self.merge([Self.outcome(0, policies: [
             PolicyFacts(kind: "late_work", text: "Late homework is not accepted; WebAssign closes at the deadline."),   // verbatim
             PolicyFacts(kind: "drop_rule", text: "The two lowest quiz scores get dropped"),                           // paraphrase → replaced by the source sentence
-            PolicyFacts(kind: "attendance", text: "Attendance is mandatory every day."),                               // not in the document at all
+            PolicyFacts(kind: "attendance", text: "Attendance is mandatory every day."),                               // not in the document at all: dropped
         ])])
-        #expect(r.policies.map(\.verbatim) == [true, true, false])
-        #expect(r.policies[1].text == "The lowest two quiz scores are dropped.")
-        #expect(r.policies[0].kind == .lateWork && r.policies[1].kind == .dropRule)
+        #expect(r.policies.map(\.text) == ["Late homework is not accepted; WebAssign closes at the deadline.", "The lowest two quiz scores are dropped."])
+        #expect(r.policies.map(\.kind) == [.lateWork, .dropRule] && r.policies.allSatisfy(\.verbatim))
+        #expect(r.warnings.contains { $0.hasPrefix("1 policy sentence(s) dropped") })
+    }
+
+    @Test func policiesAreFiledByTheirWordsAndRecoveredWhenTheModelSkipsThem() {
+        let text = """
+        MA-UY 1124 Calculus II, Fall 2026
+        Students will be allowed a maximum of one make-up exam throughout the semester for an excused reason. \
+        We will drop the lowest three quiz grades at the end of the semester. There will be no extensions on these assignments. \
+        Your course score will be determined according to the first table. Exam 1 is on Wednesday, October 7.
+        """
+        let r = Self.merge([Self.outcome(0, policies: [
+            PolicyFacts(kind: "late_work", text: "Students will be allowed a maximum of one make-up exam throughout the semester for an excused reason."),   // real, filed wrong
+            PolicyFacts(kind: "late_work", text: "Your course score will be determined according to the first table."),                                 // real, about no rule
+            PolicyFacts(kind: "extra_credit", text: "Extra credit opportunities will be announced during the course."),                                 // boilerplate
+            PolicyFacts(kind: "attendance", text: "Attendance is mandatory and will be monitored throughout the course."),                             // boilerplate
+        ])], text: text)
+        #expect(r.policies.first { $0.kind == .makeupExam }?.text.hasPrefix("Students will be allowed a maximum of one make-up exam") == true)
+        #expect(r.policies.first { $0.kind == .dropRule }?.text == "We will drop the lowest three quiz grades at the end of the semester.")   // read from the document
+        #expect(r.policies.first { $0.kind == .lateWork }?.text == "There will be no extensions on these assignments.")                       // read from the document
+        #expect(!r.policies.contains { $0.text.contains("first table") || $0.kind == .extraCredit || $0.kind == .attendance })
+        #expect(r.policies.allSatisfy(\.verbatim) && r.policies.count == 3)
+        #expect(r.warnings.contains { $0.hasPrefix("3 policy sentence(s) dropped") } && r.warnings.contains { $0.contains("dropped scores read from the document") })
+    }
+
+    @Test func anInventedSeriesOfTBDItemsIsDropped() {
+        let text = "MA-UY 1124 Calculus II, Fall 2026\nFor each class day there will be a WebAssign assignment, due on Fridays. The Final Exam date is TBD."
+        let r = Self.merge([Self.outcome(0, obligations: [Self.ob("HW 1", "TBD", iso: nil), Self.ob("HW 2", "TBD", iso: nil), Self.ob("Final Exam", "TBD", iso: nil)])], text: text)
+        #expect(r.obligations.map(\.title) == ["Final Exam"] && r.obligations[0].status == .awaitingDate)
     }
 
     @Test func noClassDatesResolveRanges() {
