@@ -603,9 +603,15 @@ struct MergerTests {
     }
 
     @Test func anInventedSeriesOfTBDItemsIsDropped() {
-        let text = "MA-UY 1124 Calculus II, Fall 2026\nFor each class day there will be a WebAssign assignment, due on Fridays. The Final Exam date is TBD."
-        let r = Self.merge([Self.outcome(0, obligations: [Self.ob("HW 1", "TBD", iso: nil), Self.ob("HW 2", "TBD", iso: nil), Self.ob("Final Exam", "TBD", iso: nil)])], text: text)
-        #expect(r.obligations.map(\.title) == ["Final Exam"] && r.obligations[0].status == .awaitingDate)
+        let text = """
+        MA-UY 1124 Calculus II, Fall 2026
+        For each class day there will be a WebAssign assignment, due on Fridays.
+        Excused absence requests must be submitted within two days of the missed exam.
+        Final Exam: TBD (when the registrar decides, you will see it in Albert).
+        """
+        let r = Self.merge([Self.outcome(0, obligations: [Self.ob("HW 1", "TBD", iso: nil), Self.ob("HW 2", "TBD", iso: nil),
+                                                          Self.ob("Excused absence request", "TBD", iso: nil), Self.ob("Final Exam", "TBD", iso: nil)])], text: text)
+        #expect(r.obligations.map(\.title) == ["Final Exam"] && r.obligations[0].status == .awaitingDate)   // the series and the sentence's name are gone
     }
 
     @Test func noClassDatesResolveRanges() {

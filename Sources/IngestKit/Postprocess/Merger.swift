@@ -147,7 +147,9 @@ enum Merger {
                     } else if strict {
                         // A dateless item must be a supported TBD, and not merely a grade-table row restated.
                         let namesComponent = componentKeys.contains(Normalize.key(title)) && !DateResolver.isTBD(facts.dateAsWritten)
-                        if !writtenInSource || !tbd || namesComponent || !source.contains(title) { dropped += 1; continue }   // "HW 1 … HW 9, TBD" that the document never prints
+                        // "HW 1 … HW 9, TBD" that the document never prints, or a name lifted from a sentence that says nothing about
+                        // a date ("Excused absence request"): a TBD item's own line must carry the TBD wording.
+                        if !writtenInSource || !tbd || namesComponent || !source.lineNamesWithTBD(title) { dropped += 1; continue }
                     } else if !tbd {
                         dropped += 1; continue
                     }
@@ -607,6 +609,16 @@ enum Merger {
             guard !rebuilt.isEmpty else { return nil }
             let text = rebuilt.joined(separator: ". ")
             return text.last.map { ".!?".contains($0) } == true ? text : text + "."
+        }
+
+        /// A line that names the item and says TBD, TBA or the like on the same line ("Final Exam, TBD (when Tandon decides…)").
+        func lineNamesWithTBD(_ title: String) -> Bool {
+            let needle = Normalize.key(title)
+            guard !needle.isEmpty else { return false }
+            return lines.contains { line in
+                let key = " " + Normalize.key(line) + " "
+                return key.contains(" " + needle + " ") && DateResolver.isTBD(key)
+            }
         }
 
         /// The document's first sentence that states a rule of this kind, for a rule the model never quoted.
