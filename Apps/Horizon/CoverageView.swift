@@ -9,11 +9,12 @@ struct CoverageList: View {
     var reading = false
     /// Documents with items but no course are on file: not nothing, even with no course yet.
     var hasUnfiled = false
+    /// Pushes a course page (the home stack's guarded push).
+    var open: (Route) -> Void = { _ in }
     @Environment(AppModel.self) private var model
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }) private var courses: [Course]
     @Query(filter: #Predicate<Obligation> { $0.deletedAt == nil }) private var obligations: [Obligation]
-    @Query private var documents: [SourceDocument]
-    @State private var deleting: CourseCoverage?
+    @Query(filter: #Predicate<SourceDocument> { $0.deletedAt == nil }) private var documents: [SourceDocument]
 
     /// The user's own order first; courses without one follow, most suspicious first.
     private var stories: [CourseCoverage] {
@@ -40,9 +41,15 @@ struct CoverageList: View {
             .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
         }
         ForEach(stories) { story in
-            NavigationLink(value: courses.first { $0.id == story.course.id }!) {
-                CoverageStory(story: story)
+            Button { open(.course(story.course.id)) } label: {
+                HStack(spacing: 12) {
+                    CoverageStory(story: story)
+                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityHint("Opens the course")
             .listRowSeparator(.visible)
             .onPaper()
             .listRowInsets(EdgeInsets(top: 20, leading: 20, bottom: 20, trailing: 20))
@@ -52,11 +59,8 @@ struct CoverageList: View {
             order.move(fromOffsets: from, toOffset: to)
             Task { await model.reorderCourses(order) }
         }
-        .onDelete { offsets in deleting = offsets.first.map { stories[$0] } }
-        .confirmationDialog("Delete \(deleting?.displayName ?? "this course")?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
-            Button("Delete Course", role: .destructive) { if let course = deleting { Task { await model.deleteCourse(course.course.id) } } }
-        } message: {
-            Text("Its items, their reminders, and its documents are removed as well. Sharing its syllabus again reads it afresh and brings it back.")
+        .onDelete { offsets in   // straight to Recently Deleted, where it can be restored for 30 days: no dialog
+            for story in offsets.map({ stories[$0] }) { Task { await model.deleteCourse(story.course.id) } }
         }
     }
 }

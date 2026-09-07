@@ -5,27 +5,44 @@ import HorizonCore
 import UIKit
 #endif
 
+/// The pages the home stack can push. One typed path, so a push can refuse to double up (a link that fires twice, a
+/// flag and a tap): `RootView.open` pushes a route only when it is not already on the path.
+enum Route: Hashable {
+    case course(UUID)
+    case documents
+    case recentlyDeleted
+    case settings
+}
+
+/// Pushes a route on the home stack; pages down the stack (Documents, Recently Deleted) use it instead of links.
+extension EnvironmentValues {
+    @Entry var openRoute: @MainActor (Route) -> Void = { _ in }
+}
+
 /// The home screen is Coverage (SPEC §6.1). Intake status and the review queue sit above it; the strip and the day
-/// plan arrive in M4 and M5.
+/// plan arrive in M4 and M5. Pulling the page down reads what is queued and syncs with Reminders.
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @Query(sort: \Obligation.due) private var obligations: [Obligation]
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
-    @Query(filter: #Predicate<SourceDocument> { $0.course == nil }) private var looseDocuments: [SourceDocument]
-    @Query private var documents: [SourceDocument]
+    @Query(filter: #Predicate<SourceDocument> { $0.course == nil && $0.deletedAt == nil }) private var looseDocuments: [SourceDocument]
+    @Query(filter: #Predicate<SourceDocument> { $0.deletedAt == nil }) private var documents: [SourceDocument]
+    @Query(filter: #Predicate<Course> { $0.deletedAt != nil && $0.erasedAt == nil }) private var binnedCourses: [Course]
+    @Query(filter: #Predicate<SourceDocument> { $0.deletedAt != nil }) private var deletedDocuments: [SourceDocument]
     @State private var addingByHand = false
     @State private var addingCourse = false
-    @State private var openAISettings = false
     @State private var linked: Obligation?
-    @State private var path = NavigationPath()
+    @State private var path: [Route] = []
     @State private var editing: EditMode = .inactive   // owned here and handed to the list, so the toolbar and the rows agree
     @Environment(\.openURL) private var openURL
 
     private var live: [Obligation] { obligations.filter { $0.deletedAt == nil } }
-    /// Documents, pushed once: a second push while it is up (a link firing twice, a flag and a tap) is ignored.
-    private func openDocuments() {
-        guard path.isEmpty else { return }
-        path.append("documents")
+    /// What sits in Recently Deleted: courses, and documents deleted on their own.
+    private var binned: Int { binnedCourses.count + deletedDocuments.filter(\.isBinned).count }
+    /// A page, pushed once: a second push while it is up is ignored.
+    private func open(_ route: Route) {
+        guard !path.contains(route) else { return }
+        path.append(route)
     }
     /// Documents that could not be read, in one line: a failure must not vanish into Documents unannounced.
     private var readFailure: String? {
@@ -53,7 +70,7 @@ struct RootView: View {
                     .onPaper()
                 } else if let failure = readFailure {   // from the store, so it stays until the document reads or is retried
                     Section {
-                        Button { openDocuments() } label: {
+                        Button { open(.documents) } label: {
                             HStack {
                                 Label(failure, systemImage: "exclamationmark.triangle").foregroundStyle(Design.accent)
                                 Spacer()
@@ -91,7 +108,7 @@ struct RootView: View {
                 }
                 let unfiled = looseDocuments.filter { $0.status == .parsed && !($0.obligations ?? []).filter { $0.deletedAt == nil }.isEmpty }
                 if !unfiled.isEmpty {
-                    Button { openDocuments() } label: {
+                    Button { open(.documents) } label: {
                         HStack {
                             Text(unfiled.count == 1 ? "One document has no course yet" : "\(unfiled.count) documents have no course yet")
                                 .font(.system(.title3, design: .serif, weight: .semibold))
@@ -106,23 +123,40 @@ struct RootView: View {
                     .onPaper()
                     .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 4, trailing: 20))
                 }
-                CoverageList(reading: model.reading != nil, hasUnfiled: !unfiled.isEmpty)
+                CoverageList(reading: model.reading != nil, hasUnfiled: !unfiled.isEmpty, open: open)
+                if binned > 0 {
+                    RecentlyDeletedRow(count: binned) { open(.recentlyDeleted) }
+                }
             }
             .listStyle(.plain)
             .paper()
+            .refreshable { await model.drainAndSync() }   // the page pulled down reads the queue and syncs with Reminders
             .animation(.default, value: model.reading != nil)
             .animation(.default, value: model.statusLine)
             .animation(.default, value: readFailure)
             .animation(.default, value: model.lastError)
-            .navigationDestination(for: Course.self) { CourseView(course: $0) }
-            .navigationDestination(for: String.self) { _ in DocumentsView() }   // "documents", for the debug flag
+            .animation(.default, value: courses.map(\.id))
+            .animation(.default, value: binned)
+            .navigationDestination(for: Route.self) { route in
+                switch route {
+                case .course(let id):
+                    if let course = courses.first(where: { $0.id == id }) { CourseView(course: course) } else { EmptyView() }
+                case .documents: DocumentsView()
+                case .recentlyDeleted: RecentlyDeletedView()
+                case .settings: SettingsView()
+                }
+            }
+            .environment(\.openRoute, open)
             .onChange(of: courses.count, initial: true) { _, count in
-                if MainTabs.debugFlag("--open-course"), count > 0, path.isEmpty, let first = courses.first { path.append(first) }
+                if MainTabs.debugFlag("--open-course"), count > 0, path.isEmpty, let first = courses.first { open(.course(first.id)) }
             }
             .onAppear {
-                if MainTabs.debugFlag("--open-documents") { openDocuments() }
-                if MainTabs.debugFlag("--open-openai") { openAISettings = true }
-                if MainTabs.debugFlag("--delete-first-course"), let first = courses.first { Task { await model.deleteCourse(first.id) } }   // DEBUG: the re-read flow without a tap
+                if MainTabs.debugFlag("--open-documents") { open(.documents) }
+                if MainTabs.debugFlag("--open-settings") { open(.settings) }
+                if MainTabs.debugFlag("--open-recently-deleted") { open(.recentlyDeleted) }
+                if MainTabs.debugFlag("--delete-first-course"), let first = courses.first { Task { await model.deleteCourse(first.id) } }   // DEBUG: the bin without a tap
+                if MainTabs.debugFlag("--restore-first-course"), let first = binnedCourses.first { Task { await model.restoreCourse(first.id) } }
+                if MainTabs.debugFlag("--restore-first-document"), let first = deletedDocuments.first(where: \.isBinned) { Task { await model.restoreDocument(first.id) } }
             }
             .navigationTitle("Coverage")
             #if os(iOS)
@@ -133,31 +167,22 @@ struct RootView: View {
                     ToolbarItem(placement: .primaryAction) { Button("Done") { withAnimation { editing = .inactive } } }
                 } else {
                 ToolbarItem(placement: .primaryAction) { ImportMenu() }
+                #if os(macOS)
+                ToolbarItem(placement: .primaryAction) {   // no page to pull down on a Mac
+                    Button { Task { await model.drainAndSync() } } label: { Label("Sync with Reminders", systemImage: "arrow.triangle.2.circlepath") }
+                        .keyboardShortcut("r", modifiers: .command)
+                }
+                #endif
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
-                        Button { Task { await model.drainAndSync() } } label: { Label("Sync with Reminders", systemImage: "arrow.triangle.2.circlepath") }
-                        Button { openDocuments() } label: { Label("Documents", systemImage: "doc.text") }
-                        Toggle(isOn: Binding(get: { model.readInCloud }, set: { model.readInCloud = $0 })) {
-                            Label("Read in Private Cloud Compute", systemImage: "cloud")
-                        }
-                        .disabled(model.cloudUnavailableReason != nil)
-                        if FeatureFlags.openAI {
-                            Button { openAISettings = true } label: { Label(model.openAIConfiguration != nil ? "Reading with OpenAI…" : "Read with OpenAI…", systemImage: "sparkles") }
-                        }
+                        Button { open(.documents) } label: { Label("Documents", systemImage: "doc.text") }
+                        Button { open(.settings) } label: { Label("Settings", systemImage: "gearshape") }
                         Divider()
                         Button { addingByHand = true } label: { Label("Add Item…", systemImage: "square.and.pencil") }
                         Button { addingCourse = true } label: { Label("Add Course…", systemImage: "book") }
-                        if courses.count > 1 || !courses.isEmpty {
+                        if !courses.isEmpty {
                             Button { withAnimation { editing = .active } } label: { Label("Edit Courses", systemImage: "arrow.up.arrow.down") }
                         }
-                        #if DEBUG
-                        Divider()
-                        Button {
-                            if let sample = Bundle.main.url(forResource: "sample-syllabus", withExtension: "pdf") {
-                                Task { await model.importFiles([sample]) }
-                            }
-                        } label: { Label("Ingest sample syllabus", systemImage: "ladybug") }
-                        #endif
                     } label: { Label("More", systemImage: "ellipsis.circle") }
                 }
                 }
@@ -166,7 +191,6 @@ struct RootView: View {
             .onAppear { if MainTabs.debugFlag("--edit-courses") { editing = .active } }
             .sheet(isPresented: $addingByHand) { ObligationEditor(mode: .manual, courses: courses) }
             .sheet(isPresented: $addingCourse) { CourseEditor(course: nil) }
-            .sheet(isPresented: $openAISettings) { OpenAISettingsView() }
             .sheet(item: $linked) { ObligationEditor(mode: .review($0), courses: courses) }
             .onChange(of: model.linkedObligationID) { _, id in
                 guard let id else { return }   // the reset below fires this again with nil; it must not close the sheet
@@ -174,6 +198,35 @@ struct RootView: View {
                 model.linkedObligationID = nil
             }
         }
+    }
+}
+
+/// The quiet way into Recently Deleted, at the foot of a list, only while something is in it.
+struct RecentlyDeletedRow: View {
+    let count: Int
+    var open: () -> Void
+
+    var body: some View {
+        Section {
+            Button(action: open) {
+                HStack(spacing: 10) {
+                    Image(systemName: "trash").foregroundStyle(.secondary)
+                    Text("Recently Deleted")
+                    Spacer()
+                    Text(String(count)).foregroundStyle(.secondary).monospacedDigit().contentTransition(.numericText())
+                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                }
+                .font(.subheadline)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Recently Deleted, \(count == 1 ? "one thing" : "\(count) things")")
+            .accessibilityHint("Opens Recently Deleted")
+        }
+        .listRowSeparator(.hidden)
+        .onPaper()
+        .listRowInsets(EdgeInsets(top: 16, leading: 20, bottom: 16, trailing: 20))
+        .transition(.opacity)
     }
 }
 

@@ -2,24 +2,19 @@ import SwiftUI
 import SwiftData
 import HorizonCore
 
-/// SPEC §4.3: a small debug view showing token counts, per document.
+/// SPEC §4.3: a small debug view showing token counts, per document. Deleting sends a document to Recently Deleted;
+/// pulling the page down reads what is queued.
 struct DocumentsView: View {
     @Environment(AppModel.self) private var model
-    @Query(sort: \SourceDocument.queuedAt, order: .reverse) private var documents: [SourceDocument]
+    @Environment(\.openRoute) private var open
+    @Query(filter: #Predicate<SourceDocument> { $0.deletedAt == nil }, sort: \SourceDocument.queuedAt, order: .reverse) private var documents: [SourceDocument]
+    @Query(filter: #Predicate<SourceDocument> { $0.deletedAt != nil }) private var deletedDocuments: [SourceDocument]
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
-    @State private var deleting: SourceDocument?
+
+    private var binned: Int { deletedDocuments.filter(\.isBinned).count }
 
     var body: some View {
         List {
-            Section {
-                LabeledContent("Reminders access", value: model.remindersAuthorized.map { $0 ? "Granted" : "Denied" } ?? "Not asked")
-                LabeledContent("Device", value: AppModel.deviceName)
-                LabeledContent("Reads documents", value: model.openAIConfiguration.map { "With OpenAI (\($0.model))" } ?? (model.readInCloud ? "In Private Cloud Compute" : "On device"))
-                if let why = model.cloudUnavailableReason {
-                    Text("Private Cloud Compute is unavailable: \(why).").font(.footnote).foregroundStyle(.secondary)
-                }
-            } header: { Kicker("This device") }
-            .onPaper()
             Section {
                 ForEach(documents) { doc in
                     VStack(alignment: .leading, spacing: 3) {
@@ -44,33 +39,24 @@ struct DocumentsView: View {
                         }
                         ForEach(doc.warnings, id: \.self) { Text($0).font(.footnote).foregroundStyle(.secondary) }
                     }
-                    .swipeActions(edge: .trailing) {
-                        Button("Delete", systemImage: "trash", role: .destructive) { deleting = doc }
+                    .swipeActions(edge: .trailing) {   // straight to Recently Deleted, restorable for 30 days: no dialog
+                        Button("Delete", systemImage: "trash", role: .destructive) { Task { await model.deleteDocument(doc.id) } }
                     }
                 }
                 if documents.isEmpty { Text("No documents yet.").foregroundStyle(.secondary) }
             } header: { Kicker("Documents") }
             .onPaper()
+            if binned > 0 {
+                RecentlyDeletedRow(count: binned) { open(.recentlyDeleted) }
+            }
         }
         .listStyle(.plain)
         .paper()
-        .confirmationDialog("Delete \(deleting?.filename ?? "this document")?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
-            Button("Delete Document", role: .destructive) { if let doc = deleting { Task { await model.deleteDocument(doc.id) } } }
-        } message: {
-            Text(deleteMessage)
-        }
+        .refreshable { await model.drainAndSync() }
+        .animation(.default, value: documents.map(\.id))
+        .animation(.default, value: binned)
         .navigationTitle("Documents")
-        .onAppear { if MainTabs.debugFlag("--confirm-delete-document") { deleting = documents.first } }
-    }
-
-    /// What goes with the document: the items it is the source of, and their reminders.
-    private var deleteMessage: String {
-        let count = (deleting?.obligations ?? []).filter { $0.deletedAt == nil }.count
-        switch count {
-        case 0: return "Nothing on file came from it."
-        case 1: return "The one item that came from it, and its reminder, are removed as well. Items another document has since updated stay."
-        default: return "The \(count) items that came from it, and their reminders, are removed as well. Items another document has since updated stay."
-        }
+        .onAppear { if MainTabs.debugFlag("--delete-first-document"), let first = documents.first { Task { await model.deleteDocument(first.id) } } }
     }
 
     private func status(_ doc: SourceDocument) -> String {

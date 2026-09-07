@@ -49,6 +49,16 @@ final class AppModel {
         guard FeatureFlags.openAI, useOpenAI, !openAIKey.isEmpty else { return nil }
         return OpenAIConfiguration(apiKey: openAIKey, model: openAIModel)
     }
+    /// Where documents are read and plans made, as one choice (Settings): OpenAI wins when it can be used, then the
+    /// cloud when the entitlement is there, else the device. Choosing one turns the others off.
+    enum ReadingRoute: CaseIterable { case onDevice, privateCloudCompute, openAI }
+    var readingRoute: ReadingRoute {
+        get { openAIConfiguration != nil ? .openAI : readInCloud && cloudUnavailableReason == nil ? .privateCloudCompute : .onDevice }
+        set {
+            useOpenAI = newValue == .openAI && !openAIKey.isEmpty
+            readInCloud = newValue == .privateCloudCompute
+        }
+    }
 
     struct Reading: Equatable {
         var documentID: UUID
@@ -221,14 +231,40 @@ final class AppModel {
                 statusLine = report.created + report.updated > 0 ? "\(report.created) added, \(report.updated) updated in Reminders" : cancelNotice
             }
             try? await store.purgeTombstones()
+            try? await coordinator.expireBin()   // what has sat in Recently Deleted for 30 days goes for good
         } catch {
             withAnimation { lastError = error.localizedDescription; statusLine = nil }
         }
     }
 
+    // MARK: Recently Deleted
+
     func deleteDocument(_ id: UUID) async {
         do { try await coordinator.deleteDocument(id: id) } catch { lastError = error.localizedDescription }
         await drainAndSync()   // the reminders of what came from it go with it
+    }
+
+    func restoreDocument(_ id: UUID) async {
+        do { try await coordinator.restoreDocument(id: id) } catch { lastError = error.localizedDescription }
+        await drainAndSync()   // its items' reminders come back
+    }
+
+    func eraseDocument(_ id: UUID) async {
+        do { try await coordinator.eraseDocument(id: id) } catch { lastError = error.localizedDescription }
+    }
+
+    func deleteCourse(_ id: UUID) async {
+        do { try await coordinator.deleteCourse(id: id) } catch { lastError = error.localizedDescription }
+        await drainAndSync()   // its items' reminders go with it
+    }
+
+    func restoreCourse(_ id: UUID) async {
+        do { try await coordinator.restoreCourse(id: id) } catch { lastError = error.localizedDescription }
+        await drainAndSync()   // its items' reminders come back
+    }
+
+    func eraseCourse(_ id: UUID) async {
+        do { try await coordinator.eraseCourse(id: id) } catch { lastError = error.localizedDescription }
     }
 
     func retry(documentID: UUID) async {
@@ -321,11 +357,6 @@ final class AppModel {
         guard let data = UserDefaults.standard.data(forKey: "dayPlan"), let saved = try? JSONDecoder().decode(SavedPlan.self, from: data) else { return }
         guard saved.day == Calendar.current.startOfDay(for: Date()) else { UserDefaults.standard.removeObject(forKey: "dayPlan"); return }
         plan = saved.plan; planDay = saved.day; planCandidates = saved.candidates; planEdited = saved.edited
-    }
-
-    func deleteCourse(_ id: UUID) async {
-        do { try await coordinator.deleteCourse(id: id) } catch { lastError = error.localizedDescription }
-        await drainAndSync()   // its items' reminders go with it
     }
 
     func reorderCourses(_ ids: [UUID]) async {

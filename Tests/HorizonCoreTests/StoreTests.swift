@@ -201,13 +201,121 @@ struct StoreTests {
         let syllabus = try await store.documents().first { $0.sha256 == "abc" }!
         let before = try await store.obligations().filter { $0.deletedAt == nil }.map(\.title)
         #expect(before.contains("HW 3") && before.contains("Quiz 1"))
-        let record = try await store.deleteDocument(id: syllabus.id)
-        #expect(record?.filename == "calc.pdf")
+        try await store.deleteDocument(id: syllabus.id)
+        #expect(try await store.deletedDocuments().map(\.filename) == ["calc.pdf"])   // in the bin
         let live = try await store.obligations().filter { $0.deletedAt == nil }.map(\.title)
         #expect(live.sorted() == ["HW 1", "HW 3"])                                  // the schedule's items stay, the syllabus's go
         #expect(try await store.documents().map(\.sha256) == ["sched3"])
         #expect(try await store.obligations(includeDeleted: true).contains { $0.title == "Quiz 1" && $0.deletedAt != nil })   // a tombstone, so its reminder goes
-        #expect(try await store.deleteDocument(id: syllabus.id) == nil)              // gone is gone
+        let record = try await store.eraseDocument(id: syllabus.id)
+        #expect(record?.sha256 == "abc")                                             // gone for good, the file's name handed back for removal
+        #expect(try await store.deletedDocuments().isEmpty)
+        #expect(try await store.eraseDocument(id: syllabus.id) == nil)               // gone is gone
+    }
+
+    @Test func aDeletedCourseComesBackWithExactlyWhatItsDeletionTook() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let calc = try await store.courses().first!
+        let quiz = try await store.obligations().first { $0.title == "Quiz 1" }!
+        try await store.softDelete(id: quiz.id)                                       // by hand, before
+        try await store.deleteCourse(id: calc.id)
+        #expect(try await store.courses().isEmpty)
+        #expect(try await store.documents().isEmpty)
+        #expect(try await store.deletedCourses().map(\.id) == [calc.id])
+        #expect(try await store.deletedDocuments().isEmpty)                          // its document sits under it, not on its own
+        try await store.restoreCourse(id: calc.id)
+        #expect(try await store.courses().map(\.id) == [calc.id])
+        #expect(try await store.deletedCourses().isEmpty)
+        #expect(try await store.documents().map(\.filename) == ["calc.pdf"])
+        #expect(try await store.obligations().map(\.title).sorted() == ["Final Exam", "HW 1", "HW 2", "Midterm 1"])   // the quiz stays deleted
+        try await Fixture.ingest(Fixture.calculus(), into: store)                     // and stays deleted on a re-read: its tombstone still counts
+        #expect(try await store.obligations().map(\.title).sorted() == ["Final Exam", "HW 1", "HW 2", "Midterm 1"])
+    }
+
+    @Test func aDeletedDocumentComesBackWithoutDoublingWhatTheCourseGainedMeanwhile() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let calc = try await store.courses().first!
+        let syllabus = try await store.documents().first!
+        try await store.deleteDocument(id: syllabus.id)
+        #expect(try await store.obligations().isEmpty)
+        #expect(try await store.deletedDocuments().map(\.id) == [syllabus.id])
+        // A schedule read meanwhile lists HW 2 afresh.
+        let doc = try await store.enqueueDocument(filename: "schedule.pdf", sha256: "sched5", kind: "pdf", deviceName: "A", courseID: calc.id)
+        var schedule = Fixture.calculus(sha: "sched5"); schedule.course = nil; schedule.gradeComponents = []; schedule.policies = []
+        schedule.obligations = [ParsedObligation(title: "HW 2", platform: .webAssign, componentName: "Homework", dateAsWritten: "9/16", due: Fixture.day(9, 16), status: .ready, pointsAtStake: nil, sourcePage: 1)]
+        try await store.ingest(schedule, documentID: doc.id, calendar: Fixture.calendar)
+        try await store.restoreDocument(id: syllabus.id)
+        let back = try await store.obligations()
+        #expect(back.map(\.title).sorted() == ["Final Exam", "HW 1", "HW 2", "Midterm 1", "Quiz 1"])   // one HW 2, the schedule's
+        #expect(back.first { $0.title == "HW 2" }?.sourceDocumentID == doc.id)
+        #expect(back.first { $0.title == "HW 1" }?.pointsAtStake == 1.5)             // points recomputed over what is back
+        #expect(try await store.documents().count == 2)
+        #expect(try await store.deletedDocuments().isEmpty)
+    }
+
+    @Test func restoringADocumentRestoresTheCourseItSitsUnder() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let calc = try await store.courses().first!
+        let syllabus = try await store.documents().first!
+        try await store.deleteDocument(id: syllabus.id)     // on its own first
+        try await store.deleteCourse(id: calc.id)           // then the course: the document is hidden under it
+        #expect(try await store.deletedDocuments().isEmpty)
+        #expect(try await store.deletedCourses().count == 1)
+        try await store.restoreCourse(id: calc.id)
+        #expect(try await store.deletedDocuments().map(\.id) == [syllabus.id])   // the course's deletion did not take it, so it is still in the bin, now on its own
+        #expect(try await store.obligations().isEmpty)
+        try await store.deleteCourse(id: calc.id)
+        try await store.restoreDocument(id: syllabus.id)    // restoring it brings the course back too
+        #expect(try await store.courses().map(\.id) == [calc.id])
+        #expect(try await store.obligations().count == 5)
+    }
+
+    @Test func theBinEmptiesAfterThirtyDaysAndAnErasedCourseStillRevives() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let calc = try await store.courses().first!
+        try await store.deleteCourse(id: calc.id)
+        #expect(try await store.expireBin(now: Date().addingTimeInterval(29 * 86400)).isEmpty)
+        let files = try await store.expireBin(now: Date().addingTimeInterval(31 * 86400))
+        #expect(files.map(\.sha256) == ["abc"])                                       // the file can go
+        #expect(try await store.deletedCourses().isEmpty)                            // out of the bin, still a tombstone
+        #expect(try await store.courses().isEmpty)
+        #expect(try await store.obligations(includeDeleted: true).count == 5)       // its items too, for Reminders
+        try await Fixture.ingest(Fixture.calculus(), into: store)                     // the same syllabus, shared again
+        #expect(try await store.courses().map(\.id) == [calc.id])                    // the same row, fresh items
+        #expect(try await store.obligations().count == 5)
+        try await store.restoreCourse(id: calc.id)                                    // nothing to restore: a no-op
+        #expect(try await store.obligations().count == 5)
+        // A document on its own expires the same way.
+        let doc = try await store.documents().first!
+        try await store.deleteDocument(id: doc.id)
+        #expect(try await store.expireBin(now: Date().addingTimeInterval(31 * 86400)).map(\.id) == [doc.id])
+        #expect(try await store.documents().isEmpty)
+        #expect(try await store.deletedDocuments().isEmpty)
+    }
+
+    @Test func aDeletedDocumentSharedAgainIsReadAfresh() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let doc = try await store.documents().first!
+        try await store.deleteDocument(id: doc.id)
+        let again = try await store.enqueueDocument(filename: "calc.pdf", sha256: "abc", kind: "pdf", deviceName: "A")
+        #expect(again.id == doc.id && again.status == .queued && again.deletedAt == nil)   // the same record, back and queued
+        #expect(try await store.deletedDocuments().isEmpty)
+        #expect(try await store.queuedDocuments().map(\.id) == [doc.id])
+    }
+
+    @Test func purgeTakesErasedCoursesWithTheirTombstones() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let calc = try await store.courses().first!
+        try await store.eraseCourse(id: calc.id)
+        #expect(try await store.purgeTombstones(now: Date()) == 0)
+        #expect(try await store.purgeTombstones(now: Date().addingTimeInterval(181 * 86400)) == 6)   // five items and the course
+        #expect(try await store.obligations(includeDeleted: true).isEmpty)
     }
 
     @Test func sameDocumentTwiceIsRecordedOnce() async throws {

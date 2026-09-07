@@ -24,7 +24,6 @@ struct CourseEditor: View {
     @State private var breaks: [BreakRow] = []
     @State private var baseline: Fields?
     @State private var confirmingDiscard = false
-    @State private var confirmingDelete = false
 
     struct MeetingRow: Identifiable, Equatable { let id = UUID(); var weekday = 2; var start = ClockText.time(9, 30); var end = ClockText.time(10, 45) }
     struct ComponentRow: Identifiable, Equatable { let id = UUID(); var name = ""; var weight: Double?; var count: Int?; var cadence: Cadence?; var dropLowest: Int? }
@@ -127,12 +126,9 @@ struct CourseEditor: View {
                 }
                 if let course {
                     Section {
-                        Button("Delete Course", role: .destructive) { confirmingDelete = true }
+                        Button("Delete Course", role: .destructive) { Task { await model.deleteCourse(course.id) }; dismiss() }
                     } footer: {
-                        Text("Its items, their reminders, and its documents are removed as well. Sharing its syllabus again reads it afresh and brings it back.")
-                    }
-                    .confirmationDialog("Delete \(course.displayName)?", isPresented: $confirmingDelete, titleVisibility: .visible) {
-                        Button("Delete Course", role: .destructive) { Task { await model.deleteCourse(course.id); dismiss() } }
+                        Text("It goes to Recently Deleted with its items, their reminders, and its documents, and can be restored from there for 30 days.")
                     }
                 }
             }

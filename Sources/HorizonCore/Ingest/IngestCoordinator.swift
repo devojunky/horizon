@@ -52,15 +52,27 @@ public actor IngestCoordinator {
         }
     }
 
-    /// Retires a course with its items and documents, and removes the documents' files.
-    public func deleteCourse(id: UUID) async throws {
-        for record in try await store.deleteCourse(id: id) { storage.remove(sha256: record.sha256, extension: record.kind) }
+    // MARK: Recently Deleted (the store decides; this removes the files once something is gone for good)
+
+    public func deleteCourse(id: UUID) async throws { try await store.deleteCourse(id: id) }
+    public func deleteDocument(id: UUID) async throws { try await store.deleteDocument(id: id) }
+    public func restoreCourse(id: UUID) async throws { try await store.restoreCourse(id: id) }
+    public func restoreDocument(id: UUID) async throws { try await store.restoreDocument(id: id) }
+
+    /// Gone for good, its documents' files with it.
+    public func eraseCourse(id: UUID) async throws {
+        for record in try await store.eraseCourse(id: id) { storage.remove(sha256: record.sha256, extension: record.kind) }
     }
 
-    /// Removes a document, its stored file, and the items that came from it (soft-deleted; the next sync removes their reminders).
-    public func deleteDocument(id: UUID) async throws {
-        guard let record = try await store.deleteDocument(id: id) else { return }
+    /// Gone for good, its file with it.
+    public func eraseDocument(id: UUID) async throws {
+        guard let record = try await store.eraseDocument(id: id) else { return }
         storage.remove(sha256: record.sha256, extension: record.kind)
+    }
+
+    /// Empties what has sat in the bin for `Bin.age`, files included.
+    public func expireBin(now: Date = Date()) async throws {
+        for record in try await store.expireBin(now: now) { storage.remove(sha256: record.sha256, extension: record.kind) }
     }
 
     /// Where the next drain reads documents: on device, in Private Cloud Compute, or through OpenAI (user settings).

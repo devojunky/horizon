@@ -29,11 +29,12 @@ public enum HorizonSchemaV1: VersionedSchema {
         /// Course fields the user edited by hand ("title", "code", "term", "termStart", "termEnd", "instructor"): a later
         /// document does not overwrite them.
         public var userOverrides: [String] = []
-        /// Soft delete: the course and its items leave every screen and Reminders; a document naming it again revives it.
+        /// Soft delete: the course sits in Recently Deleted with its items and documents, restorable for `Bin.age`;
+        /// a document naming it again revives it.
         public var deletedAt: Date?
-        /// Retired because its course or its document was deleted, not by the user's hand: a document that names it
-        /// again may recreate it. A tombstone the user made (in Reminders or here) stays deleted on a re-read.
-        public var retiredWithSource: Bool = false
+        /// Gone for good (from the bin, or the bin expiring): its documents are removed and its tombstones retired; the
+        /// row itself stays a tombstone until the purge, as every synced record does.
+        public var erasedAt: Date?
         /// The user's own order on the Coverage screen; courses without one follow, most suspicious first.
         public var sortOrder: Int?
         @Relationship(deleteRule: .cascade, inverse: \Obligation.course) public var obligations: [Obligation]?
@@ -110,6 +111,9 @@ public enum HorizonSchemaV1: VersionedSchema {
         public var outputTokens: Int = 0
         public var durationMs: Int = 0
         public var warnings: [String] = []
+        /// Soft delete: the document sits in Recently Deleted, its file kept, restorable for `Bin.age`; shared again
+        /// meanwhile, it is read afresh.
+        public var deletedAt: Date?
         public var course: Course?
         @Relationship(deleteRule: .nullify, inverse: \Obligation.sourceDocument) public var obligations: [Obligation]?
 

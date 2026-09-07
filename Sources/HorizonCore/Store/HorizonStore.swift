@@ -21,7 +21,7 @@ public actor HorizonStore {
             let named = result.course?.code.map(Normalize.collapseWhitespace) ?? ""
             if named.isEmpty || Normalize.key(named) == Normalize.key(hinted.code) { applyFacts(from: result, to: hinted) }
             else { summary.warnings.append("The document names \(named); filed under \(hinted.displayName) as asked") }
-            hinted.deletedAt = nil
+            revive(hinted)
             course = hinted
         } else {
             course = try upsertCourse(from: result)
@@ -130,13 +130,32 @@ public actor HorizonStore {
         let code = parsed?.code.map(Normalize.collapseWhitespace) ?? ""
         let title = parsed?.title.map(Normalize.collapseWhitespace) ?? ""
         guard !code.isEmpty || !title.isEmpty else { return nil }
-        let all = try modelContext.fetch(FetchDescriptor<Course>())
+        let all = try modelContext.fetch(FetchDescriptor<Course>()).sorted { ($0.deletedAt == nil ? 0 : 1) < ($1.deletedAt == nil ? 0 : 1) }   // a live course before a tombstone with its code
         let course = all.first { !code.isEmpty && Normalize.key($0.code) == Normalize.key(code) }
             ?? all.first { (code.isEmpty || $0.code.isEmpty) && !title.isEmpty && Normalize.similarity($0.title, title) >= 0.6 }
             ?? { let c = Course(code: code, title: title); modelContext.insert(c); return c }()
-        course.deletedAt = nil   // a document naming a retired course brings it back
+        revive(course)   // a document naming a deleted course brings it back
         applyFacts(from: result, to: course)
         return course
+    }
+
+    /// A document naming a course in the bin (or erased) brings it back for a fresh start: every tombstone it holds
+    /// is retired, so the read creates new rows rather than matching what was once deleted. Its other documents stay
+    /// in the bin, restorable on their own.
+    private func revive(_ course: Course) {
+        guard course.deletedAt != nil else { return }
+        course.deletedAt = nil
+        course.erasedAt = nil
+        for item in course.obligations ?? [] where item.deletedAt != nil { item.retiredWithSource = true }
+    }
+
+    /// A document shared again while in the bin is read afresh: back on file, queued, its tombstones retired.
+    private func revive(_ document: SourceDocument) {
+        guard document.deletedAt != nil else { return }
+        document.deletedAt = nil
+        document.status = .queued
+        document.failure = nil
+        for item in document.obligations ?? [] where item.deletedAt != nil { item.retiredWithSource = true }
     }
 
     /// What a document says about its course, except where the user's hand edits stand.
@@ -271,6 +290,7 @@ public actor HorizonStore {
     public func enqueueDocument(filename: String, sha256: String, kind: String, deviceName: String, courseID: UUID? = nil) throws -> DocumentSnapshot {
         let course = try courseID.flatMap { try fetchCourse(id: $0) }
         if let existing = try fetchDocuments().first(where: { $0.sha256 == sha256 }) {
+            revive(existing)   // shared again from the bin: a fresh read
             if existing.status == .failed || existing.status == .cancelled { existing.status = .queued; existing.failure = nil }
             if let course, existing.course == nil { existing.course = course }
             try modelContext.save()
@@ -284,27 +304,130 @@ public actor HorizonStore {
     }
 
     public func queuedDocuments() throws -> [DocumentSnapshot] {
-        try fetchDocuments().filter { $0.status == .queued || $0.status == .awaitingCloudParse }.map(snapshot)
+        try fetchDocuments().filter { $0.deletedAt == nil && ($0.status == .queued || $0.status == .awaitingCloudParse) }.map(snapshot)
     }
 
-    public func documents() throws -> [DocumentSnapshot] { try fetchDocuments().map(snapshot) }
+    /// Documents on file, the bin excluded.
+    public func documents() throws -> [DocumentSnapshot] { try fetchDocuments().filter { $0.deletedAt == nil }.map(snapshot) }
 
-    /// Removes a document and retires the items it is the source of (soft-deleted, so their reminders go on the next
-    /// sync). An item another document has since fed stays. Returns the record, so the file can be removed too.
+    /// Documents in Recently Deleted on their own (one deleted with its course sits under the course).
+    public func deletedDocuments() throws -> [DocumentSnapshot] { try fetchDocuments().filter(\.isBinned).map(snapshot) }
+
+    // MARK: Recently Deleted
+
+    /// Puts a document in the bin: it leaves Documents and the items it is the source of go with it (soft-deleted, so
+    /// their reminders go on the next sync); an item another document has since fed stays. The file stays until the
+    /// document is erased or the bin expires; sharing the same file again meanwhile reads it afresh.
+    public func deleteDocument(id: UUID) throws {
+        guard let doc = try fetchDocument(id: id), doc.deletedAt == nil else { return }
+        let now = Date()
+        doc.deletedAt = now
+        for item in doc.obligations ?? [] where item.deletedAt == nil { retire(item, at: now) }
+        if let course = doc.course { recomputePoints(for: course) }
+        try modelContext.save()
+    }
+
+    /// Back from the bin with the items that went with it, and its course if that is in the bin too.
+    public func restoreDocument(id: UUID) throws {
+        guard let doc = try fetchDocument(id: id), let deletedAt = doc.deletedAt else { return }
+        if let course = doc.course, course.deletedAt != nil { restore(course) }
+        doc.deletedAt = nil
+        restore(doc.obligations ?? [], deletedAt: deletedAt, in: doc.course)
+        if let course = doc.course { recomputePoints(for: course) }
+        try modelContext.save()
+    }
+
+    /// Gone for good: the record is removed (the file with it, by the caller) and what came from it stays retired.
     @discardableResult
-    public func deleteDocument(id: UUID) throws -> DocumentSnapshot? {
+    public func eraseDocument(id: UUID) throws -> DocumentSnapshot? {
         guard let doc = try fetchDocument(id: id) else { return nil }
         let record = snapshot(doc)
         let now = Date()
-        for item in doc.obligations ?? [] {
-            if item.deletedAt == nil { item.deletedAt = now; item.updatedAt = now }
-            item.retiredWithSource = true
-        }
+        for item in doc.obligations ?? [] { retire(item, at: now) }
         let course = doc.course
         modelContext.delete(doc)
         if let course { recomputePoints(for: course) }
         try modelContext.save()
         return record
+    }
+
+    /// Puts a course in the bin with its items (their reminders go on the next sync) and its documents. Tombstones the
+    /// user made before stay as they are, so a restore leaves them deleted.
+    public func deleteCourse(id: UUID) throws {
+        guard let course = try fetchCourse(id: id), course.deletedAt == nil else { return }
+        let now = Date()
+        course.deletedAt = now
+        course.sortOrder = nil
+        for item in course.obligations ?? [] where item.deletedAt == nil { retire(item, at: now) }
+        for document in course.documents ?? [] where document.deletedAt == nil { document.deletedAt = now }
+        try modelContext.save()
+    }
+
+    /// Back from the bin with exactly what its deletion took.
+    public func restoreCourse(id: UUID) throws {
+        guard let course = try fetchCourse(id: id) else { return }
+        restore(course)
+        try modelContext.save()
+    }
+
+    /// Gone for good: its documents are removed (their files by the caller), every tombstone it holds is retired, and
+    /// the row stays a tombstone out of the bin until the purge. A document naming the course again still revives it.
+    @discardableResult
+    public func eraseCourse(id: UUID) throws -> [DocumentSnapshot] {
+        guard let course = try fetchCourse(id: id) else { return [] }
+        let now = Date()
+        if course.deletedAt == nil { course.deletedAt = now; course.sortOrder = nil }
+        course.erasedAt = now
+        for item in course.obligations ?? [] { retire(item, at: now) }
+        let documents = (course.documents ?? []).map(snapshot)
+        for document in course.documents ?? [] { modelContext.delete(document) }
+        try modelContext.save()
+        return documents
+    }
+
+    /// What has sat in the bin for `Bin.age` goes for good. Returns the documents whose files can be removed.
+    @discardableResult
+    public func expireBin(now: Date = Date()) throws -> [DocumentSnapshot] {
+        let cutoff = now.addingTimeInterval(-Bin.age)
+        var files: [DocumentSnapshot] = []
+        for course in try fetchCourses().filter({ $0.isBinned && $0.deletedAt! < cutoff }) { files += try eraseCourse(id: course.id) }
+        for document in try fetchDocuments().filter({ $0.isBinned && $0.deletedAt! < cutoff }) { if let record = try eraseDocument(id: document.id) { files.append(record) } }
+        return files
+    }
+
+    /// Courses in Recently Deleted.
+    public func deletedCourses() throws -> [CourseSnapshot] { try fetchCourses().filter(\.isBinned).map(CourseSnapshot.init) }
+
+    /// Soft-deletes a live item as part of its source's deletion; a tombstone is only marked as having gone with it.
+    private func retire(_ item: Obligation, at now: Date) {
+        if item.deletedAt == nil { item.deletedAt = now; item.updatedAt = now }
+        item.retiredWithSource = true
+    }
+
+    private func restore(_ course: Course) {
+        guard let deletedAt = course.deletedAt else { return }
+        course.deletedAt = nil
+        for document in course.documents ?? [] where Bin.wentWith(document.deletedAt, deletedAt) { document.deletedAt = nil }
+        restore(course.obligations ?? [], deletedAt: deletedAt, in: course)
+        recomputePoints(for: course)
+    }
+
+    /// The items a deletion took come back live; a tombstone from before stays one; an item the course has since gained
+    /// again (a re-read while this sat in the bin) is not doubled. A restored item that had a reminder gets one again.
+    private func restore(_ items: [Obligation], deletedAt: Date, in course: Course?, calendar: Calendar = .current) {
+        let live = (course?.obligations ?? []).filter { $0.deletedAt == nil }
+        let now = Date()
+        for item in items where Bin.wentWith(item.deletedAt, deletedAt) {
+            let twin = live.contains { twin in
+                Normalize.key(twin.title) == Normalize.key(item.title) && (twin.due == nil) == (item.due == nil)
+                    && (twin.due == nil || calendar.isDate(twin.due!, inSameDayAs: item.due!))
+            }
+            if twin { continue }
+            item.deletedAt = nil
+            item.retiredWithSource = false
+            item.updatedAt = now
+            if item.state == .projected { item.state = .readyToProject }   // its reminder went with the deletion
+        }
     }
 
     public func markDocument(id: UUID, status: DocumentStatus, failure: String? = nil) throws {
@@ -425,25 +548,6 @@ public actor HorizonStore {
         if let breaks = edits.noClassDates { course.noClassDates = breaks; keep("noClassDates") }
     }
 
-    /// Retires a course: it and its items leave every screen, and the items' reminders go on the next sync.
-    /// Retires a course: its items are soft-deleted (their reminders go on the next sync) and its documents are removed,
-    /// so the same file shared again is read afresh and the course comes back. Returns the documents, so their files can go.
-    @discardableResult
-    public func deleteCourse(id: UUID) throws -> [DocumentSnapshot] {
-        guard let course = try fetchCourse(id: id) else { return [] }
-        let now = Date()
-        course.deletedAt = now
-        course.sortOrder = nil
-        for item in course.obligations ?? [] {
-            if item.deletedAt == nil { item.deletedAt = now; item.updatedAt = now }
-            item.retiredWithSource = true   // including tombstones from before: the course goes, and with it every reason to keep them matched
-        }
-        let documents = (course.documents ?? []).map(snapshot)
-        for document in course.documents ?? [] { modelContext.delete(document) }
-        try modelContext.save()
-        return documents
-    }
-
     /// The user's order for the Coverage screen; every course listed gets its position, the rest keep none.
     public func reorderCourses(_ ids: [UUID]) throws {
         let all = try modelContext.fetch(FetchDescriptor<Course>())
@@ -458,14 +562,17 @@ public actor HorizonStore {
         try modelContext.save()
     }
 
-    /// Hard-deletes tombstones older than `tombstoneAge`. Never runs on a record that has not had time to sync.
+    /// Hard-deletes tombstones older than `tombstoneAge`: items, and erased courses (whose tombstones are at least as
+    /// old). Never runs on a record that has not had time to sync.
     @discardableResult
     public func purgeTombstones(now: Date = Date()) throws -> Int {
         let cutoff = now.addingTimeInterval(-Self.tombstoneAge)
         let dead = try fetchObligations().filter { ($0.deletedAt ?? .distantFuture) < cutoff }
         dead.forEach(modelContext.delete)
+        let deadCourses = try fetchCourses().filter { $0.erasedAt != nil && ($0.deletedAt ?? .distantFuture) < cutoff }
+        deadCourses.forEach(modelContext.delete)
         try modelContext.save()
-        return dead.count
+        return dead.count + deadCourses.count
     }
 
     private func applyEdits(_ edits: ObligationEdits, to item: Obligation) {
@@ -522,9 +629,13 @@ public actor HorizonStore {
     /// Where the app is probably blind, per course, most suspicious first (SPEC §6.1).
     public func coverage(now: Date = Date(), calendar: Calendar = .current) throws -> [CourseCoverage] {
         let obligations = try fetchObligations().filter { $0.deletedAt == nil }.map(ObligationSnapshot.init)
-        let documents = try fetchDocuments().map(DocumentSnapshot.init)
+        let documents = try fetchDocuments().filter { $0.deletedAt == nil }.map(DocumentSnapshot.init)
         return try courses().map { Coverage.assess(course: $0, obligations: obligations, documents: documents, now: now, calendar: calendar) }
             .sorted { $0.suspicion > $1.suspicion }
+    }
+
+    private func fetchCourses() throws -> [Course] {
+        try modelContext.fetch(FetchDescriptor<Course>(sortBy: [SortDescriptor(\.code)]))
     }
 
     private func fetchCourse(id: UUID) throws -> Course? {

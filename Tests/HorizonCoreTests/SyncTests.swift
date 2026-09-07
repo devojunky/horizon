@@ -44,6 +44,29 @@ struct SyncTests {
         #expect(countA == 4)
     }
 
+    @Test func aRestoredCourseGetsItsRemindersBack() async throws {
+        let reminders = FakeReminderStore()
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let sync = SyncCoordinator.device("A", store: store, reminders: reminders)
+        _ = try await sync.sync()
+        let calc = try await store.courses().first!
+        try await store.deleteCourse(id: calc.id)
+        let gone = try await sync.sync()
+        var count = await reminders.items.count
+        #expect(gone.removed == 4 && count == 0)                          // the deletion took the reminders
+        try await store.restoreCourse(id: calc.id)
+        let back = try await sync.sync()
+        count = await reminders.items.count
+        #expect(back.created == 4 && count == 4)                          // the restore brought them back
+        // Restored before the sync ran: the reminders never left, and nothing is doubled.
+        try await store.deleteCourse(id: calc.id)
+        try await store.restoreCourse(id: calc.id)
+        let kept = try await sync.sync()
+        count = await reminders.items.count
+        #expect(kept.created == 0 && kept.removed == 0 && count == 4)
+    }
+
     @Test func aDeletedListIsNotTwentyDeletions() async throws {
         let reminders = FakeReminderStore()
         let store = try Fixture.store()

@@ -50,16 +50,17 @@ public struct CourseSnapshot: Sendable, Identifiable, Equatable {
     public var platforms: [String]
     public var lastIngested: Date?
     public var sortOrder: Int? = nil
+    public var deletedAt: Date? = nil
 
     public init(id: UUID = UUID(), code: String, title: String, term: String? = nil, termStart: Date? = nil, termEnd: Date? = nil,
-                gradeComponents: [GradeComponent] = [], platforms: [String] = [], lastIngested: Date? = nil, sortOrder: Int? = nil) {
+                gradeComponents: [GradeComponent] = [], platforms: [String] = [], lastIngested: Date? = nil, sortOrder: Int? = nil, deletedAt: Date? = nil) {
         self.id = id; self.code = code; self.title = title; self.term = term; self.termStart = termStart; self.termEnd = termEnd
-        self.gradeComponents = gradeComponents; self.platforms = platforms; self.lastIngested = lastIngested; self.sortOrder = sortOrder
+        self.gradeComponents = gradeComponents; self.platforms = platforms; self.lastIngested = lastIngested; self.sortOrder = sortOrder; self.deletedAt = deletedAt
     }
 
     public init(_ c: Course) {
         self.init(id: c.id, code: c.code, title: c.title, term: c.term, termStart: c.termStart, termEnd: c.termEnd,
-                  gradeComponents: c.gradeComponents, platforms: c.platforms, lastIngested: c.lastIngested, sortOrder: c.sortOrder)
+                  gradeComponents: c.gradeComponents, platforms: c.platforms, lastIngested: c.lastIngested, sortOrder: c.sortOrder, deletedAt: c.deletedAt)
     }
 
     /// What the app calls the course: its name, falling back to the code.
@@ -97,16 +98,17 @@ public struct DocumentSnapshot: Sendable, Identifiable, Equatable {
     public var failure: String?
     public var platform: Platform?
     public var courseID: UUID?
+    public var deletedAt: Date?
 
     public init(id: UUID = UUID(), filename: String, sha256: String, kind: String, status: DocumentStatus, queuedAt: Date, ingestedAt: Date? = nil,
-                deviceName: String, failure: String? = nil, platform: Platform? = nil, courseID: UUID? = nil) {
+                deviceName: String, failure: String? = nil, platform: Platform? = nil, courseID: UUID? = nil, deletedAt: Date? = nil) {
         self.id = id; self.filename = filename; self.sha256 = sha256; self.kind = kind; self.status = status; self.queuedAt = queuedAt
-        self.ingestedAt = ingestedAt; self.deviceName = deviceName; self.failure = failure; self.platform = platform; self.courseID = courseID
+        self.ingestedAt = ingestedAt; self.deviceName = deviceName; self.failure = failure; self.platform = platform; self.courseID = courseID; self.deletedAt = deletedAt
     }
 
     public init(_ d: SourceDocument) {
         id = d.id; filename = d.filename; sha256 = d.sha256; kind = d.kind; status = d.status; queuedAt = d.queuedAt
-        ingestedAt = d.ingestedAt; deviceName = d.deviceName; failure = d.failure; platform = d.platform; courseID = d.course?.id
+        ingestedAt = d.ingestedAt; deviceName = d.deviceName; failure = d.failure; platform = d.platform; courseID = d.course?.id; deletedAt = d.deletedAt
     }
 }
 
