@@ -43,6 +43,48 @@ struct PlannerTests {
         #expect(blocks[1].kind == .meal && blocks[2].start == blocks[1].end)
     }
 
+    @Test func theProvisionalPlanIsAPrefixOfTheFinalOne() {
+        let busy = [PlanBusy(title: "Lecture", start: Self.at(10), end: Self.at(12)), PlanBusy(title: "Lab", start: Self.at(15), end: Self.at(16))]
+        let input = Self.input(now: Self.at(9), busy: busy, obligations: [PlanObligation(title: "Quiz 3", due: Self.at(23), points: 6), PlanObligation(title: "HW 4", due: Self.at(23).addingTimeInterval(86400), points: 2)])
+        let gaps = DayPlanner.gaps(in: input), ranked = DayPlanner.ranked(input)
+        let whole = PlanDraft(blocks: [
+            PlanDraftBlock(start: "09:00", end: "09:50", title: "Quiz 3", reason: "Due tonight.", kind: "work"),
+            PlanDraftBlock(start: "12:00", end: "12:40", title: "Eat", reason: "Lunch.", kind: "meal"),
+            PlanDraftBlock(start: "13:00", end: "13:50", title: "HW 4", reason: "Due tomorrow.", kind: "work"),
+            PlanDraftBlock(start: "16:00", end: "16:50", title: "Quiz 3", reason: "Once more.", kind: "work"),
+        ])
+        let final = DayPlanner.merge(DayPlanner.validate(whole, gaps: gaps, input: input, ranked: ranked), fixed: DayPlanner.fixedOnly(input))
+        #expect(final.map(\.title) == ["Quiz 3", "Lecture", "Eat", "HW 4", "Lab", "Quiz 3"])
+        for n in 0...whole.blocks.count {   // every prefix of the draft is a prefix of the final timetable, calendar events included
+            let sofar = DayPlanner.provisional(PlanDraft(blocks: Array(whole.blocks.prefix(n))), gaps: gaps, input: input, ranked: ranked)
+            #expect(sofar.map(\.title) == Array(final.map(\.title).prefix(sofar.count)), "prefix \(n)")
+            #expect(sofar.map(\.start) == Array(final.map(\.start).prefix(sofar.count)), "prefix \(n)")
+        }
+        #expect(DayPlanner.provisional(PlanDraft(blocks: [whole.blocks[0]]), gaps: gaps, input: input, ranked: ranked).map(\.title) == ["Quiz 3"])       // the lecture waits until a block passes it
+        #expect(DayPlanner.provisional(PlanDraft(blocks: Array(whole.blocks.prefix(2))), gaps: gaps, input: input, ranked: ranked).map(\.title) == ["Quiz 3", "Lecture", "Eat"])
+    }
+
+    @Test func aStreamedPlanArrivesBlockByBlockOverOpenAI() async throws {
+        let json = #"{"blocks": [{"start": "09:00", "end": "09:50", "title": "Quiz 3", "reason": "Due tonight.", "kind": "work"}, {"start": "10:00", "end": "10:40", "title": "HW 4", "reason": "Due tomorrow.", "kind": "work"}]}"#
+        let cut1 = json.range(of: "\"kind\": \"work\"}")!.upperBound, cut2 = json.range(of: "\"title\": \"HW 4\"")!.upperBound
+        let events = [OpenAIClientTests.event(String(json[..<cut1])), OpenAIClientTests.event(String(json[cut1..<cut2])), OpenAIClientTests.event(String(json[cut2...])),
+                      OpenAIClientTests.event(nil, finish: "stop"), OpenAIClientTests.event(nil, usage: (300, 60)), "data: [DONE]"]
+        let script = OpenAIClientTests.Script([.reply(status: 200, lines: events)])
+        let seen = OpenAIClientTests.Script([])
+        let input = Self.input(now: Self.at(9), obligations: [PlanObligation(title: "Quiz 3", due: Self.at(23), points: 6), PlanObligation(title: "HW 4", due: Self.at(23).addingTimeInterval(86400), points: 2)])
+        let plan = await DayPlanner(transport: script.transport).plan(input, route: .openAI, openAI: OpenAIConfiguration(apiKey: "sk-test", model: "gpt-5-mini")) { blocks in
+            seen.logs.append(blocks.map(\.title).joined(separator: ","))
+        }
+        #expect(seen.logs == ["Quiz 3", "Quiz 3,HW 4"])                     // one report per completed block, never the half-written one
+        #expect(plan.blocks.map(\.title) == ["Quiz 3", "HW 4"] && plan.route == .openAI && plan.usage?.inputTokens == 300)
+    }
+
+    @Test func aStreamedPlanCutShortStillReportsWhatCompleted() {
+        let text = #"{"blocks": [{"start": "09:00", "end": "09:50", "title": "Quiz 3", "reason": "Due tonight.", "kind": "work"}, {"start": "10:00", "end": "10:4"#
+        #expect(PlanJSON.provisional(text).blocks.map(\.title) == ["Quiz 3"])
+        #expect(PlanJSON.provisional("{\"blo").blocks.isEmpty)
+    }
+
     @Test func nothingDueAndNothingAskedNeedsNoModel() async {
         let busy = [PlanBusy(title: "Lecture", start: Self.at(10), end: Self.at(12))]
         let plan = await DayPlanner().plan(Self.input(now: Self.at(9), busy: busy))

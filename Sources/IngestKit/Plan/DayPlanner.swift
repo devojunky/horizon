@@ -106,7 +106,8 @@ public actor DayPlanner {
     """
 
     private let log: @Sendable (String) -> Void
-    public init(log: @escaping @Sendable (String) -> Void = { _ in }) { self.log = log }
+    private let transport: OpenAITransport
+    public init(log: @escaping @Sendable (String) -> Void = { _ in }, transport: OpenAITransport = .live) { self.log = log; self.transport = transport }
 
     /// Free time between the fixed events, inside the day, from now on, at least 25 minutes long.
     public static func gaps(in input: PlanInput) -> [DateInterval] {
@@ -134,7 +135,10 @@ public actor DayPlanner {
         }
     }
 
-    public func plan(_ input: PlanInput, route: IngestOptions.RoutePolicy = .onDeviceFirst, openAI: OpenAIConfiguration? = nil) async -> DayPlan {
+    /// `progress` is told the plan so far as the model writes it: the blocks that are complete, validated and in time
+    /// order, with the calendar's events up to the last of them, so a timetable can grow block by block.
+    public func plan(_ input: PlanInput, route: IngestOptions.RoutePolicy = .onDeviceFirst, openAI: OpenAIConfiguration? = nil,
+                     progress: @escaping @Sendable ([PlanBlock]) -> Void = { _ in }) async -> DayPlan {
         let gaps = Self.gaps(in: input)
         let ranked = Array(Self.ranked(input).prefix(12))
         guard !gaps.isEmpty else { return DayPlan(blocks: Self.fixedOnly(input), route: nil, usage: nil, note: "No free time left today.") }
@@ -143,8 +147,9 @@ public actor DayPlanner {
         }
         let prompt = Self.prompt(for: input, gaps: gaps, ranked: ranked)
         let started = ContinuousClock.now
+        let report = Reporter { draft in progress(Self.provisional(draft, gaps: gaps, input: input, ranked: ranked)) }
         do {
-            let (draft, usage, used) = try await respond(prompt, route: route, openAI: openAI)
+            let (draft, usage, used) = try await respond(prompt, route: route, openAI: openAI, report: report)
             let blocks = Self.validate(draft, gaps: gaps, input: input, ranked: ranked)
             let record = UsageRecord(step: "plan", chunk: 0, route: used, inputTokens: usage.input, cachedTokens: usage.cached,
                                      outputTokens: usage.output, reasoningTokens: usage.reasoning,
@@ -162,37 +167,79 @@ public actor DayPlanner {
         }
     }
 
+    /// The plan so far, for a timetable that grows: the complete blocks validated as the whole draft will be (validation
+    /// walks the draft in order, so a prefix of the draft validates to a prefix of the result), and the calendar's
+    /// events up to the last of them, so the rail only ever extends downward. A retried reply starts over.
+    static func provisional(_ draft: PlanDraft, gaps: [DateInterval], input: PlanInput, ranked: [PlanObligation]) -> [PlanBlock] {
+        let blocks = validate(draft, gaps: gaps, input: input, ranked: ranked)
+        guard let last = blocks.last else { return [] }
+        return merge(blocks, fixed: fixedOnly(input).filter { $0.start < last.end })
+    }
+
+    /// Tells the caller about a draft only when a block has completed since the last time.
+    private final class Reporter: @unchecked Sendable {
+        private let sink: @Sendable (PlanDraft) -> Void
+        private var reported = 0
+        private let lock = NSLock()
+        init(_ sink: @escaping @Sendable (PlanDraft) -> Void) { self.sink = sink }
+        func report(_ draft: PlanDraft) {
+            lock.lock(); defer { lock.unlock() }
+            guard draft.blocks.count != reported else { return }
+            reported = draft.blocks.count
+            sink(draft)
+        }
+        /// A reply starting over (a retry): the timetable empties.
+        func reset() { lock.lock(); reported = -1; lock.unlock() }
+    }
+
     // MARK: Model
 
     struct Tokens: Sendable { var input = 0, cached = 0, output = 0, reasoning = 0 }
 
     /// OpenAI when asked for and reachable (its client retries; a failure falls through to Apple's models), else Private
-    /// Cloud Compute when entitled, else the device.
-    private func respond(_ prompt: String, route: IngestOptions.RoutePolicy, openAI: OpenAIConfiguration?) async throws -> (PlanDraft, Tokens, ModelRoute) {
+    /// Cloud Compute when entitled, else the device. Every route streams, and `report` sees the complete blocks so far.
+    private func respond(_ prompt: String, route: IngestOptions.RoutePolicy, openAI: OpenAIConfiguration?, report: Reporter) async throws -> (PlanDraft, Tokens, ModelRoute) {
         if route == .openAI, let openAI {
             do {
-                let client = OpenAIClient(configuration: openAI, log: log)
+                let client = OpenAIClient(configuration: openAI, transport: transport, log: log)
                 let request = OpenAIClient.Request(system: Self.instructions, user: prompt, schemaName: "plan_draft", schema: OpenAISchemas.plan, maxOutputTokens: 1500)
-                let completion = try await client.stream(request)
+                let completion = try await client.stream(request) { text in report.report(PlanJSON.provisional(text)) }
                 let draft = try PlanJSON.decode(completion.text)
                 return (draft, Tokens(input: completion.inputTokens, cached: completion.cachedTokens, output: completion.outputTokens), .openAI)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
                 log("plan: OpenAI could not be used (\(error.localizedDescription)); planning with Apple's models")
+                report.reset()
+                report.report(PlanDraft(blocks: []))
             }
         }
         let options = GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 900)
+        let stream: LanguageModelSession.ResponseStream<PlanDraft>
+        let used: ModelRoute
         if route != .onDeviceOnly, Extractor.hasCloudEntitlement, case .available = PrivateCloudComputeLanguageModel().availability {
             let session = LanguageModelSession(model: PrivateCloudComputeLanguageModel(), instructions: Instructions(Self.instructions))
-            let response = try await session.respond(to: Prompt(prompt), generating: PlanDraft.self, options: options, contextOptions: ContextOptions(reasoningLevel: .deep))
-            return (response.content, Self.tokens(response.usage), .privateCloudCompute)
+            stream = session.streamResponse(to: Prompt(prompt), generating: PlanDraft.self, options: options, contextOptions: ContextOptions(reasoningLevel: .deep))
+            used = .privateCloudCompute
+        } else {
+            let model = SystemLanguageModel.default
+            guard case .available = model.availability else { throw IngestError.modelUnavailable(String(describing: model.availability)) }
+            let session = LanguageModelSession(model: model, instructions: Instructions(Self.instructions))
+            stream = session.streamResponse(to: Prompt(prompt), generating: PlanDraft.self, options: options)
+            used = .onDevice
         }
-        let model = SystemLanguageModel.default
-        guard case .available = model.availability else { throw IngestError.modelUnavailable(String(describing: model.availability)) }
-        let session = LanguageModelSession(model: model, instructions: Instructions(Self.instructions))
-        let response = try await session.respond(to: Prompt(prompt), generating: PlanDraft.self, options: options)
-        return (response.content, Self.tokens(response.usage), .onDevice)
+        for try await snapshot in stream { report.report(Self.complete(snapshot.content)) }
+        let response = try await stream.collect()
+        return (response.content, Self.tokens(response.usage), used)
+    }
+
+    /// The blocks a snapshot has finished: the fields come in order, so a block whose last field has arrived is whole.
+    static func complete(_ partial: PlanDraft.PartiallyGenerated) -> PlanDraft {
+        let blocks = (partial.blocks ?? []).prefix { $0.kind != nil }.compactMap { b -> PlanDraftBlock? in
+            guard let start = b.start, let end = b.end, let title = b.title, let kind = b.kind else { return nil }
+            return PlanDraftBlock(start: start, end: end, title: title, reason: b.reason ?? "", kind: kind)
+        }
+        return PlanDraft(blocks: blocks)
     }
 
     private static func tokens(_ usage: LanguageModelSession.Usage) -> Tokens {

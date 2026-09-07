@@ -85,6 +85,11 @@ final class AppModel {
     private(set) var planCandidates: [PlanObligation] = []
     private var planDay: Date?
     var planning = false
+    /// The plan as the model writes it: complete blocks in time order, growing. Empty when nothing is being planned or
+    /// nothing has arrived yet. Block identities are kept across updates, so the timetable's rows persist.
+    private(set) var planDraft: [PlanBlock] = []
+    /// Whether the plan on file arrived block by block (its rows are already on screen and need no reveal).
+    private(set) var planStreamed = false
     /// The user's own instructions to the planner, standing or for today. Persisted; read on every plan.
     var planInstructions: String = UserDefaults.standard.string(forKey: "planInstructions") ?? "" {
         didSet { UserDefaults.standard.set(planInstructions, forKey: "planInstructions") }
@@ -287,7 +292,7 @@ final class AppModel {
     func planToday() async {
         guard !planning else { return }
         planning = true
-        defer { planning = false }
+        planDraft = []
         let now = Date()
         var busy: [PlanBusy] = []
         var calendarOff = false
@@ -299,13 +304,37 @@ final class AppModel {
         let openAI = openAIConfiguration
         let route: IngestOptions.RoutePolicy = openAI != nil ? .openAI : readInCloud && cloudUnavailableReason == nil ? .privateCloudCompute : .onDeviceFirst
         let input = PlanInput(date: now, now: now, busy: busy, obligations: obligations, instructions: planInstructions)
-        var result = await planner.plan(input, route: route, openAI: openAI)
-        if calendarOff { result.note = ([result.note, "Calendar access is off, so nothing on it counted as fixed."].compactMap { $0 }).joined(separator: " ") }
-        withAnimation {
-            plan = result; planEdited = false; planDay = Calendar.current.startOfDay(for: now)
-            planCandidates = DayPlanner.ranked(input)
+        var result = await planner.plan(input, route: route, openAI: openAI) { blocks in
+            Task { @MainActor in self.showDraft(blocks) }   // the timetable grows as the model writes
         }
+        if calendarOff { result.note = ([result.note, "Calendar access is off, so nothing on it counted as fixed."].compactMap { $0 }).joined(separator: " ") }
+        let streamed = !planDraft.isEmpty
+        if streamed {
+            result.blocks = Self.keepingIdentities(result.blocks, from: planDraft)
+            showDraft(result.blocks)                                  // the calendar's last events arrive the same way
+            try? await Task.sleep(for: .milliseconds(700))            // and the rail reaches them before the page settles
+        }
+        plan = result; planEdited = false; planDay = Calendar.current.startOfDay(for: now)
+        planCandidates = DayPlanner.ranked(input)
+        planStreamed = streamed
+        planning = false
+        planDraft = []   // in the same turn as `planning`, so the rows hand over without a frame apart
         persistPlan()
+    }
+
+    private func showDraft(_ blocks: [PlanBlock]) {
+        guard planning else { return }
+        planDraft = Self.keepingIdentities(blocks, from: planDraft)
+    }
+
+    /// The same block (same start, same title, at the same place) keeps its identity from one draft to the next, so
+    /// a row on screen is the row that stays; a reply started over gets new rows.
+    private static func keepingIdentities(_ blocks: [PlanBlock], from previous: [PlanBlock]) -> [PlanBlock] {
+        var kept = blocks
+        for i in kept.indices where i < previous.count && previous[i].start == kept[i].start && previous[i].title == kept[i].title {
+            kept[i].id = previous[i].id
+        }
+        return kept
     }
 
     // MARK: Editing the plan

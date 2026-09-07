@@ -168,10 +168,16 @@ enum ExtractionJSON {
 enum PlanJSON {
     static func decode(_ text: String) throws -> PlanDraft {
         guard let object = PartialJSON.parse(text) as? [String: Any] else { throw OpenAIError.malformed("the plan is not a JSON object") }
-        let blocks = (object["blocks"] as? [[String: Any]] ?? []).compactMap { b -> PlanDraftBlock? in
-            guard let start = b["start"] as? String, let end = b["end"] as? String, let title = b["title"] as? String else { return nil }
-            return PlanDraftBlock(start: start, end: end, title: title, reason: b["reason"] as? String ?? "", kind: b["kind"] as? String ?? "work")
-        }
-        return PlanDraft(blocks: blocks)
+        return PlanDraft(blocks: (object["blocks"] as? [[String: Any]] ?? []).compactMap(block))
+    }
+
+    /// The blocks complete in a reply still being written.
+    static func provisional(_ text: String) -> PlanDraft {
+        PlanDraft(blocks: PartialJSON.snapshot(text).arrays["blocks", default: []].compactMap { PartialJSON.parse($0) as? [String: Any] }.compactMap(block))
+    }
+
+    private static func block(_ b: [String: Any]) -> PlanDraftBlock? {
+        guard let start = b["start"] as? String, let end = b["end"] as? String, let title = b["title"] as? String else { return nil }
+        return PlanDraftBlock(start: start, end: end, title: title, reason: b["reason"] as? String ?? "", kind: b["kind"] as? String ?? "work")
     }
 }
