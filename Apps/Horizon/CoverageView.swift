@@ -86,7 +86,7 @@ struct CoverageStory: View {
             if !story.cadenceGaps.dropFirst().isEmpty || story.neverIngested.count > 1 {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(Array(story.cadenceGaps.dropFirst().enumerated()), id: \.offset) { Text($0.element.sentence.prefixCapitalized) }
-                    ForEach(story.neverIngested.dropFirst(), id: \.self) { Text("Nothing has ever come from its \(Coverage.platformName($0))") }
+                    ForEach(story.neverIngested.dropFirst(), id: \.platform) { Text($0.sentence(name: story.displayName, first: false).prefixCapitalized) }
                 }
                 .font(.subheadline).foregroundStyle(.secondary)
             }

@@ -26,7 +26,7 @@ struct CourseEditor: View {
     @State private var confirmingDiscard = false
 
     struct MeetingRow: Identifiable, Equatable { let id = UUID(); var weekday = 2; var start = ClockText.time(9, 30); var end = ClockText.time(10, 45) }
-    struct ComponentRow: Identifiable, Equatable { let id = UUID(); var name = ""; var weight: Double?; var count: Int?; var cadence: Cadence?; var dropLowest: Int? }
+    struct ComponentRow: Identifiable, Equatable { let id = UUID(); var name = ""; var weight: Double?; var count: Int?; var cadence: Cadence?; var dropLowest: Int?; var platform: Platform? }
     struct BreakRow: Identifiable, Equatable { let id = UUID(); var label = ""; var start = Date(); var end = Date() }
     private struct Fields: Equatable {
         var title, code, term, instructor, room: String; var hasTermDates: Bool; var termStart, termEnd: Date
@@ -98,6 +98,13 @@ struct CourseEditor: View {
                                 LabeledContent("Drops") { TextField("–", value: $component.dropLowest, format: .number).multilineTextAlignment(.trailing).frame(width: 36).decimalKeyboard() }
                             }
                             .font(.subheadline)
+                            Picker("Where", selection: $component.platform) {   // the site its work lives on, for Coverage's "never read" line
+                                Text("Site not stated").tag(Platform?.none)
+                                Text("LMS").tag(Platform?.some(.lms)); Text("WebAssign").tag(Platform?.some(.webAssign))
+                                Text("Gradescope").tag(Platform?.some(.gradescope)); Text("MyLab").tag(Platform?.some(.myLab))
+                            }
+                            .labelsHidden()
+                            .font(.subheadline)
                         }
                         .padding(.vertical, 2)
                     }
@@ -109,7 +116,7 @@ struct CourseEditor: View {
                     let total = components.compactMap(\.weight).reduce(0, +)
                     Text(total > 100.5 ? "The weights add up to \(total.formatted(.number.precision(.fractionLength(0...1))))%, more than a whole grade. "
                          : "")
-                    + Text("Weights set the points at stake on each item and the colour of its mark on the strip. Count is how many of the component there are; Drops is how many lowest scores are dropped.")
+                    + Text("Weights set the points at stake on each item and the colour of its mark on the strip. Count is how many of the component there are; Drops is how many lowest scores are dropped. The site is where its work lives; Coverage says when nothing has ever been read from there.")
                 }
                 Section {
                     ForEach($breaks) { $span in
@@ -159,7 +166,7 @@ struct CourseEditor: View {
         termStart = course.termStart ?? Date()
         termEnd = course.termEnd ?? Calendar.current.date(byAdding: .month, value: 4, to: termStart) ?? termStart
         meetings = course.meetings.map { MeetingRow(weekday: $0.weekday, start: ClockText.time(from: $0.start) ?? ClockText.time(9, 30), end: ClockText.time(from: $0.end) ?? ClockText.time(10, 45)) }
-        components = course.gradeComponents.map { ComponentRow(name: $0.name, weight: $0.weight.map { $0 * 100 }, count: $0.expectedCount, cadence: $0.cadence, dropLowest: $0.dropLowest) }
+        components = course.gradeComponents.map { ComponentRow(name: $0.name, weight: $0.weight.map { $0 * 100 }, count: $0.expectedCount, cadence: $0.cadence, dropLowest: $0.dropLowest, platform: $0.platform) }
         breaks = course.noClassDates.map { BreakRow(label: $0.label ?? "", start: $0.start, end: $0.end) }
         baseline = fields
     }
@@ -180,7 +187,7 @@ struct CourseEditor: View {
         let slots = meetings.map { MeetingSlot(weekday: $0.weekday, start: ClockText.string(from: $0.start), end: ClockText.string(from: $0.end)) }
         if slots != (course?.meetings ?? []) { edits.meetings = slots }
         let table = components.filter { !clean($0.name).isEmpty }.map {
-            GradeComponent(name: clean($0.name), weight: $0.weight.map { $0 / 100 }, expectedCount: $0.count, cadence: $0.cadence, dropLowest: $0.dropLowest)
+            GradeComponent(name: clean($0.name), weight: $0.weight.map { $0 / 100 }, expectedCount: $0.count, cadence: $0.cadence, dropLowest: $0.dropLowest, platform: $0.platform)
         }
         if table != (course?.gradeComponents ?? []) { edits.gradeComponents = table }
         let spans = breaks.map { ClosedDateRange(start: calendar.startOfDay(for: $0.start), end: calendar.startOfDay(for: $0.end), label: clean($0.label).isEmpty ? nil : clean($0.label)) }

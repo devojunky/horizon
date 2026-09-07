@@ -11,8 +11,8 @@ public struct CourseCoverage: Sendable, Identifiable, Equatable {
     /// Obligations due in the next 14 days, not completed.
     public var upcoming14: Int
     public var cadenceGaps: [CadenceGap]
-    /// Platforms the syllabus names that no document has ever come from.
-    public var neverIngested: [Platform]
+    /// Sites the course's documents say its work lives on, from which nothing has ever been read.
+    public var neverIngested: [PlatformGap]
     /// Higher is worse. Courses sort by this, never by name.
     public var suspicion: Double
     /// "Bio has been silent for 9 days and its syllabus implies weekly quizzes."
@@ -43,8 +43,37 @@ public struct CadenceGap: Sendable, Equatable {
     }
 }
 
+/// A site the documents say some of the course's work lives on ("Homework (WebAssign)"), from which no page has ever
+/// been read: the app knows the syllabus's schedule, not the site's own.
+public struct PlatformGap: Sendable, Equatable {
+    public var platform: Platform
+    /// The grade components on it, as the documents name them; empty when only items name it.
+    public var components: [String]
+
+    /// "its homework is on WebAssign, from which nothing has ever been read"; `first` when it opens the sentence.
+    public func sentence(name: String, first: Bool) -> String {
+        let site = Coverage.platformName(platform)
+        let owner = first ? "\(name)'s" : "its"
+        let what: String
+        switch components.count {
+        case 0: what = "\(first ? name : "it") has items on \(site)"
+        case 1: what = "\(owner) \(components[0].lowercased()) \(Self.plural(components[0]) ? "are" : "is") on \(site)"
+        default: what = "\(owner) " + components.map { $0.lowercased() }.dropLast().joined(separator: ", ") + " and \(components.last!.lowercased()) are on \(site)"
+        }
+        return what + ", from which nothing has ever been read"
+    }
+
+    /// "Quizzes", "Lab Reports": plural; "Homework", "Final Paper": not.
+    static func plural(_ component: String) -> Bool {
+        guard let last = component.split(separator: " ").last?.lowercased() else { return false }
+        return last.hasSuffix("s") && !last.hasSuffix("ss")
+    }
+}
+
 public enum Coverage {
     public static let window: TimeInterval = 14 * 86400
+    /// File kinds that are pictures of a site rather than documents about the course.
+    static let imageKinds: Set<String> = ["png", "jpg", "jpeg", "heic", "heif", "tif", "tiff", "webp", "gif"]
 
     public static func assess(course: CourseSnapshot, obligations: [ObligationSnapshot], documents: [DocumentSnapshot], now: Date = Date(), calendar: Calendar = .current) -> CourseCoverage {
         let mine = obligations.filter { $0.courseID == course.id && $0.deletedAt == nil }
@@ -77,9 +106,26 @@ public enum Coverage {
             }
         }
 
-        let named = Set(course.platforms.compactMap(Platform.init(rawValue:))).subtracting([.syllabusOnly])
-        let ingestedFrom = Set(docs.compactMap(\.platform))
-        let never = Platform.allCases.filter { named.contains($0) && !ingestedFrom.contains($0) }
+        // Sites the documents say the work lives on: the grading rows (component platforms) and the live items' own
+        // rows. The course's record of sites ever seen is not used: an item corrected by hand or deleted no longer
+        // stands for one, and neither does a guess that was never the document's word.
+        var componentsOn: [Platform: [String]] = [:]
+        var named = Set<Platform>()
+        for component in course.gradeComponents {
+            guard let p = component.platform, p != .syllabusOnly else { continue }
+            named.insert(p)
+            if !componentsOn[p, default: []].contains(component.name) { componentsOn[p, default: []].append(component.name) }
+        }
+        for item in mine where item.platform != .syllabusOnly {
+            named.insert(item.platform)
+            if let c = item.componentName, !componentsOn[item.platform, default: []].contains(where: { Normalize.key($0) == Normalize.key(c) }) { componentsOn[item.platform, default: []].append(c) }
+        }
+        // A page of the site has been read when a screenshot names it, or when an item came from a picture at all: a
+        // WebAssign page rarely spells its own name where Vision can read it.
+        var ingestedFrom = Set(docs.compactMap(\.platform))
+        let pictures = Set(docs.filter { imageKinds.contains($0.kind.lowercased()) }.map(\.id))
+        for item in mine where item.sourceDocumentID.map(pictures.contains) == true { ingestedFrom.insert(item.platform) }
+        let never = Platform.allCases.filter { named.contains($0) && !ingestedFrom.contains($0) }.map { PlatformGap(platform: $0, components: componentsOn[$0] ?? []) }
 
         var suspicion = 0.0
         if let days = daysSilent { suspicion += min(Double(days), 30) * 0.05 } else { suspicion += 1 }
@@ -92,13 +138,13 @@ public enum Coverage {
     }
 
     /// One sentence a person would say. The strongest signals only, each clause carrying its own subject.
-    static func headline(course: CourseSnapshot, daysSilent: Int?, upcoming: Int, gaps: [CadenceGap], never: [Platform]) -> String {
+    static func headline(course: CourseSnapshot, daysSilent: Int?, upcoming: Int, gaps: [CadenceGap], never: [PlatformGap]) -> String {
         let name = course.displayName
         var clauses: [String] = []
         if let days = daysSilent, days >= 7 { clauses.append("\(name) has been silent for \(days) days") }
         if daysSilent == nil { clauses.append("\(name) has nothing on file") }
         if let gap = gaps.first { clauses.append((clauses.isEmpty ? "\(name)'s " : "its ") + gap.sentence) }
-        if let platform = never.first { clauses.append("nothing has ever come from " + (clauses.isEmpty ? "\(name)'s " : "its ") + platformName(platform)) }
+        if let gap = never.first { clauses.append(gap.sentence(name: name, first: clauses.isEmpty)) }
         guard !clauses.isEmpty else {
             return upcoming == 0 ? "\(name) has nothing due in the next two weeks." : "\(name) looks covered: \(upcoming) due in the next two weeks."
         }

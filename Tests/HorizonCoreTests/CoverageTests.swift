@@ -8,11 +8,11 @@ struct CoverageTests {
     func course(_ code: String, components: [GradeComponent] = [], platforms: [String] = [], lastIngested: Date? = nil) -> CourseSnapshot {
         CourseSnapshot(code: code, title: code, termStart: Fixture.day(9, 2), termEnd: Fixture.day(12, 14), gradeComponents: components, platforms: platforms, lastIngested: lastIngested)
     }
-    func obligation(_ title: String, due: Date?, course: CourseSnapshot, component: String? = nil, completed: Bool = false) -> ObligationSnapshot {
-        ObligationSnapshot(id: UUID(), title: title, due: due, dueHasTime: false, platform: .syllabusOnly, componentName: component, pointsAtStake: nil, confidence: 1,
+    func obligation(_ title: String, due: Date?, course: CourseSnapshot, component: String? = nil, completed: Bool = false, platform: Platform = .syllabusOnly, document: UUID? = nil) -> ObligationSnapshot {
+        ObligationSnapshot(id: UUID(), title: title, due: due, dueHasTime: false, platform: platform, componentName: component, pointsAtStake: nil, confidence: 1,
                            state: .projected, origin: .document, flags: [], notes: nil, userOverrides: [], ekExternalID: nil, projectedTitle: nil, projectedDue: nil,
                            projectedNotes: nil, completedAt: completed ? now : nil, deletedAt: nil, changeNote: nil, createdOn: "A", courseID: course.id, courseCode: course.code,
-                           sourceDocumentID: nil, sourcePage: nil)
+                           sourceDocumentID: document, sourcePage: nil)
     }
 
     @Test func nothingOnFile() {
@@ -83,13 +83,33 @@ struct CoverageTests {
     }
 
     @Test func platformsNeverIngested() {
-        let calc = course("MA-UY 1124", platforms: ["webAssign", "syllabusOnly"], lastIngested: now)
+        // The grading row says homework is on WebAssign; the item on file came from the syllabus.
+        let calc = course("MA-UY 1124", components: [GradeComponent(name: "Homework", weight: 0.15, platform: .webAssign)], lastIngested: now)
         let syllabus = DocumentSnapshot(id: UUID(), filename: "calc.pdf", sha256: "a", kind: "pdf", status: .parsed, queuedAt: now, ingestedAt: now, deviceName: "A", failure: nil, platform: nil, courseID: calc.id)
-        let blind = Coverage.assess(course: calc, obligations: [obligation("HW 3", due: Fixture.day(9, 23), course: calc)], documents: [syllabus], now: now, calendar: Fixture.calendar)
-        #expect(blind.neverIngested == [.webAssign] && blind.headline == "Nothing has ever come from MA-UY 1124's WebAssign.")
+        let hw = obligation("HW 3", due: Fixture.day(9, 23), course: calc, component: "Homework")
+        let blind = Coverage.assess(course: calc, obligations: [hw], documents: [syllabus], now: now, calendar: Fixture.calendar)
+        #expect(blind.neverIngested == [PlatformGap(platform: .webAssign, components: ["Homework"])])
+        #expect(blind.headline == "MA-UY 1124's homework is on WebAssign, from which nothing has ever been read.")
+        // A screenshot whose text names the site counts.
         var shot = syllabus; shot.platform = .webAssign; shot.id = UUID()
-        let seen = Coverage.assess(course: calc, obligations: [obligation("HW 3", due: Fixture.day(9, 23), course: calc)], documents: [syllabus, shot], now: now, calendar: Fixture.calendar)
+        let seen = Coverage.assess(course: calc, obligations: [hw], documents: [syllabus, shot], now: now, calendar: Fixture.calendar)
         #expect(seen.neverIngested.isEmpty && seen.headline == "MA-UY 1124 looks covered: 1 due in the next two weeks.")
+        // So does a picture whose text never spells the site, once an item on that site came from it.
+        var photo = syllabus; photo.kind = "png"; photo.id = UUID()
+        let fromPhoto = obligation("HW 4", due: Fixture.day(9, 30), course: calc, component: "Homework", platform: .webAssign, document: photo.id)
+        #expect(Coverage.assess(course: calc, obligations: [hw, fromPhoto], documents: [syllabus, photo], now: now, calendar: Fixture.calendar).neverIngested.isEmpty)
+        // An item's own row can name a site the grade table does not; then the claim names no component.
+        let quiz = obligation("Quiz 1", due: Fixture.day(9, 24), course: calc, platform: .gradescope)
+        let two = Coverage.assess(course: calc, obligations: [hw, quiz], documents: [syllabus], now: now, calendar: Fixture.calendar)
+        #expect(two.neverIngested.map(\.platform) == [.webAssign, .gradescope])
+        #expect(two.neverIngested[1].sentence(name: "MA-UY 1124", first: false) == "it has items on Gradescope, from which nothing has ever been read")
+        // Several components on one site, and plurals: "quizzes are", "homework is".
+        let many = PlatformGap(platform: .lms, components: ["Homework", "Quizzes", "Lab Reports"])
+        #expect(many.sentence(name: "Bio", first: true) == "Bio's homework, quizzes and lab reports are on LMS, from which nothing has ever been read")
+        #expect(PlatformGap(platform: .lms, components: ["Quizzes"]).sentence(name: "Bio", first: false) == "its quizzes are on LMS, from which nothing has ever been read")
+        // The course's own record of sites ever seen is not evidence: nothing live names MyLab, so nothing is claimed.
+        let stale = course("ECON-UA 2", platforms: ["myLab"], lastIngested: now)
+        #expect(Coverage.assess(course: stale, obligations: [obligation("HW 1", due: Fixture.day(9, 23), course: stale)], documents: [syllabus], now: now, calendar: Fixture.calendar).neverIngested.isEmpty)
     }
 
     @Test func coursesSortBySuspicionNotName() async throws {
@@ -100,5 +120,6 @@ struct CoverageTests {
         let coverage = try await store.coverage(now: Fixture.day(10, 5, hour: 12, minute: 0), calendar: Fixture.calendar)
         #expect(coverage.map(\.course.code) == ["AAA 1", "MA-UY 1124"])   // the silent, gap-ridden course first despite sorting last by name
         #expect(coverage[0].cadenceGaps.first?.component == "Quizzes")
+        #expect(coverage[1].neverIngested == [PlatformGap(platform: .webAssign, components: ["Homework"])])   // from the items' own platform, under their component
     }
 }

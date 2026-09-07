@@ -292,9 +292,42 @@ struct MergerTests {
         ])], text: text)
         let platforms = Dictionary(uniqueKeysWithValues: r.obligations.map { ($0.title, $0.platform) })
         #expect(platforms == ["HW 1": .gradescope, "Project 1": .lms, "Quiz 1": .gradescope, "Project 2": .lms, "HW 2": .webAssign])
+        let rows = Dictionary(uniqueKeysWithValues: r.gradeComponents.map { ($0.name, $0.platform) })
+        #expect(rows == ["Homework": .webAssign, "Projects": nil, "Quizzes": .gradescope])   // the grading rows' own words carry through; a row that says nothing carries nothing
         // Neither the item's row nor its grading row names a platform: the model's "lms" guess is not evidence in a text document.
         let guess = Self.merge([Self.outcome(0, components: [Self.component("Quizzes", 12, platform: "lms")], obligations: [Self.ob("Quiz 1", "Thu 9/17", iso: "2026-09-17", platform: "lms")])])
         #expect(guess.obligations[0].platform == .syllabusOnly)
+    }
+
+    @Test func aSiteIsNamedOnlyByItsOwnName() {
+        // Words that merely resemble a site: a publisher, a cloth, the board on the wall, a verb.
+        #expect(Merger.Source.platforms(in: "Textbook: Calculus, 8th edition, Pearson.").isEmpty)
+        #expect(Merger.Source.platforms(in: "Bring a stretched canvas; sketches go on the blackboard.").isEmpty)
+        #expect(Merger.Source.platforms(in: "Homework 20%: mastering the material takes weekly practice").isEmpty)
+        #expect(Merger.Source.platforms(in: "Web assignments are posted Fridays").isEmpty)
+        // The products' own names, however set.
+        #expect(Merger.Source.platforms(in: "Essays are submitted on Canvas by Friday") == [.lms])
+        #expect(Merger.Source.platforms(in: "QUIZZES ON BLACKBOARD") == [.lms])
+        #expect(Merger.Source.platforms(in: "posted on Blackboard Learn each week") == [.lms])
+        #expect(Merger.Source.platforms(in: "MasteringPhysics closes Sundays 11:59 PM") == [.myLab])
+        #expect(Merger.Source.platforms(in: "MYLAB ECONOMICS deadlines") == [.myLab])
+        #expect(Merger.Source.platforms(in: "gradescope and WebAssign both") == [.webAssign, .gradescope])
+        // And through the merger: a text document's rows name the sites, or nothing does.
+        let text = """
+        Textbook: Calculus, 8th edition, Pearson. Bring a stretched canvas to the studio; sketches go on the blackboard.
+        Homework 20% mastering the material takes weekly practice
+        Labs 30% on Mastering Physics
+        Essays 25% submitted on Canvas
+        Quizzes 25% on Blackboard Learn
+        HW 1 due Wed 9/9. Lab 1 due Thu 9/17. Essay 1 due Wednesday, October 7. Quiz 1 due Mon 9/14.
+        """
+        let r = Self.merge([Self.outcome(0, components: [Self.component("Homework", 20, platform: "mylab"), Self.component("Labs", 30), Self.component("Essays", 25), Self.component("Quizzes", 25)],
+                                         obligations: [Self.ob("HW 1", "Wed 9/9", iso: "2026-09-09", platform: "mylab"), Self.ob("Lab 1", "Thu 9/17", iso: "2026-09-17"),
+                                                       Self.ob("Essay 1", "Wednesday, October 7", iso: "2026-10-07"), Self.ob("Quiz 1", "Mon 9/14", iso: "2026-09-14")])], text: text)
+        let rows = Dictionary(uniqueKeysWithValues: r.gradeComponents.map { ($0.name, $0.platform) })
+        #expect(rows == ["Homework": nil, "Labs": .myLab, "Essays": .lms, "Quizzes": .lms])   // the model's MyLab for homework is not the document's word
+        let items = Dictionary(uniqueKeysWithValues: r.obligations.map { ($0.title, $0.platform) })
+        #expect(items == ["HW 1": .syllabusOnly, "Lab 1": .myLab, "Essay 1": .lms, "Quiz 1": .lms])
     }
 
     @Test func gradingRowWeightBeatsTheModels() {

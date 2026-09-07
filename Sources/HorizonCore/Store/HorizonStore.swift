@@ -101,7 +101,7 @@ public actor HorizonStore {
         let live = (course.obligations ?? []).filter { $0.deletedAt == nil }
         let components = course.gradeComponents.map { component in
             let platforms = live.filter { $0.componentName.map(Normalize.key) == Normalize.key(component.name) }.map(\.platform).filter { $0 != .syllabusOnly }
-            let platform = Dictionary(grouping: platforms, by: { $0 }).max { $0.value.count < $1.value.count }?.key
+            let platform = component.platform ?? Dictionary(grouping: platforms, by: { $0 }).max { $0.value.count < $1.value.count }?.key
             return KnownComponent(name: component.name, weight: component.weight, expectedCount: component.expectedCount, cadence: component.cadence, platform: platform)
         }
         return KnownCourse(code: course.code.isEmpty ? nil : course.code, title: course.title.isEmpty ? nil : course.title, term: course.term,
@@ -177,7 +177,7 @@ public actor HorizonStore {
         if !kept.contains("gradeComponents"), !result.gradeComponents.isEmpty {
             // A whole grade table (weights that add up to about 100%) is the course's table; a partial one, such as
             // the components a schedule mentions, adds to what is on file and updates the facts it states.
-            let parsed = result.gradeComponents.map { GradeComponent(name: $0.name, weight: $0.weight, expectedCount: $0.expectedCount, cadence: $0.cadence, dropLowest: $0.dropLowest) }
+            let parsed = result.gradeComponents.map { GradeComponent(name: $0.name, weight: $0.weight, expectedCount: $0.expectedCount, cadence: $0.cadence, dropLowest: $0.dropLowest, platform: $0.platform) }
             let total = parsed.compactMap(\.weight).reduce(0, +)
             if course.gradeComponents.isEmpty || (0.9...1.1).contains(total) {
                 course.gradeComponents = parsed
@@ -189,6 +189,7 @@ public actor HorizonStore {
                         merged[i].expectedCount = component.expectedCount ?? merged[i].expectedCount
                         merged[i].cadence = component.cadence ?? merged[i].cadence
                         merged[i].dropLowest = component.dropLowest ?? merged[i].dropLowest
+                        merged[i].platform = component.platform ?? merged[i].platform
                     } else {
                         merged.append(component)
                     }
@@ -199,7 +200,8 @@ public actor HorizonStore {
         if !kept.contains("noClassDates"), !result.noClassDates.isEmpty {
             course.noClassDates = result.noClassDates.map { ClosedDateRange(start: $0.start, end: $0.end ?? $0.start, label: $0.dateAsWritten) }
         }
-        for platform in Set(result.obligations.map(\.platform.rawValue)) where !course.platforms.contains(platform) { course.platforms.append(platform) }
+        let seen = Set(result.obligations.map(\.platform.rawValue) + result.gradeComponents.compactMap { $0.platform?.rawValue })
+        for platform in seen where !course.platforms.contains(platform) { course.platforms.append(platform) }
     }
 
     /// Index of the row a parsed item is: the same title on the same day; else the same title when exactly one side is

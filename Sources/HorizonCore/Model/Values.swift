@@ -12,8 +12,11 @@ public struct GradeComponent: Codable, Sendable, Equatable {
     public var expectedCount: Int?
     public var cadence: Cadence?
     public var dropLowest: Int?
-    public init(name: String, weight: Double? = nil, expectedCount: Int? = nil, cadence: Cadence? = nil, dropLowest: Int? = nil) {
-        self.name = name; self.weight = weight; self.expectedCount = expectedCount; self.cadence = cadence; self.dropLowest = dropLowest
+    /// Where the documents say the component's work lives; nil when they say nothing. Coverage's "never read" claim
+    /// stands on this and on the items' own platforms, never on a guess.
+    public var platform: Platform?
+    public init(name: String, weight: Double? = nil, expectedCount: Int? = nil, cadence: Cadence? = nil, dropLowest: Int? = nil, platform: Platform? = nil) {
+        self.name = name; self.weight = weight; self.expectedCount = expectedCount; self.cadence = cadence; self.dropLowest = dropLowest; self.platform = platform
     }
 }
 

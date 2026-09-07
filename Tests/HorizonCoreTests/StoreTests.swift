@@ -154,6 +154,26 @@ struct StoreTests {
         #expect(try await store.obligations().map(\.title).sorted() == ["Final Exam", "HW 1", "HW 2", "Midterm 1", "Quiz 1"])
     }
 
+    @Test func aComponentsSiteIsKeptAndToldToTheNextDocument() async throws {
+        let store = try Fixture.store()
+        var syllabus = Fixture.calculus()
+        syllabus.gradeComponents[0].platform = .webAssign
+        try await Fixture.ingest(syllabus, into: store)
+        let calc = try await store.courses().first!
+        #expect(calc.gradeComponents.first?.platform == .webAssign)
+        #expect(try await store.knownCourse(for: calc.id)?.components.first?.platform == .webAssign)
+        // A schedule that says nothing about the site leaves it standing.
+        let doc = try await store.enqueueDocument(filename: "schedule.pdf", sha256: "sched7", kind: "pdf", deviceName: "A", courseID: calc.id)
+        var schedule = Fixture.calculus(sha: "sched7"); schedule.course = nil; schedule.policies = []
+        schedule.gradeComponents = [ParsedGradeComponent(name: "Homework", weight: 0.15, expectedCount: 12)]
+        try await store.ingest(schedule, documentID: doc.id, calendar: Fixture.calendar)
+        #expect(try await store.courses().first?.gradeComponents.first?.platform == .webAssign)
+        // The user's own word on the site is an override a reissued syllabus leaves alone.
+        try await store.updateCourse(id: calc.id, edits: CourseEdits(gradeComponents: [GradeComponent(name: "Homework", weight: 0.15, expectedCount: 10, platform: nil)]))
+        try await Fixture.ingest(syllabus, into: store)
+        #expect(try await store.courses().first?.gradeComponents.first?.platform == nil)
+    }
+
     @Test func aPartialGradeTableMergesAndACompleteOneReplaces() async throws {
         let store = try Fixture.store()
         try await Fixture.ingest(Fixture.calculus(), into: store)

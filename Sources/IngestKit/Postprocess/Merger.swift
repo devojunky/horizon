@@ -107,6 +107,7 @@ enum Merger {
         for c in components {   // the grading row's own wording is the authority on where a component is submitted
             if let p = source.platform(onLineMentioning: c.name) { componentPlatforms[Normalize.key(c.name)] = p }
         }
+        for i in components.indices { components[i].platform = componentPlatforms[Normalize.key(components[i].name)] }
         let componentKeys = Set(components.map { Normalize.key($0.name) })
 
         // Obligations.
@@ -407,10 +408,25 @@ enum Merger {
             line.range(of: #"(?i)\b(late|penalty|per day|lose|loses|lower|lowers|deduct|deducted|extra|bonus|credit|curve|curved|off|each|up to)\b"#, options: .regularExpression) != nil
         }
 
-        static let platformKeywords: [(String, Platform)] = [
-            ("webassign", .webAssign), ("gradescope", .gradescope), ("mylab", .myLab), ("mastering", .myLab), ("pearson", .myLab),
-            ("brightspace", .lms), ("canvas", .lms), ("blackboard", .lms), ("moodle", .lms), ("nyu classes", .lms),
-        ]
+        /// The sites a passage names, by the products' own names as whole words. The ambiguous ones count only as the
+        /// product writes itself: "Canvas" the LMS but not a stretched canvas, "Blackboard" but not the board on the
+        /// wall, "Mastering Physics" but not mastering the material. A publisher alone (Pearson) names no site.
+        static var platformPatterns: [(Regex<AnyRegexOutput>, Platform)] {
+            [
+                (try! Regex(#"(?i)\bweb\s?assign\b"#), .webAssign),
+                (try! Regex(#"(?i)\bgradescope\b"#), .gradescope),
+                (try! Regex(#"(?i:\bmy\s?lab\b)|\bMastering\s?[A-Z][A-Za-z&]+|\bMASTERING\s?[A-Z&]{3,}"#), .myLab),   // the flag scoped, so "mastering the material" stays a verb
+                (try! Regex(#"(?i)\bbrightspace\b|\bmoodle\b|\bd2l\b|\bblackboard\s+learn\b"#), .lms),
+                (try! Regex(#"\b(?:Canvas|CANVAS|Blackboard|BLACKBOARD)\b"#), .lms),
+            ]
+        }
+        /// Every site `text` names, in a fixed order.
+        static func platforms(in text: String) -> [Platform] {
+            var found: [Platform] = []
+            for (pattern, platform) in platformPatterns where !found.contains(platform) && text.contains(pattern) { found.append(platform) }
+            return found
+        }
+        static func platform(in text: String) -> Platform? { platforms(in: text).first }
 
         /// The platform named in the first sentence (or table row) that mentions `phrase` as whole words,
         /// e.g. "Project 1 … Brightspace". Sentences are split so a neighbour's platform does not leak.
@@ -421,7 +437,7 @@ enum Merger {
                 for segment in line.split(separator: Source.segmentSeparator).map(String.init) {
                     let k = " " + Normalize.key(segment) + " "
                     guard k.contains(needle) else { continue }
-                    if let hit = Source.platformKeywords.first(where: { k.contains($0.0) }) { return hit.1 }
+                    if let hit = Source.platform(in: segment) { return hit }
                 }
             }
             return nil
@@ -592,7 +608,7 @@ enum Merger {
 
         /// The only platform the document names, if it names exactly one.
         var uniquePlatform: Platform? {
-            let named = Set(Source.platformKeywords.filter { key.contains($0.0) }.map(\.1))
+            let named = Source.platforms(in: lines.joined(separator: "\n"))
             return named.count == 1 ? named.first : nil
         }
 

@@ -78,9 +78,11 @@ public struct ParsedGradeComponent: Codable, Sendable {
     public var expectedCount: Int?
     public var cadence: Cadence?
     public var dropLowest: Int?
+    /// Where the document says the component's work lives ("Homework (WebAssign)"); nil when it says nothing.
+    public var platform: Platform?
 
-    public init(name: String, weight: Double? = nil, expectedCount: Int? = nil, cadence: Cadence? = nil, dropLowest: Int? = nil) {
-        self.name = name; self.weight = weight; self.expectedCount = expectedCount; self.cadence = cadence; self.dropLowest = dropLowest
+    public init(name: String, weight: Double? = nil, expectedCount: Int? = nil, cadence: Cadence? = nil, dropLowest: Int? = nil, platform: Platform? = nil) {
+        self.name = name; self.weight = weight; self.expectedCount = expectedCount; self.cadence = cadence; self.dropLowest = dropLowest; self.platform = platform
     }
 }
 
