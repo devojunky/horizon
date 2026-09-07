@@ -33,6 +33,22 @@ final class AppModel {
         didSet { UserDefaults.standard.set(readInCloud, forKey: "readInCloud") }
     }
     let cloudUnavailableReason: String? = Ingestor.cloudAvailability()
+    /// Read and plan through OpenAI with the user's own key (`FeatureFlags.openAI` shows the setting). The key lives in
+    /// the Keychain; the model name and the switch in UserDefaults.
+    var useOpenAI: Bool = UserDefaults.standard.bool(forKey: "useOpenAI") {
+        didSet { UserDefaults.standard.set(useOpenAI, forKey: "useOpenAI") }
+    }
+    var openAIModel: String = UserDefaults.standard.string(forKey: "openAIModel") ?? OpenAIConfiguration.defaultModel {
+        didSet { UserDefaults.standard.set(openAIModel, forKey: "openAIModel") }
+    }
+    var openAIKey: String = Keychain.read("openai") ?? "" {
+        didSet { Keychain.write(openAIKey, account: "openai") }
+    }
+    /// What the next read or plan uses, or nil when OpenAI is off, hidden, or has no key.
+    var openAIConfiguration: OpenAIConfiguration? {
+        guard FeatureFlags.openAI, useOpenAI, !openAIKey.isEmpty else { return nil }
+        return OpenAIConfiguration(apiKey: openAIKey, model: openAIModel)
+    }
 
     struct Reading: Equatable {
         var documentID: UUID
@@ -178,8 +194,10 @@ final class AppModel {
         Self.log("drain: reminders \(remindersAuthorized.map { "\($0)" } ?? "unknown")")
         if remindersAuthorized == nil { await requestReminders() }
         let cloud = readInCloud && cloudUnavailableReason == nil   // the setting only counts where the cloud can be used
-        withAnimation { statusLine = cloud ? "Reading documents in Private Cloud Compute…" : "Reading documents…" }
-        await coordinator.setRoute(cloud ? .privateCloudCompute : .onDeviceFirst)
+        let openAI = openAIConfiguration
+        withAnimation { statusLine = openAI != nil ? "Reading documents with OpenAI…" : cloud ? "Reading documents in Private Cloud Compute…" : "Reading documents…" }
+        await coordinator.setOpenAI(openAI)
+        await coordinator.setRoute(openAI != nil ? .openAI : cloud ? .privateCloudCompute : .onDeviceFirst)
         let reports = await coordinator.drain()
         withAnimation { reading = nil }   // however the read ended, the live section must not outlive it
         if let id = cancelledDocument {
@@ -191,6 +209,10 @@ final class AppModel {
             return
         }
         if !reports.isEmpty { self.reports = reports + self.reports.prefix(20); cancelNotice = nil }   // failed reads stay visible from the store (RootView)
+        // A read that OpenAI could not do was done on the device; say so where the user looks, not only in Documents.
+        if let fallback = reports.compactMap({ $0.summary?.warnings.first { $0.hasPrefix("OpenAI could not be used") } }).first {
+            cancelNotice = fallback
+        }
         withAnimation { statusLine = "Syncing with Reminders…" }
         do {
             let report = try await sync.sync()
@@ -238,9 +260,10 @@ final class AppModel {
         } catch { lastError = error.localizedDescription }
         let obligations = (try? await store.planObligations(from: now, days: 21)) ?? []   // three weeks out: enough to choose from
         let planner = DayPlanner(log: { message in Task { @MainActor in AppModel.log(message) } })
-        let route: IngestOptions.RoutePolicy = readInCloud && cloudUnavailableReason == nil ? .privateCloudCompute : .onDeviceFirst
+        let openAI = openAIConfiguration
+        let route: IngestOptions.RoutePolicy = openAI != nil ? .openAI : readInCloud && cloudUnavailableReason == nil ? .privateCloudCompute : .onDeviceFirst
         let input = PlanInput(date: now, now: now, busy: busy, obligations: obligations, instructions: planInstructions)
-        var result = await planner.plan(input, route: route)
+        var result = await planner.plan(input, route: route, openAI: openAI)
         if calendarOff { result.note = ([result.note, "Calendar access is off, so nothing on it counted as fixed."].compactMap { $0 }).joined(separator: " ") }
         withAnimation {
             plan = result; planEdited = false; planDay = Calendar.current.startOfDay(for: now)

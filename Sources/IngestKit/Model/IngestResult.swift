@@ -40,7 +40,7 @@ public enum DocumentKind: String, Codable, Sendable {
 }
 
 public enum ModelRoute: String, Codable, Sendable {
-    case onDevice, privateCloudCompute
+    case onDevice, privateCloudCompute, openAI
 }
 
 public enum Platform: String, Codable, Sendable, CaseIterable {
@@ -197,6 +197,8 @@ public enum IngestError: Error, LocalizedError, Sendable {
     /// The on-device model exists but is not ready yet (assets loading): transient, retry later.
     case modelNotReady(String)
     case cloudUnavailable(String)
+    /// OpenAI could not be used for this document (the key, the model, the network); the caller falls back to the device.
+    case remoteUnavailable(String)
     case emptyDocument
     case extractionFailed(String)
 
@@ -207,6 +209,7 @@ public enum IngestError: Error, LocalizedError, Sendable {
         case .modelUnavailable(let why): "On-device model unavailable: \(why)"
         case .modelNotReady(let why): "On-device model not ready yet: \(why)"
         case .cloudUnavailable(let why): "Private Cloud Compute unavailable, document queued: \(why)"
+        case .remoteUnavailable(let why): "OpenAI could not be used: \(why)"
         case .emptyDocument: "Document has no readable text or images"
         case .extractionFailed(let why): "The model produced nothing for this document: \(why)"
         }

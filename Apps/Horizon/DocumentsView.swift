@@ -14,7 +14,7 @@ struct DocumentsView: View {
             Section {
                 LabeledContent("Reminders access", value: model.remindersAuthorized.map { $0 ? "Granted" : "Denied" } ?? "Not asked")
                 LabeledContent("Device", value: AppModel.deviceName)
-                LabeledContent("Reads documents", value: model.readInCloud ? "In Private Cloud Compute" : "On device")
+                LabeledContent("Reads documents", value: model.openAIConfiguration.map { "With OpenAI (\($0.model))" } ?? (model.readInCloud ? "In Private Cloud Compute" : "On device"))
                 if let why = model.cloudUnavailableReason {
                     Text("Private Cloud Compute is unavailable: \(why).").font(.footnote).foregroundStyle(.secondary)
                 }

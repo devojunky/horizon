@@ -134,7 +134,7 @@ public actor DayPlanner {
         }
     }
 
-    public func plan(_ input: PlanInput, route: IngestOptions.RoutePolicy = .onDeviceFirst) async -> DayPlan {
+    public func plan(_ input: PlanInput, route: IngestOptions.RoutePolicy = .onDeviceFirst, openAI: OpenAIConfiguration? = nil) async -> DayPlan {
         let gaps = Self.gaps(in: input)
         let ranked = Array(Self.ranked(input).prefix(12))
         guard !gaps.isEmpty else { return DayPlan(blocks: Self.fixedOnly(input), route: nil, usage: nil, note: "No free time left today.") }
@@ -144,10 +144,10 @@ public actor DayPlanner {
         let prompt = Self.prompt(for: input, gaps: gaps, ranked: ranked)
         let started = ContinuousClock.now
         do {
-            let (draft, usage, used) = try await respond(prompt, route: route)
+            let (draft, usage, used) = try await respond(prompt, route: route, openAI: openAI)
             let blocks = Self.validate(draft, gaps: gaps, input: input, ranked: ranked)
-            let record = UsageRecord(step: "plan", chunk: 0, route: used, inputTokens: usage.input.totalTokenCount, cachedTokens: usage.input.cachedTokenCount,
-                                     outputTokens: usage.output.totalTokenCount, reasoningTokens: usage.output.reasoningTokenCount,
+            let record = UsageRecord(step: "plan", chunk: 0, route: used, inputTokens: usage.input, cachedTokens: usage.cached,
+                                     outputTokens: usage.output, reasoningTokens: usage.reasoning,
                                      durationMs: Int((ContinuousClock.now - started) / .milliseconds(1)))
             log("plan: \(draft.blocks.count) proposed, \(blocks.count) kept, in \(record.inputTokens) out \(record.outputTokens) \(record.durationMs)ms")
             if blocks.isEmpty {
@@ -164,18 +164,39 @@ public actor DayPlanner {
 
     // MARK: Model
 
-    private func respond(_ prompt: String, route: IngestOptions.RoutePolicy) async throws -> (PlanDraft, LanguageModelSession.Usage, ModelRoute) {
+    struct Tokens: Sendable { var input = 0, cached = 0, output = 0, reasoning = 0 }
+
+    /// OpenAI when asked for and reachable (its client retries; a failure falls through to Apple's models), else Private
+    /// Cloud Compute when entitled, else the device.
+    private func respond(_ prompt: String, route: IngestOptions.RoutePolicy, openAI: OpenAIConfiguration?) async throws -> (PlanDraft, Tokens, ModelRoute) {
+        if route == .openAI, let openAI {
+            do {
+                let client = OpenAIClient(configuration: openAI, log: log)
+                let request = OpenAIClient.Request(system: Self.instructions, user: prompt, schemaName: "plan_draft", schema: OpenAISchemas.plan, maxOutputTokens: 1500)
+                let completion = try await client.stream(request)
+                let draft = try PlanJSON.decode(completion.text)
+                return (draft, Tokens(input: completion.inputTokens, cached: completion.cachedTokens, output: completion.outputTokens), .openAI)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                log("plan: OpenAI could not be used (\(error.localizedDescription)); planning with Apple's models")
+            }
+        }
         let options = GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 900)
         if route != .onDeviceOnly, Extractor.hasCloudEntitlement, case .available = PrivateCloudComputeLanguageModel().availability {
             let session = LanguageModelSession(model: PrivateCloudComputeLanguageModel(), instructions: Instructions(Self.instructions))
             let response = try await session.respond(to: Prompt(prompt), generating: PlanDraft.self, options: options, contextOptions: ContextOptions(reasoningLevel: .deep))
-            return (response.content, response.usage, .privateCloudCompute)
+            return (response.content, Self.tokens(response.usage), .privateCloudCompute)
         }
         let model = SystemLanguageModel.default
         guard case .available = model.availability else { throw IngestError.modelUnavailable(String(describing: model.availability)) }
         let session = LanguageModelSession(model: model, instructions: Instructions(Self.instructions))
         let response = try await session.respond(to: Prompt(prompt), generating: PlanDraft.self, options: options)
-        return (response.content, response.usage, .onDevice)
+        return (response.content, Self.tokens(response.usage), .onDevice)
+    }
+
+    private static func tokens(_ usage: LanguageModelSession.Usage) -> Tokens {
+        Tokens(input: usage.input.totalTokenCount, cached: usage.input.cachedTokenCount, output: usage.output.totalTokenCount, reasoning: usage.output.reasoningTokenCount)
     }
 
     static func prompt(for input: PlanInput, gaps: [DateInterval], ranked: [PlanObligation]) -> String {

@@ -6,7 +6,7 @@ Native iOS 27 / macOS 27 app: an intake engine that turns course documents into 
 ```
 Package.swift             SwiftPM. Targets: IngestKit, HorizonCore (libs), HorizonParse (CLI), IngestKitTests, HorizonCoreTests, IngestEvals
 project.yml               xcodegen spec for the app targets; Horizon.xcodeproj is generated and git-ignored
-Apps/Horizon/             SwiftUI app (iOS + macOS): Design (tokens, type, shared pieces), AppModel (store/coordinator/sync wiring, live Reading state, cancel, PCC setting, the day plan kept for the day + its edits + what the user tells the planner), HorizonStripView (MainTabs + the M4 strip: weeks/days/items by zoom, heat cells, range tabs), NowView (M5 day plan as a timetable), PlanEditors (block editor, Tell the Planner), RootView (Coverage, ReadingSection with the creeping bar), CoverageView, ReviewView, ObligationEditor, CourseView, DocumentsView, ImportSources (Files / Photos / document camera), WatchedFolder (macOS)
+Apps/Horizon/             SwiftUI app (iOS + macOS): FeatureFlags (openAI on/off), Keychain (the OpenAI key), OpenAISettingsView, Design (tokens, type, shared pieces), AppModel (store/coordinator/sync wiring, live Reading state, cancel, PCC setting, the day plan kept for the day + its edits + what the user tells the planner), HorizonStripView (MainTabs + the M4 strip: weeks/days/items by zoom, heat cells, range tabs), NowView (M5 day plan as a timetable), PlanEditors (block editor, Tell the Planner), RootView (Coverage, ReadingSection with the creeping bar), CoverageView, ReviewView, ObligationEditor, CourseView, DocumentsView, ImportSources (Files / Photos / document camera), WatchedFolder (macOS)
 Apps/HorizonShare/        iOS share extension: copies the shared file into the App Group inbox; the app parses it
 Sources/HorizonCore/      storage + sync. Identifiers.swift (bundle/group/container ids), Model/Schema.swift (VersionedSchema V1),
   Store/HorizonStore      @ModelActor: ingest → upsert with field ownership, review queue, manual entry, soft delete, reconciliation
@@ -19,7 +19,8 @@ Sources/IngestKit/        documents in → IngestResult out. No storage, no Even
   Model/Extraction.swift      @Generable schema the model fills per chunk (strings only; dates resolved later)
   Model/IngestResult.swift    public Codable output types
   Normalize/                  file → NormalizedDocument (text pages via PDFKit, or CGImage pages + Vision OCR text for the guards)
-  Extract/Chunker.swift       token-budgeted chunking; IngestInstructions.swift = the prompt; Extractor.swift = the only code that talks to a LanguageModelSession
+  Extract/Chunker.swift       token-budgeted chunking; IngestInstructions.swift = the prompt; Extractor.swift = the only code that talks to a LanguageModelSession (and the OpenAI client, for reading)
+  Remote/OpenAIClient.swift   Chat Completions, streamed, strict structured output; classed errors, retries with backoff, an injectable transport; OpenAISchemas = the hand-written strict schemas; PartialJSON = complete elements of a JSON object still being written, ExtractionJSON/PlanJSON decode either route's JSON
   Postprocess/DateResolver    deterministic date resolution (model ISO cross-checked against the copied wording)
   Postprocess/Merger.swift    fold chunk extractions → dedupe, confidence, status, points at stake
   Plan/DayPlanner.swift       M5 day plan: gaps from calendar events, the model proposes, validation keeps it in the gaps, fallback by the numbers
@@ -48,13 +49,15 @@ xcrun simctl privacy booted grant reminders com.daniel.horizon && xcrun simctl l
 xcrun simctl launch booted com.daniel.horizon --tab-horizon --zoom-two-weeks   # DEBUG: open on the strip, zoomed to two weeks around today (--zoom-month for a month)
 xcrun simctl launch booted com.daniel.horizon --tab-now --plan                 # DEBUG: plan today; --edit-block opens the first block's editor, --plan-instructions the Tell the Planner sheet
 xcrun simctl launch booted com.daniel.horizon --ingest-file /path/to/file      # DEBUG: read any file the simulator can see (broken files, duplicates); --open-documents opens Documents, --confirm-delete-document its delete dialog, --delete-first-course deletes the first course
+xcrun simctl launch booted com.daniel.horizon --open-openai                    # DEBUG: the OpenAI sheet; --openai-key <key> stores a key and turns the route on (an invalid key exercises the fallback)
 ```
 The simulator runs a 300M model, not the 3B one; use it to exercise the pipeline, not to judge extraction quality. A DEBUG menu item "Ingest sample syllabus" feeds `Apps/Horizon/Samples/sample-syllabus.pdf`.
 
 ## Rules of the codebase
 - The user never types a task (SPEC §2). No composer UI, ever.
 - The look is an editorial page (DECISIONS 2026-09-05): every screen sits on `Design.paper` (`.paper()` on lists and forms, and `.onPaper()` on every section or row of a plain list: row modifiers do nothing on the List itself, and a row left out paints a white or black cell over the paper), titles are serif (`Design.installAppearance`, `.deck()`, `.display()`, `.numeral()`), sections get a `Kicker`, rules are hairlines, and `Design.accent` means weight or urgency only. Empty states are `EditorialEmpty`; something in progress is `WorkingLine`. Motion is earned: rows arriving, the level crossfade, the underline sliding, the "now" dot breathing; all of it respects Reduce Motion.
-- Every LanguageModelSession lives in `Extractor` (ingest) or `DayPlanner` (the day plan). Log `response.usage` on every call (it is; see `UsageRecord`).
+- Every LanguageModelSession lives in `Extractor` (ingest) or `DayPlanner` (the day plan), and so does every use of `OpenAIClient`. Log `response.usage` on every call (it is; see `UsageRecord`).
+- OpenAI (`IngestOptions.RoutePolicy.openAI` + `IngestOptions.openAI`) is opt-in with the user's key, behind `FeatureFlags.openAI`; the client retries what can pass (dropouts, rate limits, 5xx) and never what cannot (key, model, request); the ingest falls back to the device on `IngestError.remoteUnavailable` and says so. Network paths are tested with `OpenAITransport` scripts, never the network.
 - The day plan is kept for the day only (UserDefaults `dayPlan`, dropped once the day ends); the user's plan instructions (`planInstructions`) persist and go into every plan prompt. The plan by the numbers cannot read them.
 - The strip's content follows the zoom: `Strip.level(daysAcross:)` decides weeks / days / items; load is colour (`Strip.heat`), never size.
 - Dates: the model emits `dateAsWritten` (copied text) and `dueDate` (ISO). `DateResolver` re-parses the wording; the wording wins on disagreement (a model year slip is forgiven; a model date the document also names means review), except that wording naming several dates without "due" lets the model choose among them. TBD wording rejects a model date outright. A date that neither the wording nor the document mentions is dropped (text pages) or sent to review (image pages). A date printed before the item on a row with a later date is `dateAmbiguous` → review.

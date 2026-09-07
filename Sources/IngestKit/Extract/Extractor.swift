@@ -4,6 +4,7 @@ import Security
 import Vision  // enables the OCRTool cross-import overlay (absent in the iOS simulator SDK)
 import CoreGraphics
 import ImageIO
+import UniformTypeIdentifiers
 
 /// The system OCR tool where the SDK has it; on the simulator the model reads the image without it.
 func ocrTools() -> [any Tool] {
@@ -23,8 +24,8 @@ struct ExtractionOutcome: Sendable {
     var usage: UsageRecord
 }
 
-/// Owns the model and the token budget. Every LanguageModelSession in IngestKit is created here.
-/// One fresh session per chunk: the on-device context is too small to carry a transcript.
+/// Owns the model and the token budget. Every LanguageModelSession in IngestKit is created here, and so is the one
+/// OpenAI client. One fresh session per chunk: the on-device context is too small to carry a transcript.
 /// Chunk-level failures become `warnings`; only errors that make the whole ingest pointless are thrown.
 actor Extractor {
     static let imageLabel = "page"
@@ -40,12 +41,21 @@ actor Extractor {
     private(set) var warnings: [String] = []
     private let system: SystemLanguageModel?
     private let cloud: PrivateCloudComputeLanguageModel?
+    private let openAI: OpenAIClient?
     private let log: @Sendable (String) -> Void
     private let progress: @Sendable (IngestEvent) -> Void
 
-    static func make(route: ModelRoute, sampleText: String, log: @escaping @Sendable (String) -> Void,
+    static func make(route: ModelRoute, openAI configuration: OpenAIConfiguration? = nil, sampleText: String, log: @escaping @Sendable (String) -> Void,
                      progress: @escaping @Sendable (IngestEvent) -> Void = { _ in }) async throws -> Extractor {
         switch route {
+        case .openAI:
+            // A large context, read in roomy chunks so a syllabus is one or two calls; the client's retries and the
+            // ingest's fallback to the device handle the network.
+            guard let configuration else { throw IngestError.remoteUnavailable("no API key") }
+            let client = OpenAIClient(configuration: configuration, log: log)
+            log("openai: model \(configuration.model), chunk budget 10000 tokens")
+            return Extractor(route: route, contextSize: 100_000, chunkBudgetTokens: 10_000, charsPerToken: 3.6, fixedOverheadTokens: 1500,
+                             outputBudgetTokens: 8_000, system: nil, cloud: nil, openAI: client, log: log, progress: progress)
         case .onDevice:
             let model = SystemLanguageModel.default
             switch model.availability {
@@ -64,7 +74,7 @@ actor Extractor {
             log("on-device: context \(model.contextSize), instructions \(instructions), schema \(schema), chunk budget \(budget) tokens, \(String(format: "%.2f", ratio)) chars/token")
             guard budget > 200 else { throw IngestError.modelUnavailable("context window too small for the extraction schema") }
             return Extractor(route: route, contextSize: model.contextSize, chunkBudgetTokens: budget, charsPerToken: ratio, fixedOverheadTokens: overhead,
-                             outputBudgetTokens: outputReserve - 64, system: model, cloud: nil, log: log, progress: progress)
+                             outputBudgetTokens: outputReserve - 64, system: model, cloud: nil, openAI: nil, log: log, progress: progress)
         case .privateCloudCompute:
             guard hasCloudEntitlement else { throw IngestError.cloudUnavailable("the app is not signed with the Private Cloud Compute entitlement") }
             let model = PrivateCloudComputeLanguageModel()
@@ -75,16 +85,16 @@ actor Extractor {
             let budget = context - 1500 - max(2000, context / 4)
             log("private cloud compute: context \(context), chunk budget \(budget) tokens")
             return Extractor(route: route, contextSize: context, chunkBudgetTokens: budget, charsPerToken: 3.5, fixedOverheadTokens: 1500,
-                             outputBudgetTokens: max(2000, context / 4) - 64, system: nil, cloud: model, log: log, progress: progress)
+                             outputBudgetTokens: max(2000, context / 4) - 64, system: nil, cloud: model, openAI: nil, log: log, progress: progress)
         }
     }
 
     private init(route: ModelRoute, contextSize: Int, chunkBudgetTokens: Int, charsPerToken: Double, fixedOverheadTokens: Int, outputBudgetTokens: Int,
-                 system: SystemLanguageModel?, cloud: PrivateCloudComputeLanguageModel?, log: @escaping @Sendable (String) -> Void,
+                 system: SystemLanguageModel?, cloud: PrivateCloudComputeLanguageModel?, openAI: OpenAIClient?, log: @escaping @Sendable (String) -> Void,
                  progress: @escaping @Sendable (IngestEvent) -> Void) {
         self.route = route; self.contextSize = contextSize; self.chunkBudgetTokens = chunkBudgetTokens
         self.charsPerToken = charsPerToken; self.fixedOverheadTokens = fixedOverheadTokens; self.outputBudgetTokens = outputBudgetTokens
-        self.system = system; self.cloud = cloud; self.log = log; self.progress = progress
+        self.system = system; self.cloud = cloud; self.openAI = openAI; self.log = log; self.progress = progress
     }
 
     /// Output tokens a chunk is likely to produce: every date in it is probably an obligation (~90 tokens each).
@@ -113,7 +123,7 @@ actor Extractor {
             if tokens + fixedOverheadTokens + expectedOutput > contextSize { return try await split("\(tokens) tokens plus ~\(expectedOutput) of output would overflow") }
         }
         do {
-            return try await respond(chunk: chunk.index, page: chunk.firstPage, kind: .text, tools: []) { Prompt(prompt) }.map { [$0] } ?? []
+            return try await respond(chunk: chunk.index, page: chunk.firstPage, kind: .text, tools: [], text: prompt, image: nil).map { [$0] } ?? []
         } catch let error where Self.isContextOverflow(error) {
             return try await split("context overflow")
         }
@@ -125,12 +135,7 @@ actor Extractor {
         for attempt in 0..<2 {
             let candidate = attempt == 0 ? image : (Self.halved(image) ?? image)
             do {
-                return try await respond(chunk: position, page: page, kind: .image, tools: ocrTools()) {
-                    Prompt {
-                        text
-                        Attachment(candidate, orientation: orientation).label(Self.imageLabel)
-                    }
-                }
+                return try await respond(chunk: position, page: page, kind: .image, tools: ocrTools(), text: text, image: (candidate, orientation))
             } catch let error where Self.isContextOverflow(error) {
                 log("image \(imageIndex) (page \(page + 1)): context overflow" + (attempt == 0 ? ", retrying at half size" : ""))
             }
@@ -155,12 +160,17 @@ actor Extractor {
     /// at the reserved budget; if the model runs out (a page of policies can do that) or the context overflows anyway,
     /// the complete items from the last snapshot are kept instead of retrying the chunk.
     /// Returns nil (with a warning) when the model declines or fails on this chunk alone.
-    private func respond(chunk: Int, page: Int, kind: ExtractionOutcome.Kind, tools: [any Tool], prompt: () -> Prompt) async throws -> ExtractionOutcome? {
+    private func respond(chunk: Int, page: Int, kind: ExtractionOutcome.Kind, tools: [any Tool], text: String,
+                         image: (CGImage, CGImagePropertyOrientation?)?) async throws -> ExtractionOutcome? {
         let options = GenerationOptions(samplingMode: .greedy, maximumResponseTokens: outputBudgetTokens)
         try Task.checkCancellation()
         let start = ContinuousClock.now
         calls += 1
         let call = calls
+        if route == .openAI { return try await respondOpenAI(chunk: chunk, page: page, kind: kind, call: call, text: text, image: image, start: start) }
+        let prompt: () -> Prompt = {
+            if let image { Prompt { text; Attachment(image.0, orientation: image.1).label(Self.imageLabel) } } else { Prompt(text) }
+        }
         var last: LanguageModelSession.ResponseStream<ChunkExtraction>.Snapshot?
         let extraction: ChunkExtraction
         let usage: LanguageModelSession.Usage
@@ -173,6 +183,8 @@ actor Extractor {
             case .privateCloudCompute:
                 let session = LanguageModelSession(model: cloud!, tools: tools, instructions: Instructions(IngestInstructions.text))
                 stream = session.streamResponse(to: prompt(), generating: ChunkExtraction.self, options: options, contextOptions: ContextOptions(reasoningLevel: .light))
+            case .openAI:
+                fatalError("handled above")
             }
             progress(.chunkStarted(index: chunk))
             var lastShown: (Int, String?) = (-1, nil)
@@ -231,6 +243,100 @@ actor Extractor {
         return ExtractionOutcome(kind: kind, page: page, extraction: extraction, usage: record)
     }
 
+    // MARK: OpenAI
+
+    /// The last rows shown for the call being streamed, so the UI is told only when a row appears or its date arrives.
+    private var lastShown: (Int, String?) = (-1, nil)
+
+    private func showPartial(_ text: String, call: Int, chunk: Int) {
+        let items = ExtractionJSON.provisional(text, call: call)
+        let shown = (items.count, items.last?.dateAsWritten)
+        if shown != lastShown {
+            progress(.partial(chunk: chunk, obligations: items))
+            lastShown = shown
+        }
+    }
+
+    /// One call to OpenAI, streamed into the same partial rows and salvaged the same way when the output budget cuts
+    /// it. A request too large is a context overflow (the chunk splits); a failure the client could not retry past
+    /// is `remoteUnavailable`, and the ingest reads the document on the device instead.
+    private func respondOpenAI(chunk: Int, page: Int, kind: ExtractionOutcome.Kind, call: Int, text: String,
+                               image: (CGImage, CGImagePropertyOrientation?)?, start: ContinuousClock.Instant) async throws -> ExtractionOutcome? {
+        guard let openAI else { throw IngestError.remoteUnavailable("no client") }
+        var images: [Data] = []
+        if let image {
+            guard let png = Self.pngData(image.0, orientation: image.1) else { warn("image (page \(page + 1)): could not be encoded; skipped"); return nil }
+            images = [png]
+        }
+        let request = OpenAIClient.Request(system: IngestInstructions.text, user: text, images: images, schemaName: "chunk_extraction",
+                                           schema: OpenAISchemas.extraction, maxOutputTokens: outputBudgetTokens)
+        progress(.chunkStarted(index: chunk))
+        lastShown = (-1, nil)
+        let completion: OpenAIClient.Completion
+        do {
+            completion = try await openAI.stream(request) { [weak self] partial in await self?.showPartial(partial, call: call, chunk: chunk) }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch OpenAIError.payloadTooLarge {
+            throw OpenAIError.payloadTooLarge   // a context overflow: the caller splits the chunk
+        } catch let error as OpenAIError {
+            throw IngestError.remoteUnavailable(error.localizedDescription)
+        }
+        let extraction: ChunkExtraction
+        if completion.finishReason == "length" {
+            guard let salvaged = ExtractionJSON.salvage(completion.text) else {
+                warn("chunk \(chunk) (page \(page + 1)): output ran out before any item completed; skipped")
+                return nil
+            }
+            warn("chunk \(chunk) (page \(page + 1)): output ran out; kept \(salvaged.obligations.count) complete item(s)")
+            extraction = salvaged
+        } else {
+            do { extraction = try ExtractionJSON.decode(completion.text) }
+            catch {
+                guard let salvaged = ExtractionJSON.salvage(completion.text) else { warn("chunk \(chunk) (page \(page + 1)): OpenAI's reply was not the expected JSON; skipped"); return nil }
+                warn("chunk \(chunk) (page \(page + 1)): OpenAI's reply was cut; kept \(salvaged.obligations.count) complete item(s)")
+                extraction = salvaged
+            }
+        }
+        let elapsed = ContinuousClock.now - start
+        let record = UsageRecord(step: kind == .text ? "text" : "image", chunk: chunk, route: .openAI, inputTokens: completion.inputTokens,
+                                 cachedTokens: completion.cachedTokens, outputTokens: completion.outputTokens, reasoningTokens: 0, durationMs: Int(elapsed / .milliseconds(1)))
+        log("chunk \(chunk) \(record.step) (openai, \(completion.attempts) attempt(s)): in \(record.inputTokens) out \(record.outputTokens) \(record.durationMs)ms, \(extraction.obligations.count) obligations")
+        progress(.chunkFinished(index: chunk, obligations: extraction.obligations.count, usage: record))
+        for o in extraction.obligations {
+            log("    raw: \(o.title) | \(o.dateAsWritten) | \(o.dueDate ?? "nil") | \(o.platform) | \(o.component ?? "-") | \(o.confidence)")
+        }
+        return ExtractionOutcome(kind: kind, page: page, extraction: extraction, usage: record)
+    }
+
+    /// The page as PNG, turned the way it is meant to be read.
+    static func pngData(_ image: CGImage, orientation: CGImagePropertyOrientation?) -> Data? {
+        let upright: CGImage
+        switch orientation {
+        case .down?, .downMirrored?, .left?, .leftMirrored?, .right?, .rightMirrored?:
+            upright = rotated(image, orientation: orientation!) ?? image
+        default:
+            upright = image
+        }
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, upright, nil)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return data as Data
+    }
+
+    private static func rotated(_ image: CGImage, orientation: CGImagePropertyOrientation) -> CGImage? {
+        let quarterTurns: Int = switch orientation { case .down, .downMirrored: 2; case .left, .leftMirrored: 1; case .right, .rightMirrored: 3; default: 0 }
+        let swap = quarterTurns % 2 == 1
+        let w = swap ? image.height : image.width, h = swap ? image.width : image.height
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.translateBy(x: CGFloat(w) / 2, y: CGFloat(h) / 2)
+        ctx.rotate(by: CGFloat(quarterTurns) * .pi / 2)
+        ctx.draw(image, in: CGRect(x: -CGFloat(image.width) / 2, y: -CGFloat(image.height) / 2, width: CGFloat(image.width), height: CGFloat(image.height)))
+        return ctx.makeImage()
+    }
+
     /// Complete items from a partial response. Lists arrive in schema order, so only the one being written when the
     /// stream stopped can end in a cut-off element (its text may end mid-word); that element is dropped.
     static func salvage(_ partial: ChunkExtraction.PartiallyGenerated) -> ChunkExtraction? {
@@ -284,6 +390,7 @@ actor Extractor {
 
     static func isContextOverflow(_ error: any Error) -> Bool {
         if case LanguageModelError.contextSizeExceeded = error { return true }
+        if case OpenAIError.payloadTooLarge = error { return true }
         return false
     }
 

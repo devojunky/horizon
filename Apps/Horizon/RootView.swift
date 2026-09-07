@@ -15,12 +15,18 @@ struct RootView: View {
     @Query private var documents: [SourceDocument]
     @State private var addingByHand = false
     @State private var addingCourse = false
+    @State private var openAISettings = false
     @State private var linked: Obligation?
     @State private var path = NavigationPath()
     @State private var editing: EditMode = .inactive   // owned here and handed to the list, so the toolbar and the rows agree
     @Environment(\.openURL) private var openURL
 
     private var live: [Obligation] { obligations.filter { $0.deletedAt == nil } }
+    /// Documents, pushed once: a second push while it is up (a link firing twice, a flag and a tap) is ignored.
+    private func openDocuments() {
+        guard path.isEmpty else { return }
+        path.append("documents")
+    }
     /// Documents that could not be read, in one line: a failure must not vanish into Documents unannounced.
     private var readFailure: String? {
         let failed = documents.filter { $0.status == .failed }
@@ -47,9 +53,16 @@ struct RootView: View {
                     .onPaper()
                 } else if let failure = readFailure {   // from the store, so it stays until the document reads or is retried
                     Section {
-                        NavigationLink(value: "documents") {
-                            Label(failure, systemImage: "exclamationmark.triangle").foregroundStyle(Design.accent)
+                        Button { openDocuments() } label: {
+                            HStack {
+                                Label(failure, systemImage: "exclamationmark.triangle").foregroundStyle(Design.accent)
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                            }
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Opens Documents")
                     }
                     .listRowSeparator(.hidden)
                     .onPaper()
@@ -78,10 +91,17 @@ struct RootView: View {
                 }
                 let unfiled = looseDocuments.filter { $0.status == .parsed && !($0.obligations ?? []).filter { $0.deletedAt == nil }.isEmpty }
                 if !unfiled.isEmpty {
-                    NavigationLink { DocumentsView() } label: {
-                        Text(unfiled.count == 1 ? "One document has no course yet" : "\(unfiled.count) documents have no course yet")
-                            .font(.system(.title3, design: .serif, weight: .semibold))
+                    Button { openDocuments() } label: {
+                        HStack {
+                            Text(unfiled.count == 1 ? "One document has no course yet" : "\(unfiled.count) documents have no course yet")
+                                .font(.system(.title3, design: .serif, weight: .semibold))
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Opens Documents")
                     .listRowSeparator(.hidden)
                     .onPaper()
                     .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 4, trailing: 20))
@@ -100,7 +120,8 @@ struct RootView: View {
                 if MainTabs.debugFlag("--open-course"), count > 0, path.isEmpty, let first = courses.first { path.append(first) }
             }
             .onAppear {
-                if MainTabs.debugFlag("--open-documents"), path.isEmpty { path.append("documents") }
+                if MainTabs.debugFlag("--open-documents") { openDocuments() }
+                if MainTabs.debugFlag("--open-openai") { openAISettings = true }
                 if MainTabs.debugFlag("--delete-first-course"), let first = courses.first { Task { await model.deleteCourse(first.id) } }   // DEBUG: the re-read flow without a tap
             }
             .navigationTitle("Coverage")
@@ -115,11 +136,14 @@ struct RootView: View {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
                         Button { Task { await model.drainAndSync() } } label: { Label("Sync with Reminders", systemImage: "arrow.triangle.2.circlepath") }
-                        NavigationLink { DocumentsView() } label: { Label("Documents", systemImage: "doc.text") }
+                        Button { openDocuments() } label: { Label("Documents", systemImage: "doc.text") }
                         Toggle(isOn: Binding(get: { model.readInCloud }, set: { model.readInCloud = $0 })) {
                             Label("Read in Private Cloud Compute", systemImage: "cloud")
                         }
                         .disabled(model.cloudUnavailableReason != nil)
+                        if FeatureFlags.openAI {
+                            Button { openAISettings = true } label: { Label(model.openAIConfiguration != nil ? "Reading with OpenAI…" : "Read with OpenAI…", systemImage: "sparkles") }
+                        }
                         Divider()
                         Button { addingByHand = true } label: { Label("Add Item…", systemImage: "square.and.pencil") }
                         Button { addingCourse = true } label: { Label("Add Course…", systemImage: "book") }
@@ -142,6 +166,7 @@ struct RootView: View {
             .onAppear { if MainTabs.debugFlag("--edit-courses") { editing = .active } }
             .sheet(isPresented: $addingByHand) { ObligationEditor(mode: .manual, courses: courses) }
             .sheet(isPresented: $addingCourse) { CourseEditor(course: nil) }
+            .sheet(isPresented: $openAISettings) { OpenAISettingsView() }
             .sheet(item: $linked) { ObligationEditor(mode: .review($0), courses: courses) }
             .onChange(of: model.linkedObligationID) { _, id in
                 guard let id else { return }   // the reset below fires this again with nil; it must not close the sheet

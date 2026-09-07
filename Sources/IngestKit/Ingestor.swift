@@ -7,8 +7,11 @@ public struct IngestOptions: Sendable {
         /// On-device first; Private Cloud Compute only when the on-device model is unavailable.
         case onDeviceFirst
         case privateCloudCompute
+        /// OpenAI with the user's key (`openAI`), falling back to the device when it cannot be used.
+        case openAI
     }
     public var route: RoutePolicy = .onDeviceFirst
+    public var openAI: OpenAIConfiguration?
     /// What is already known about the course this document belongs to (from its syllabus, or the user's hand): seeds the
     /// prompt, the grade components and the term dates, so a schedule that names none of them still resolves.
     public var knownCourse: KnownCourse?
@@ -100,7 +103,7 @@ public actor Ingestor {
         guard !document.pages.isEmpty else { throw IngestError.emptyDocument }
         let log = options.log
         var warnings: [String] = []
-        let extractor: Extractor
+        var extractor: Extractor
         switch options.route {
         case .onDeviceOnly:
             extractor = try await Extractor.make(route: .onDevice, sampleText: document.fullText, log: log, progress: options.progress)
@@ -112,15 +115,39 @@ public actor Ingestor {
                 warnings.append("On-device model unavailable (\(why)); using Private Cloud Compute")
                 extractor = try await Extractor.make(route: .privateCloudCompute, sampleText: document.fullText, log: log, progress: options.progress)
             }
+        case .openAI:
+            guard let configuration = options.openAI else { throw IngestError.remoteUnavailable("no API key") }
+            extractor = try await Extractor.make(route: .openAI, openAI: configuration, sampleText: document.fullText, log: log, progress: options.progress)
         }
 
+        var completed = false
+        defer { if !completed { options.progress(.finished(obligations: 0)) } }   // a failed or cancelled read must end in the UI too
+        var outcomes: [ExtractionOutcome]
+        do {
+            outcomes = try await run(extractor, document: document)
+        } catch IngestError.remoteUnavailable(let why) where extractor.route == .openAI {
+            // The key, the model or the network failed the whole read: the device reads it instead, and says so.
+            let note = "OpenAI could not be used (\(why)); read on device instead"
+            log(note); warnings.append(note)
+            warnings += await extractor.warnings
+            extractor = try await Extractor.make(route: .onDevice, sampleText: document.fullText, log: log, progress: options.progress)
+            outcomes = try await run(extractor, document: document)
+        }
+        warnings += await extractor.warnings
+        guard !outcomes.isEmpty else { throw IngestError.extractionFailed(warnings.joined(separator: "; ")) }
+        let result = Merger.merge(outcomes: outcomes, document: document, route: extractor.route, options: options, warnings: warnings)
+        completed = true
+        options.progress(.finished(obligations: result.obligations.count))
+        return result
+    }
+
+    /// Every chunk and image page through one extractor, in order, with the rolling context between them.
+    private func run(_ extractor: Extractor, document: NormalizedDocument) async throws -> [ExtractionOutcome] {
+        let log = options.log
         let textChunks = Chunker.chunks(pages: document.textPages, budgetTokens: extractor.chunkBudgetTokens, charsPerToken: extractor.charsPerToken)
         let images = document.imagePages
         log("\(document.info.name): \(document.pages.count) page(s) → \(textChunks.count) text chunk(s), \(images.count) image(s)")
         options.progress(.started(document: document.info.name, textChunks: textChunks.count, images: images.count))
-        var completed = false
-        defer { if !completed { options.progress(.finished(obligations: 0)) } }   // a failed or cancelled read must end in the UI too
-
         var context = RollingContext()
         if let known = options.knownCourse { context.seed(known) }
         var outcomes: [ExtractionOutcome] = []
@@ -138,11 +165,6 @@ public actor Ingestor {
                 outcomes.append(r)
             }
         }
-        warnings += await extractor.warnings
-        guard !outcomes.isEmpty else { throw IngestError.extractionFailed(warnings.joined(separator: "; ")) }
-        let result = Merger.merge(outcomes: outcomes, document: document, route: extractor.route, options: options, warnings: warnings)
-        completed = true
-        options.progress(.finished(obligations: result.obligations.count))
-        return result
+        return outcomes
     }
 }

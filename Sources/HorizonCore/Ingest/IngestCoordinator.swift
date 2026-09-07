@@ -63,8 +63,9 @@ public actor IngestCoordinator {
         storage.remove(sha256: record.sha256, extension: record.kind)
     }
 
-    /// Where the next drain reads documents: on device, or in Private Cloud Compute (a user setting).
+    /// Where the next drain reads documents: on device, in Private Cloud Compute, or through OpenAI (user settings).
     public func setRoute(_ route: IngestOptions.RoutePolicy) { options.route = route }
+    public func setOpenAI(_ configuration: OpenAIConfiguration?) { options.openAI = configuration }
 
     /// Parses every queued document, folds results into the store, then writes Reminders.
     public func drain() async -> [Report] {

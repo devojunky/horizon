@@ -1,0 +1,177 @@
+import Foundation
+
+/// What can be read from a JSON object that is still being written: every complete element of its top-level
+/// arrays and every complete top-level value, in order. The streaming route shows items as they arrive and
+/// salvages a reply cut by the output budget the same way the on-device route reads its partial snapshots.
+enum PartialJSON {
+    struct Snapshot: Equatable {
+        /// Complete elements of each top-level array, as JSON text.
+        var arrays: [String: [String]] = [:]
+        /// Complete top-level values that are not arrays, as JSON text ("null" included).
+        var values: [String: String] = [:]
+    }
+
+    static func snapshot(_ text: String) -> Snapshot {
+        let chars = Array(text.utf8)
+        var snapshot = Snapshot()
+        guard let open = chars.firstIndex(of: UInt8(ascii: "{")) else { return snapshot }
+        var i = open + 1
+        func skipSpace() { while i < chars.count, isSpace(chars[i]) { i += 1 } }
+        while true {
+            skipSpace()
+            guard i < chars.count, chars[i] == UInt8(ascii: "\"") else { return snapshot }
+            guard let keyEnd = scanString(chars, from: i) else { return snapshot }
+            let key = String(decoding: chars[(i + 1)..<(keyEnd - 1)], as: UTF8.self)
+            i = keyEnd
+            skipSpace()
+            guard i < chars.count, chars[i] == UInt8(ascii: ":") else { return snapshot }
+            i += 1
+            skipSpace()
+            guard i < chars.count else { return snapshot }
+            if chars[i] == UInt8(ascii: "[") {
+                var elements: [String] = []
+                i += 1
+                while true {
+                    skipSpace()
+                    guard i < chars.count else { snapshot.arrays[key] = elements; return snapshot }
+                    if chars[i] == UInt8(ascii: "]") { i += 1; break }
+                    guard let end = scanValue(chars, from: i) else { snapshot.arrays[key] = elements; return snapshot }
+                    elements.append(String(decoding: chars[i..<end], as: UTF8.self))
+                    i = end
+                    skipSpace()
+                    if i < chars.count, chars[i] == UInt8(ascii: ",") { i += 1 }
+                }
+                snapshot.arrays[key] = elements
+            } else {
+                guard let end = scanValue(chars, from: i) else { return snapshot }
+                snapshot.values[key] = String(decoding: chars[i..<end], as: UTF8.self)
+                i = end
+            }
+            skipSpace()
+            guard i < chars.count else { return snapshot }
+            if chars[i] == UInt8(ascii: ",") { i += 1; continue }
+            return snapshot
+        }
+    }
+
+    private static func isSpace(_ c: UInt8) -> Bool { c == 0x20 || c == 0x0A || c == 0x0D || c == 0x09 }
+
+    /// The index just past a complete JSON value starting at `start`, or nil when the text ends first.
+    static func scanValue(_ chars: [UInt8], from start: Int) -> Int? {
+        guard start < chars.count else { return nil }
+        switch chars[start] {
+        case UInt8(ascii: "\""): return scanString(chars, from: start)
+        case UInt8(ascii: "{"), UInt8(ascii: "["):
+            var depth = 0, i = start
+            while i < chars.count {
+                let c = chars[i]
+                if c == UInt8(ascii: "\"") {
+                    guard let end = scanString(chars, from: i) else { return nil }
+                    i = end; continue
+                }
+                if c == UInt8(ascii: "{") || c == UInt8(ascii: "[") { depth += 1 }
+                if c == UInt8(ascii: "}") || c == UInt8(ascii: "]") { depth -= 1; if depth == 0 { return i + 1 } }
+                i += 1
+            }
+            return nil
+        default:
+            // A number or a literal: complete once a delimiter follows it.
+            var i = start
+            while i < chars.count, !isSpace(chars[i]), chars[i] != UInt8(ascii: ","), chars[i] != UInt8(ascii: "}"), chars[i] != UInt8(ascii: "]") { i += 1 }
+            return i < chars.count ? i : nil
+        }
+    }
+
+    /// The index just past the closing quote of the string starting at `start`, or nil when it is unterminated.
+    static func scanString(_ chars: [UInt8], from start: Int) -> Int? {
+        var i = start + 1
+        while i < chars.count {
+            if chars[i] == UInt8(ascii: "\\") { i += 2; continue }
+            if chars[i] == UInt8(ascii: "\"") { return i + 1 }
+            i += 1
+        }
+        return nil
+    }
+
+    static func parse(_ json: String) -> Any? { try? JSONSerialization.jsonObject(with: Data(json.utf8), options: [.fragmentsAllowed]) }
+}
+
+/// The model's JSON, from either route's text, as the facts the merger reads. Null and absent are the same thing.
+enum ExtractionJSON {
+    /// A whole reply. Throws when it is not the object the schema describes.
+    static func decode(_ text: String) throws -> ChunkExtraction {
+        guard let object = PartialJSON.parse(text) as? [String: Any] else { throw OpenAIError.malformed("the reply is not a JSON object") }
+        return extraction(from: object)
+    }
+
+    /// What is complete in a reply cut short: the finished elements of every list, and the course if it was finished.
+    static func salvage(_ text: String) -> ChunkExtraction? {
+        let snapshot = PartialJSON.snapshot(text)
+        var object: [String: Any] = [:]
+        if let course = snapshot.values["course"], let value = PartialJSON.parse(course) { object["course"] = value }
+        for (key, elements) in snapshot.arrays { object[key] = elements.compactMap { PartialJSON.parse($0) } }
+        let result = extraction(from: object)
+        guard result.course != nil || !result.obligations.isEmpty || !result.gradeComponents.isEmpty || !result.policies.isEmpty else { return nil }
+        return result
+    }
+
+    /// The rows the UI can show while the reply streams: items whose title has arrived.
+    static func provisional(_ text: String, call: Int) -> [ProvisionalObligation] {
+        PartialJSON.snapshot(text).arrays["obligations", default: []].enumerated().compactMap { index, element in
+            guard let item = PartialJSON.parse(element) as? [String: Any], let title = item["title"] as? String, !title.isEmpty else { return nil }
+            return ProvisionalObligation(id: "\(call)-\(index)", title: title, dateAsWritten: item["dateAsWritten"] as? String, component: item["component"] as? String)
+        }
+    }
+
+    static func extraction(from object: [String: Any]) -> ChunkExtraction {
+        let course = (object["course"] as? [String: Any]).map { c in
+            CourseFacts(code: c["code"] as? String, title: c["title"] as? String, instructor: c["instructor"] as? String, term: c["term"] as? String,
+                        termStart: c["termStart"] as? String, termEnd: c["termEnd"] as? String, room: c["room"] as? String,
+                        meetings: (c["meetings"] as? [[String: Any]] ?? []).compactMap { m in
+                            (m["weekday"] as? String).map { MeetingFacts(weekday: $0, start: m["start"] as? String, end: m["end"] as? String) }
+                        })
+        }
+        let components = (object["gradeComponents"] as? [[String: Any]] ?? []).compactMap { c -> GradeComponentFacts? in
+            guard let name = c["name"] as? String else { return nil }
+            return GradeComponentFacts(name: name, weightPercent: number(c["weightPercent"]), count: integer(c["count"]),
+                                       cadence: c["cadence"] as? String ?? "other", dropLowest: integer(c["dropLowest"]), platform: c["platform"] as? String ?? "not_stated")
+        }
+        let obligations = (object["obligations"] as? [[String: Any]] ?? []).compactMap { o -> ObligationFacts? in
+            guard let title = o["title"] as? String else { return nil }
+            return ObligationFacts(title: title, platform: o["platform"] as? String ?? "not_stated", component: o["component"] as? String,
+                                   dateAsWritten: o["dateAsWritten"] as? String ?? "", dueDate: o["dueDate"] as? String, confidence: o["confidence"] as? String ?? "medium")
+        }
+        let policies = (object["policies"] as? [[String: Any]] ?? []).compactMap { p -> PolicyFacts? in
+            guard let text = p["text"] as? String else { return nil }
+            return PolicyFacts(kind: p["kind"] as? String ?? "other", text: text)
+        }
+        let noClass = (object["noClassDates"] as? [[String: Any]] ?? []).compactMap { n -> NoClassFacts? in
+            guard let written = n["dateAsWritten"] as? String else { return nil }
+            return NoClassFacts(dateAsWritten: written, startDate: n["startDate"] as? String, endDate: n["endDate"] as? String)
+        }
+        return ChunkExtraction(course: course, gradeComponents: components, obligations: obligations, policies: policies, noClassDates: noClass)
+    }
+
+    static func number(_ value: Any?) -> Double? {
+        if let d = value as? Double { return d }
+        if let i = value as? Int { return Double(i) }
+        return nil
+    }
+    static func integer(_ value: Any?) -> Int? {
+        if let i = value as? Int { return i }
+        if let d = value as? Double, d == d.rounded() { return Int(d) }
+        return nil
+    }
+}
+
+/// The plan's JSON as the draft the planner validates.
+enum PlanJSON {
+    static func decode(_ text: String) throws -> PlanDraft {
+        guard let object = PartialJSON.parse(text) as? [String: Any] else { throw OpenAIError.malformed("the plan is not a JSON object") }
+        let blocks = (object["blocks"] as? [[String: Any]] ?? []).compactMap { b -> PlanDraftBlock? in
+            guard let start = b["start"] as? String, let end = b["end"] as? String, let title = b["title"] as? String else { return nil }
+            return PlanDraftBlock(start: start, end: end, title: title, reason: b["reason"] as? String ?? "", kind: b["kind"] as? String ?? "work")
+        }
+        return PlanDraft(blocks: blocks)
+    }
+}
