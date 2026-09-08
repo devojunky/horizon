@@ -74,8 +74,10 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         # CloudKit mirroring needs a paid team: add HORIZON_CLOUDKIT here and iCloud entitlements when one exists.
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited)
-        # macOS: no provisioning profile yet, so sign ad hoc without the App Group entitlement (local store fallback).
-        "CODE_SIGN_IDENTITY[sdk=macosx*]": "-"
+        # macOS: signed with the team's development identity but without the App Group entitlement (local store fallback),
+        # so the app's identity is stable across builds and the Reminders and Calendar grants it is given persist.
+        # An ad-hoc signature changes with every build, and TCC then treats each build as a new app and denies it unasked.
+        "CODE_SIGN_IDENTITY[sdk=macosx*]": "Apple Development"
         "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": Apps/Horizon/Horizon-macOS.entitlements
         "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": $(HORIZON_IOS_ENTITLEMENTS)   # Horizon-PCC.entitlements once the PCC entitlement is granted (Local.xcconfig)
   HorizonShare:

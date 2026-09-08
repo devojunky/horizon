@@ -8,11 +8,15 @@ struct MainTabs: View {
     @State private var tab = Self.debugFlag("--tab-horizon") ? 1 : Self.debugFlag("--tab-now") ? 2 : 0
 
     var body: some View {
+        #if os(iOS)
         TabView(selection: $tab) {
             Tab("Coverage", systemImage: "eye", value: 0) { RootView() }
             Tab("Horizon", systemImage: "chart.bar.xaxis", value: 1) { HorizonStripView() }
             Tab("Now", systemImage: "sun.horizon", value: 2) { NowView() }
         }
+        #else
+        MacRootView()
+        #endif
     }
 
     static func debugFlag(_ flag: String) -> Bool {
@@ -52,6 +56,7 @@ struct HorizonStripView: View {
     @State private var scrollOffset: CGFloat = 0
     @State private var position = ScrollPosition()
     @State private var scrub: Date?
+    @State private var hover: Date?                  // macOS: the day under the pointer reads in the header without a click
     @State private var reveals: [UUID: Date] = [:]  // when each mark first appeared, so new ones fade in
     @State private var seeded = false
     @State private var animating = false
@@ -94,17 +99,18 @@ struct HorizonStripView: View {
         Binding(get: { Stop.allCases.min { abs(log(zoom(for: $0) / clampedZoom)) < abs(log(zoom(for: $1) / clampedZoom)) } ?? .semester },
                 set: { zoomTo(zoom(for: $0)) })
     }
-    /// The scrubbed period at this level, with its items.
-    private var scrubbed: Strip.Cell? {
-        guard let scrub else { return nil }
-        let period = Strip.period(containing: scrub, level: level, calendar: calendar)
+    /// The scrubbed period at this level, with its items; on the Mac the day under the pointer takes precedence in the header.
+    private var scrubbed: Strip.Cell? { cell(for: hover ?? scrub) }
+    private func cell(for day: Date?) -> Strip.Cell? {
+        guard let day else { return nil }
+        let period = Strip.period(containing: day, level: level, calendar: calendar)
         return Strip.cells(items.filter { period.contains($0.due) }, level: level, calendar: calendar).first ?? Strip.Cell(period: period, items: [], points: 0)
     }
     /// Under the strip: the scrubbed period's items, else what is coming up from today; in time order, heavier first on a tie.
     private var listed: [Obligation] {
         let byID = Dictionary(uniqueKeysWithValues: obligations.map { ($0.id, $0) })
         let chosen: [StripItem]
-        if let scrubbed { chosen = scrubbed.items } else {
+        if let clicked = cell(for: scrub) { chosen = clicked.items } else {
             let today = calendar.startOfDay(for: Date())
             chosen = items.filter { $0.due >= today && !$0.completed }
         }
@@ -112,23 +118,33 @@ struct HorizonStripView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        PageStack {
             GeometryReader { geo in
                 let fit = geo.size.width / CGFloat(days)
                 let scale = fit * clampedZoom
                 let bandHeight = max(72, min(160, geo.size.height * 0.5 / CGFloat(max(bands.count, 1))))   // few courses get tall bands
                 VStack(alignment: .leading, spacing: 16) {
+                    #if os(iOS)
                     RangeTabs(selection: stop).padding(.horizontal, 20)
-                    StripHeader(scrub: scrub, level: level, cell: scrubbed, total: items.count, collisions: collisions, calendar: calendar)
+                    #endif
+                    StripHeader(scrub: hover ?? scrub, level: level, cell: scrubbed, total: items.count, collisions: collisions, calendar: calendar)
                         .padding(.horizontal, 20)
                     ScrollView(.horizontal, showsIndicators: false) {
                         TimelineView(.animation(minimumInterval: 1 / 30, paused: !animating)) { timeline in
                             StripCanvas(items: items, bands: bands, span: span, scale: scale, level: level, previousLevel: previousLevel, collisions: collisions,
-                                        scrub: scrub, reveals: reveals, now: timeline.date, bandHeight: bandHeight, axisHeight: axisHeight, calendar: calendar)
+                                        scrub: hover ?? scrub, reveals: reveals, now: timeline.date, bandHeight: bandHeight, axisHeight: axisHeight, calendar: calendar)
                         }
                         .frame(width: CGFloat(days) * scale, height: axisHeight + bandHeight * CGFloat(max(bands.count, 1)))
                         .contentShape(Rectangle())
                         .onTapGesture { location in scrub = day(atX: location.x, scale: scale) }
+                        #if os(macOS)
+                        .onContinuousHover { phase in   // the pointer reads a week or a day; a click keeps it
+                            switch phase {
+                            case .active(let point): hover = day(atX: point.x, scale: scale)
+                            case .ended: hover = nil
+                            }
+                        }
+                        #endif
                         .gesture(LongPressGesture(minimumDuration: 0.2).sequenced(before: DragGesture(minimumDistance: 0)).onChanged { value in
                             if case .second(true, let drag?) = value { scrub = day(atX: drag.location.x, scale: scale) }
                         })
@@ -198,6 +214,17 @@ struct HorizonStripView: View {
             }
             .background(Design.paper.ignoresSafeArea())
             .navigationTitle("Horizon")
+            #if os(macOS)
+            .toolbar {
+                ToolbarItem(placement: .principal) {   // the range as a segmented control in the toolbar, where a Mac keeps a view's options
+                    Picker("Range", selection: stop) {
+                        ForEach(Stop.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .help("How much of the term is across the window")
+                }
+            }
+            #endif
             .sheet(item: $editing) { ObligationEditor(mode: .edit($0), courses: courses) }
             .onChange(of: level) { old, _ in
                 previousLevel = (old, Date())   // the old level fades out under the new one
@@ -318,7 +345,11 @@ private struct StripHeader: View {
             } else {
                 Text("Semester").font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(.secondary)
                 Text(summary).deck().lineLimit(2, reservesSpace: true)
+                #if os(macOS)
+                Text("Point at a week or a day to read it; click to keep it. Pinch to zoom.").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                #else
                 Text("Tap to read a week or a day. Pinch to zoom.").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                #endif
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

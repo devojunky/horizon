@@ -37,7 +37,7 @@ struct PlanBlockEditor: View {
         NavigationStack {
             Form {
                 Section {
-                    LabeledContent("Title") { TextField("Problem set 3", text: $title).multilineTextAlignment(.trailing) }
+                    LabeledContent("Title") { TextField("Problem set 3", text: $title).multilineTextAlignment(.trailing).promptOnly() }
                     if !candidates.isEmpty {
                         Picker("Item", selection: pickedTitle) {
                             Text("Something else").tag("")
@@ -68,14 +68,8 @@ struct PlanBlockEditor: View {
                 }
             }
             .paper()
-            .navigationTitle(block == nil ? "New Block" : "Edit Block")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { if isDirty { confirmingDiscard = true } else { dismiss() } } }
-                ToolbarItem(placement: .confirmationAction) { Button(block == nil ? "Add" : "Save") { save() }.disabled(!isValid || !isDirty) }
-            }
+            .editorChrome(title: block == nil ? "New Block" : "Edit Block", confirm: block == nil ? "Add" : "Save", disabled: !isValid || !isDirty,
+                          cancel: { if isDirty { confirmingDiscard = true } else { dismiss() } }, action: save)
             .interactiveDismissDisabled(isDirty)
             .confirmationDialog("Discard changes?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
                 Button("Discard Changes", role: .destructive) { dismiss() }
@@ -83,7 +77,7 @@ struct PlanBlockEditor: View {
             .onAppear(perform: load)
         }
         #if os(macOS)
-        .frame(minWidth: 420, minHeight: 440)
+        .frame(minWidth: 480, idealWidth: 540, maxWidth: 680, minHeight: 420, idealHeight: 540, maxHeight: 720)
         #endif
     }
 
@@ -149,14 +143,9 @@ struct PlannerNotesEditor: View {
                 }
             }
             .paper()
-            .navigationTitle("Tell the Planner")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { if isDirty { confirmingDiscard = true } else { dismiss() } } }
-                ToolbarItem(placement: .confirmationAction) { Button("Save") { model.planInstructions = text.trimmingCharacters(in: .whitespacesAndNewlines); dismiss() }.disabled(!isDirty) }
-            }
+            .editorChrome(title: "Tell the Planner", confirm: "Save", disabled: !isDirty,
+                          cancel: { if isDirty { confirmingDiscard = true } else { dismiss() } },
+                          action: { model.planInstructions = text.trimmingCharacters(in: .whitespacesAndNewlines); dismiss() })
             .interactiveDismissDisabled(isDirty)
             .confirmationDialog("Discard changes?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
                 Button("Discard Changes", role: .destructive) { dismiss() }
@@ -164,7 +153,7 @@ struct PlannerNotesEditor: View {
             .onAppear { text = model.planInstructions; focused = text.isEmpty }
         }
         #if os(macOS)
-        .frame(minWidth: 420, minHeight: 320)
+        .frame(minWidth: 480, idealWidth: 540, maxWidth: 680, minHeight: 360, idealHeight: 420, maxHeight: 600)
         #endif
     }
 }

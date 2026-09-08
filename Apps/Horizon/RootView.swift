@@ -19,6 +19,69 @@ extension EnvironmentValues {
     @Entry var openRoute: @MainActor (Route) -> Void = { _ in }
 }
 
+/// What intake has to say, above the stories: the document being read, Reminders access turned off, a document that
+/// could not be read (from the store, so it stays until the document reads or is retried), or the sync's status line.
+struct IntakeStatus: View {
+    @Environment(AppModel.self) private var model
+    @Query(filter: #Predicate<SourceDocument> { $0.deletedAt == nil }) private var documents: [SourceDocument]
+    @Environment(\.openURL) private var openURL
+    /// Opens Documents, where a failed read can be retried.
+    var openDocuments: () -> Void
+
+    /// Documents that could not be read, in one line: a failure must not vanish into Documents unannounced.
+    var readFailure: String? {
+        let failed = documents.filter { $0.status == .failed }
+        guard let first = failed.first else { return nil }
+        return failed.count == 1 ? "Could not read \(first.filename): \(first.failure ?? "") Retry it from Documents." : "\(failed.count) documents could not be read. Retry them from Documents."
+    }
+
+    var body: some View {
+        if let reading = model.reading {
+            ReadingSection(reading: reading, cancel: { model.cancelReading() })
+        } else if model.remindersAuthorized == false {
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Reminders access is off, so deadlines stay in Horizon and never reach your lists.", systemImage: "exclamationmark.triangle").foregroundStyle(Design.accent)
+                    #if os(iOS)
+                    Button("Open Settings") { if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) } }.buttonStyle(.bordered).controlSize(.small)
+                    #else
+                    Button("Open System Settings") { if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders") { openURL(url) } }.controlSize(.small)
+                    #endif
+                }
+            }
+            .listRowSeparator(.hidden)
+            .onPaper()
+        } else if let failure = readFailure {
+            Section {
+                Button(action: openDocuments) {
+                    HStack {
+                        Label(failure, systemImage: "exclamationmark.triangle").foregroundStyle(Design.accent)
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Opens Documents")
+            }
+            .listRowSeparator(.hidden)
+            .onPaper()
+        } else if let status = model.statusLine ?? model.lastError {
+            Section {
+                Label { Text(status) } icon: {
+                    if model.lastError != nil { Image(systemName: "exclamationmark.triangle") }
+                    else if model.busy { ProgressView().controlSize(.small) }   // syncing: something is happening
+                    else { Image(systemName: "arrow.triangle.2.circlepath") }
+                }
+                .foregroundStyle(model.lastError == nil ? .secondary : Design.accent)
+            }
+            .listRowSeparator(.hidden)
+            .onPaper()
+        }
+    }
+}
+
+#if os(iOS)
 /// The home screen is Coverage (SPEC §6.1). Intake status and the review queue sit above it; the strip and the day
 /// plan arrive in M4 and M5. Pulling the page down reads what is queued and syncs with Reminders.
 struct RootView: View {
@@ -34,7 +97,6 @@ struct RootView: View {
     @State private var linked: Obligation?
     @State private var path: [Route] = []
     @State private var editing: EditMode = .inactive   // owned here and handed to the list, so the toolbar and the rows agree
-    @Environment(\.openURL) private var openURL
 
     private var live: [Obligation] { obligations.filter { $0.deletedAt == nil } }
     /// What sits in Recently Deleted: courses, and documents deleted on their own.
@@ -44,57 +106,12 @@ struct RootView: View {
         guard !path.contains(route) else { return }
         path.append(route)
     }
-    /// Documents that could not be read, in one line: a failure must not vanish into Documents unannounced.
-    private var readFailure: String? {
-        let failed = documents.filter { $0.status == .failed }
-        guard let first = failed.first else { return nil }
-        return failed.count == 1 ? "Could not read \(first.filename): \(first.failure ?? "") Retry it from Documents." : "\(failed.count) documents could not be read. Retry them from Documents."
-    }
     private var pending: [Obligation] { live.filter { $0.state == .pendingReview } }
 
     var body: some View {
         NavigationStack(path: $path) {
             List {
-                if let reading = model.reading {
-                    ReadingSection(reading: reading, cancel: { model.cancelReading() })
-                } else if model.remindersAuthorized == false {
-                    Section {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Label("Reminders access is off, so deadlines stay in Horizon and never reach your lists.", systemImage: "exclamationmark.triangle").foregroundStyle(Design.accent)
-                            #if os(iOS)
-                            Button("Open Settings") { if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) } }.buttonStyle(.bordered).controlSize(.small)
-                            #endif
-                        }
-                    }
-                    .listRowSeparator(.hidden)
-                    .onPaper()
-                } else if let failure = readFailure {   // from the store, so it stays until the document reads or is retried
-                    Section {
-                        Button { open(.documents) } label: {
-                            HStack {
-                                Label(failure, systemImage: "exclamationmark.triangle").foregroundStyle(Design.accent)
-                                Spacer()
-                                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityHint("Opens Documents")
-                    }
-                    .listRowSeparator(.hidden)
-                    .onPaper()
-                } else if let status = model.statusLine ?? model.lastError {
-                    Section {
-                        Label { Text(status) } icon: {
-                            if model.lastError != nil { Image(systemName: "exclamationmark.triangle") }
-                            else if model.busy { ProgressView().controlSize(.small) }   // syncing: something is happening
-                            else { Image(systemName: "arrow.triangle.2.circlepath") }
-                        }
-                        .foregroundStyle(model.lastError == nil ? .secondary : Design.accent)
-                    }
-                    .listRowSeparator(.hidden)
-                    .onPaper()
-                }
+                IntakeStatus(openDocuments: { open(.documents) })
                 if !pending.isEmpty {
                     NavigationLink { ReviewView() } label: {
                         HStack(alignment: .firstTextBaseline) {
@@ -133,7 +150,7 @@ struct RootView: View {
             .refreshable { await model.drainAndSync() }   // the page pulled down reads the queue and syncs with Reminders
             .animation(.default, value: model.reading != nil)
             .animation(.default, value: model.statusLine)
-            .animation(.default, value: readFailure)
+            .animation(.default, value: documents.filter { $0.status == .failed }.count)
             .animation(.default, value: model.lastError)
             .animation(.default, value: courses.map(\.id))
             .animation(.default, value: binned)
@@ -167,12 +184,6 @@ struct RootView: View {
                     ToolbarItem(placement: .primaryAction) { Button("Done") { withAnimation { editing = .inactive } } }
                 } else {
                 ToolbarItem(placement: .primaryAction) { ImportMenu() }
-                #if os(macOS)
-                ToolbarItem(placement: .primaryAction) {   // no page to pull down on a Mac
-                    Button { Task { await model.drainAndSync() } } label: { Label("Sync with Reminders", systemImage: "arrow.triangle.2.circlepath") }
-                        .keyboardShortcut("r", modifiers: .command)
-                }
-                #endif
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
                         Button { open(.documents) } label: { Label("Documents", systemImage: "doc.text") }
@@ -200,6 +211,8 @@ struct RootView: View {
         }
     }
 }
+
+#endif
 
 /// The quiet way into Recently Deleted, at the foot of a list, only while something is in it.
 struct RecentlyDeletedRow: View {

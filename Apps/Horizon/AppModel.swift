@@ -146,7 +146,12 @@ final class AppModel {
     }
 
     private static let logger = Logger(subsystem: Identifiers.bundlePrefix, category: "ingest")
-    private static func log(_ message: String) { logger.notice("\(message, privacy: .public)") }
+    private static func log(_ message: String) {
+        logger.notice("\(message, privacy: .public)")
+        #if DEBUG
+        print("horizon: \(message)")   // the terminal sees what the unified log sees
+        #endif
+    }
 
     func requestReminders() async {
         do { remindersAuthorized = try await reminders.requestAccess() } catch { remindersAuthorized = false; lastError = error.localizedDescription }
@@ -169,7 +174,10 @@ final class AppModel {
             do {
                 let document = try await coordinator.enqueue(fileURL: url, courseID: courseID)
                 if document.status == .parsed { onFile.append(document.filename) }   // the same file again: nothing to read
-            } catch { lastError = error.localizedDescription }
+            } catch {
+                lastError = error.localizedDescription
+                Self.log("import failed for \(url.lastPathComponent): \(error)")
+            }
         }
         if !onFile.isEmpty {
             cancelNotice = onFile.count == 1 ? "\(onFile[0]) is already on file." : "\(onFile.count) of those documents are already on file."

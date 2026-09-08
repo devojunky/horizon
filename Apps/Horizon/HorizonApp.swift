@@ -36,6 +36,7 @@ struct HorizonApp: App {
                 .onOpenURL { url in Task { await model.open(url) } }
                 .task {
                     #if DEBUG
+                    print("horizon: launch task, arguments \(CommandLine.arguments.dropFirst().joined(separator: " "))")
                     // `--openai-key <key>` (DEBUG) stores a key and turns OpenAI on, to exercise the route and its failures without typing.
                     if let i = CommandLine.arguments.firstIndex(of: "--openai-key"), i + 1 < CommandLine.arguments.count {
                         model.openAIKey = CommandLine.arguments[i + 1]; model.useOpenAI = true
@@ -62,6 +63,15 @@ struct HorizonApp: App {
             if phase == .background { BackgroundIngest.schedule() }
             #endif
         }
+        #if os(macOS)
+        .defaultSize(width: 1240, height: 800)
+        .commands { HorizonCommands(model: model) }
+        #endif
+        #if os(macOS)
+        Settings {   // ⌘, — its own window, the way a Mac keeps its settings
+            MacSettingsView().environment(model).modelContainer(model.container).tint(Design.accent)
+        }
+        #endif
     }
 }
 

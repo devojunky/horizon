@@ -43,11 +43,11 @@ struct CourseEditor: View {
         NavigationStack {
             Form {
                 Section {
-                    LabeledContent("Name") { TextField("Calculus II", text: $title).multilineTextAlignment(.trailing) }
-                    LabeledContent("Code") { TextField("MA-UY 1124", text: $code).multilineTextAlignment(.trailing).autocorrectionDisabled() }
-                    LabeledContent("Term") { TextField("Fall 2026", text: $term).multilineTextAlignment(.trailing) }
-                    LabeledContent("Instructor") { TextField("Name", text: $instructor).multilineTextAlignment(.trailing).textContentType(.name) }
-                    LabeledContent("Room") { TextField("Rogers Hall 204", text: $room).multilineTextAlignment(.trailing) }
+                    LabeledContent("Name") { TextField("Calculus II", text: $title).multilineTextAlignment(.trailing).promptOnly() }
+                    LabeledContent("Code") { TextField("MA-UY 1124", text: $code).multilineTextAlignment(.trailing).promptOnly().autocorrectionDisabled() }
+                    LabeledContent("Term") { TextField("Fall 2026", text: $term).multilineTextAlignment(.trailing).promptOnly() }
+                    LabeledContent("Instructor") { TextField("Name", text: $instructor).multilineTextAlignment(.trailing).promptOnly().textContentType(.name) }
+                    LabeledContent("Room") { TextField("Rogers Hall 204", text: $room).multilineTextAlignment(.trailing).promptOnly() }
                 } footer: {
                     Text("The name is what Horizon shows for the course and adds to each reminder.")
                 }
@@ -82,7 +82,7 @@ struct CourseEditor: View {
                             HStack {
                                 TextField("Component", text: $component.name)
                                 TextField("Weight", value: $component.weight, format: .number.precision(.fractionLength(0...1)))
-                                    .multilineTextAlignment(.trailing).frame(width: 64).decimalKeyboard()
+                                    .multilineTextAlignment(.trailing).promptOnly().frame(width: 64).decimalKeyboard()
                                 Text("%").foregroundStyle(.secondary)
                             }
                             HStack(spacing: 12) {
@@ -94,8 +94,8 @@ struct CourseEditor: View {
                                 }
                                 .labelsHidden()
                                 Spacer(minLength: 0)
-                                LabeledContent("Count") { TextField("–", value: $component.count, format: .number).multilineTextAlignment(.trailing).frame(width: 36).decimalKeyboard() }
-                                LabeledContent("Drops") { TextField("–", value: $component.dropLowest, format: .number).multilineTextAlignment(.trailing).frame(width: 36).decimalKeyboard() }
+                                LabeledContent("Count") { TextField("–", value: $component.count, format: .number).multilineTextAlignment(.trailing).promptOnly().frame(width: 36).decimalKeyboard() }
+                                LabeledContent("Drops") { TextField("–", value: $component.dropLowest, format: .number).multilineTextAlignment(.trailing).promptOnly().frame(width: 36).decimalKeyboard() }
                             }
                             .font(.subheadline)
                             Picker("Where", selection: $component.platform) {   // the site its work lives on, for Coverage's "never read" line
@@ -121,7 +121,7 @@ struct CourseEditor: View {
                 Section {
                     ForEach($breaks) { $span in
                         VStack(alignment: .leading, spacing: 6) {
-                            TextField("Thanksgiving", text: $span.label)
+                            TextField("Thanksgiving", text: $span.label).promptOnly()
                             DatePicker("From", selection: $span.start, displayedComponents: .date)
                             DatePicker("To", selection: $span.end, in: span.start..., displayedComponents: .date)
                         }
@@ -140,14 +140,8 @@ struct CourseEditor: View {
                 }
             }
             .paper()
-            .navigationTitle(course == nil ? "New Course" : "Edit Course")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { if isDirty { confirmingDiscard = true } else { dismiss() } } }
-                ToolbarItem(placement: .confirmationAction) { Button(course == nil ? "Add" : "Save") { save() }.disabled(!named || !(isDirty || course == nil)) }
-            }
+            .editorChrome(title: course == nil ? "New Course" : "Edit Course", confirm: course == nil ? "Add" : "Save", disabled: !named || !(isDirty || course == nil),
+                          cancel: { if isDirty { confirmingDiscard = true } else { dismiss() } }, action: save)
             .interactiveDismissDisabled(isDirty)
             .confirmationDialog("Discard changes?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
                 Button("Discard Changes", role: .destructive) { dismiss() }
@@ -155,7 +149,7 @@ struct CourseEditor: View {
             .onAppear(perform: load)
         }
         #if os(macOS)
-        .frame(minWidth: 460, minHeight: 520)
+        .frame(minWidth: 520, idealWidth: 580, maxWidth: 720, minHeight: 480, idealHeight: 680, maxHeight: 740)
         #endif
     }
 

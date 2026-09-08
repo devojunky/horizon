@@ -37,7 +37,7 @@ struct ObligationEditor: View {
         NavigationStack {
             Form {
                 Section {
-                    LabeledContent("Title") { TextField("Quiz 3", text: $title).multilineTextAlignment(.trailing) }
+                    LabeledContent("Title") { TextField("Quiz 3", text: $title).multilineTextAlignment(.trailing).promptOnly() }
                     Picker("Course", selection: $courseID) {
                         Text("None").tag(UUID?.none)
                         ForEach(courses) { Text($0.displayName).tag(UUID?.some($0.id)) }
@@ -80,14 +80,8 @@ struct ObligationEditor: View {
                 }
             }
             .paper()
-            .navigationTitle(isManual ? "Add by Hand" : "Edit Item")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { if isDirty { confirmingDiscard = true } else { dismiss() } } }
-                ToolbarItem(placement: .confirmationAction) { Button("Save") { save() }.disabled(title.trimmingCharacters(in: .whitespaces).isEmpty || !isDirty) }
-            }
+            .editorChrome(title: isManual ? "Add by Hand" : "Edit Item", confirm: "Save", disabled: title.trimmingCharacters(in: .whitespaces).isEmpty || !isDirty,
+                          cancel: { if isDirty { confirmingDiscard = true } else { dismiss() } }, action: save)
             .interactiveDismissDisabled(isDirty)
             .confirmationDialog("Discard changes?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
                 Button("Discard Changes", role: .destructive) { dismiss() }
@@ -100,7 +94,7 @@ struct ObligationEditor: View {
             .onAppear(perform: load)
         }
         #if os(macOS)
-        .frame(minWidth: 420, minHeight: 480)
+        .frame(minWidth: 480, idealWidth: 540, maxWidth: 680, minHeight: 420, idealHeight: 560, maxHeight: 720)
         #endif
     }
 

@@ -24,7 +24,7 @@ struct NowView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        PageStack {
             // A ZStack, not a Group: a transition needs a container to animate the change of what is inside it
             // (modifiers on a Group attach to each branch, and the hand-over then happens in one frame).
             ZStack {
@@ -66,6 +66,7 @@ struct NowView: View {
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.4), value: stage)
             .navigationTitle("Now")
             .toolbar {
+                #if os(iOS)
                 if model.plan != nil, !model.planning {
                     ToolbarItem(placement: .primaryAction) {
                         Button("Plan Again") { if model.planEdited { confirmingReplan = true } else { Task { await model.planToday() } } }
@@ -78,6 +79,18 @@ struct NowView: View {
                     } label: { Label("More", systemImage: "ellipsis.circle") }
                     .disabled(model.planning)
                 }
+                #else
+                ToolbarItemGroup(placement: .primaryAction) {   // every one of these is also in the Plan menu
+                    Button { adding = true } label: { Label("Add Block", systemImage: "plus") }.help("Add a block to the plan")
+                    Button { telling = true } label: { Label("Tell the Planner", systemImage: "text.bubble") }.help("What the planner should respect (⌥⌘T)")
+                    Button { if model.planEdited, model.plan != nil { confirmingReplan = true } else { Task { await model.planToday() } } } label: {
+                        Label(model.plan == nil ? "Plan Today" : "Plan Again", systemImage: "sun.horizon").labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(.borderedProminent)   // the page's one prominent action, in words
+                    .disabled(model.planning)
+                    .help("Plan the rest of today (⇧⌘P)")
+                }
+                #endif
             }
             .confirmationDialog("Replace the plan you edited?", isPresented: $confirmingReplan, titleVisibility: .visible) {
                 Button("Plan Again", role: .destructive) { Task { await model.planToday() } }
@@ -133,6 +146,7 @@ private struct PlanList: View {
                         }
                         .buttonStyle(.plain)
                         .allowsHitTesting(!streaming)   // not `disabled`, which would dim the rows as they arrive
+                        .frame(maxWidth: 820, alignment: .leading)   // a measure: a wide window does not stretch a timetable
                         .id(block.id)
                         .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
                         .listRowSeparator(.hidden)
@@ -141,6 +155,12 @@ private struct PlanList: View {
                         .animation(.spring(duration: 0.5).delay(reduceMotion ? 0 : Double(index) * 0.05), value: revealed)
                         .swipeActions(edge: .trailing, allowsFullSwipe: !streaming) {
                             if !streaming { Button("Delete", systemImage: "trash", role: .destructive) { delete(block.id) } }
+                        }
+                        .contextMenu {
+                            if !streaming {
+                                Button("Edit Block…") { edit(block) }
+                                Button("Delete Block", role: .destructive) { delete(block.id) }
+                            }
                         }
                         .accessibilityHint(streaming ? "" : "Opens the editor")
                     }

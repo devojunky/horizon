@@ -67,7 +67,14 @@ extension View {
     func paper() -> some View { scrollContentBackground(.hidden).background(Design.paper.ignoresSafeArea()) }
     /// A row or a section on the paper: no cell colour of its own, hairline separators. Row modifiers only take
     /// effect on rows and sections, never on the List, so every section of a plain list on the paper carries this.
-    func onPaper() -> some View { listRowBackground(Color.clear).listRowSeparatorTint(Design.rule) }
+    /// On a Mac a list's rows are clear already, and a row background would paint over the selection highlight.
+    func onPaper() -> some View {
+        #if os(macOS)
+        listRowSeparatorTint(Design.rule)
+        #else
+        listRowBackground(Color.clear).listRowSeparatorTint(Design.rule)
+        #endif
+    }
 }
 
 /// A caps kicker over a headline or a section.

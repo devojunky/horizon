@@ -10,13 +10,15 @@ struct RecentlyDeletedView: View {
     @Environment(AppModel.self) private var model
     @Query(filter: #Predicate<Course> { $0.deletedAt != nil && $0.erasedAt == nil }, sort: \Course.deletedAt, order: .reverse) private var courses: [Course]
     @Query(filter: #Predicate<SourceDocument> { $0.deletedAt != nil }, sort: \SourceDocument.deletedAt, order: .reverse) private var deletedDocuments: [SourceDocument]
-    @State private var chosen: Entry?     // tapped: restore or erase
-    @State private var erasing: Entry?    // asked before going for good
+    @State private var chosen: BinEntry?     // tapped: restore or erase
+    @State private var erasing: BinEntry?    // asked before going for good
 
     private var documents: [SourceDocument] { deletedDocuments.filter(\.isBinned) }
 
-    /// One row of the bin.
-    struct Entry: Identifiable, Equatable {
+}
+
+/// One row of the bin: a course with what it holds, or a document on its own.
+struct BinEntry: Identifiable, Equatable {
         enum Kind: Equatable { case course, document }
         var id: UUID
         var kind: Kind
@@ -25,7 +27,7 @@ struct RecentlyDeletedView: View {
         var items: Int
         var documents: Int
 
-        init(_ course: Course) {
+    init(_ course: Course) {
             id = course.id; kind = .course; name = course.displayName; deletedAt = course.deletedAt ?? .now
             items = course.binnedObligations.count; documents = course.binnedDocuments.count
         }
@@ -46,8 +48,9 @@ struct RecentlyDeletedView: View {
             case (.document, false): return "Restoring puts it back on file with \(parts.joined(separator: " and ")). Items another document has since updated stay as they are."
             }
         }
-    }
+}
 
+extension RecentlyDeletedView {
     var body: some View {
         List {
             if courses.isEmpty, documents.isEmpty {
@@ -64,13 +67,13 @@ struct RecentlyDeletedView: View {
             }
             if !courses.isEmpty {
                 Section {
-                    ForEach(courses) { course in row(Entry(course)) }
+                    ForEach(courses) { course in row(BinEntry(course)) }
                 } header: { Kicker("Courses") }
                 .onPaper()
             }
             if !documents.isEmpty {
                 Section {
-                    ForEach(documents) { document in row(Entry(document)) }
+                    ForEach(documents) { document in row(BinEntry(document)) }
                 } header: { Kicker("Documents") }
                 .onPaper()
             }
@@ -95,11 +98,11 @@ struct RecentlyDeletedView: View {
             Text("This cannot be undone.")
         }
         .onAppear {
-            if MainTabs.debugFlag("--choose-first-deleted") { chosen = courses.first.map(Entry.init) ?? documents.first.map(Entry.init) }
+            if MainTabs.debugFlag("--choose-first-deleted") { chosen = courses.first.map(BinEntry.init) ?? documents.first.map(BinEntry.init) }
         }
     }
 
-    private func row(_ entry: Entry) -> some View {
+    private func row(_ entry: BinEntry) -> some View {
         Button { chosen = entry } label: {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -123,7 +126,7 @@ struct RecentlyDeletedView: View {
     }
 
     /// "Deleted 2 hours ago · 12 items · 2 documents"
-    private func detail(_ entry: Entry) -> String {
+    private func detail(_ entry: BinEntry) -> String {
         var parts = ["Deleted \(entry.deletedAt.formatted(.relative(presentation: .named)))"]
         if entry.items > 0 { parts.append(entry.items == 1 ? "1 item" : "\(entry.items) items") }
         if entry.documents > 0 { parts.append(entry.documents == 1 ? "1 document" : "\(entry.documents) documents") }
@@ -131,16 +134,16 @@ struct RecentlyDeletedView: View {
     }
 
     /// Days until it goes for good.
-    private func remaining(_ entry: Entry) -> String {
+    private func remaining(_ entry: BinEntry) -> String {
         let days = max(0, Int((Bin.expiry(of: entry.deletedAt).timeIntervalSinceNow / 86400).rounded(.up)))   // a full 30 right after deleting
         return days == 0 ? "Today" : days == 1 ? "1 day" : "\(days) days"
     }
 
-    private func restore(_ entry: Entry) {
+    private func restore(_ entry: BinEntry) {
         Task { entry.kind == .course ? await model.restoreCourse(entry.id) : await model.restoreDocument(entry.id) }
     }
 
-    private func erase(_ entry: Entry) {
+    private func erase(_ entry: BinEntry) {
         Task { entry.kind == .course ? await model.eraseCourse(entry.id) : await model.eraseDocument(entry.id) }
     }
 }

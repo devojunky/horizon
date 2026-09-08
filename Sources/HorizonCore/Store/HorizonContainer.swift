@@ -40,10 +40,13 @@ public struct DocumentStorage: Sendable {
 
     public init(root: URL) { self.root = root }
 
-    /// The App Group's Documents folder, or Application Support when the build has no App Group entitlement.
+    /// The App Group's Documents folder, or Application Support when the build has no App Group entitlement. macOS
+    /// hands back a group path either way but lets only an entitled app create anything there, so the folder is made
+    /// here, and the fallback taken when it cannot be (the same rule the database follows).
     public static func appGroup() -> DocumentStorage? {
         if let group = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Identifiers.appGroup) {
-            return DocumentStorage(root: group.appendingPathComponent("Documents", isDirectory: true))
+            let root = group.appendingPathComponent("Documents", isDirectory: true)
+            if (try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)) != nil { return DocumentStorage(root: root) }
         }
         return (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
             .map { DocumentStorage(root: $0.appendingPathComponent("Horizon/Documents", isDirectory: true)) }
