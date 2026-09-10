@@ -458,7 +458,7 @@ struct StoreTests {
         try "syllabus".write(to: file, atomically: true, encoding: .utf8)
         let events = EventLog()
         let coordinator = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac", progress: { p in events.append(p) }, parse: { _, options in
-            options.progress(.started(document: "x", textChunks: 1, images: 0))
+            options.progress(.started(document: "x", textChunks: 1, images: 0, resumed: 0))
             options.progress(.partial(chunk: 0, obligations: [ProvisionalObligation(id: "0-0", title: "HW 1", dateAsWritten: "Wed 9/9")]))
             options.progress(.finished(obligations: 5))
             return Fixture.calculus()
@@ -468,6 +468,35 @@ struct StoreTests {
         let seen = events.all
         #expect(seen.count == 3 && seen.allSatisfy { $0.documentID == doc.id && $0.filename == file.lastPathComponent })
         if case .partial(_, let items) = seen[1].event { #expect(items.first?.title == "HW 1") } else { Issue.record("expected a partial event") }
+    }
+
+    @Test func aReadThatStopsGoesOnFromItsCheckpoint() async throws {
+        let store = try Fixture.store()
+        let storage = DocumentStorage.temporary()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("c-\(UUID().uuidString).txt")
+        try "syllabus".write(to: file, atomically: true, encoding: .utf8)
+        // The first read finishes one part, keeps it, then is cut off (the app suspended): the document stays queued.
+        let cut = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac", parse: { _, options in
+            await options.checkpoint?(IngestCheckpoint(route: .onDevice, textChunks: 2, images: 0))
+            throw CancellationError()
+        })
+        let doc = try await cut.enqueue(fileURL: file)
+        _ = await cut.drain()
+        let paused = try await store.documents().first!
+        #expect(paused.status == .queued && paused.failure == nil)
+        let kept = try await store.checkpoint(for: doc.id).map { try IngestCheckpoint(data: $0) }
+        #expect(kept?.textChunks == 2 && kept?.route == .onDevice)
+        // The next read is handed the checkpoint, finishes, and the checkpoint goes.
+        let resumed = Resumed()
+        let goesOn = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac", parse: { _, options in
+            resumed.value = options.resume
+            return Fixture.calculus()
+        })
+        _ = await goesOn.drain()
+        #expect(resumed.value?.textChunks == 2 && resumed.value?.route == .onDevice)
+        let done = try await store.documents().first!
+        #expect(done.status == .parsed)
+        #expect(try await store.checkpoint(for: doc.id) == nil)
     }
 
     @Test func coordinatorDrainsQueuedFilesAndSkipsOtherDevicesFiles() async throws {
@@ -491,4 +520,13 @@ final class EventLog: @unchecked Sendable {
     private let lock = NSLock()
     func append(_ p: DocumentProgress) { lock.withLock { events.append(p) } }
     var all: [DocumentProgress] { lock.withLock { events } }
+}
+
+final class Resumed: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: IngestCheckpoint?
+    var value: IngestCheckpoint? {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
+    }
 }

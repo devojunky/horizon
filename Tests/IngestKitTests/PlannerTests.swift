@@ -147,4 +147,19 @@ struct PlannerTests {
         #expect(blocks.prefix(3).map(\.title) == ["Quiz 3", "Eat", "HW 4"])
         #expect(blocks[0].reason == "Due today, worth 6% of the grade." && blocks[1].kind == .meal)
     }
+
+    @Test func aCheckpointKeepsFinishedPartsForTheSameRead() throws {
+        var checkpoint = IngestCheckpoint(route: .onDevice, textChunks: 3, images: 1)
+        #expect(!checkpoint.applies(route: .onDevice, textChunks: 3, images: 1))   // nothing finished yet: nothing to resume
+        let facts = ChunkExtraction(course: nil, gradeComponents: [], obligations: [ObligationFacts(title: "HW 1", platform: "not_stated", component: nil, dateAsWritten: "Wed 9/9", dueDate: "2026-09-09", confidence: "high")], policies: [], noClassDates: [])
+        let usage = UsageRecord(step: "text", chunk: 0, route: .onDevice, inputTokens: 10, cachedTokens: 0, outputTokens: 5, reasoningTokens: 0, durationMs: 100)
+        checkpoint.record(index: 0, outcomes: [ExtractionOutcome(kind: .text, page: 0, extraction: facts, usage: usage)])
+        checkpoint.record(index: 1, outcomes: [])                                   // a part the model had nothing for is finished too
+        #expect(checkpoint.finishedParts == 2 && checkpoint.totalParts == 4)
+        #expect(checkpoint.applies(route: .onDevice, textChunks: 3, images: 1))
+        #expect(!checkpoint.applies(route: .openAI, textChunks: 3, images: 1))     // another route chunks differently
+        #expect(!checkpoint.applies(route: .onDevice, textChunks: 4, images: 1))   // so does another build
+        let round = try IngestCheckpoint(data: checkpoint.encoded())
+        #expect(round == checkpoint && round.entry(at: 0)?.outcomes.first?.extraction.obligations.first?.title == "HW 1" && round.entry(at: 1)?.outcomes.isEmpty == true && round.entry(at: 2) == nil)
+    }
 }

@@ -91,6 +91,10 @@ public actor IngestCoordinator {
             if let courseID = doc.courseID, let known = try? await store.knownCourse(for: courseID) { perDocument.knownCourse = known }   // filed under a course: read it as that course's
             let sink = progress, id = doc.id, name = doc.filename
             perDocument.progress = { event in sink(DocumentProgress(documentID: id, filename: name, event: event)) }
+            // A read that stopped earlier goes on from its checkpoint; every finished part is kept as it comes.
+            if let data = try? await store.checkpoint(for: doc.id), let checkpoint = try? IngestCheckpoint(data: data) { perDocument.resume = checkpoint }
+            let keeper = store
+            perDocument.checkpoint = { checkpoint in if let data = try? checkpoint.encoded() { try? await keeper.saveCheckpoint(id: id, data: data) } }
             do {
                 let result = try await parse(url, perDocument)
                 let summary = try await store.ingest(result, documentID: doc.id)
@@ -103,7 +107,7 @@ public actor IngestCoordinator {
                 try? await store.markDocument(id: doc.id, status: .awaitingCloudParse, failure: why)
                 reports.append(Report(document: doc, summary: nil, failure: "Queued for Private Cloud Compute: \(why)"))
             } catch is CancellationError {
-                try? await store.markDocument(id: doc.id, status: .queued, failure: nil)   // background time ran out mid-document; read it again next time
+                try? await store.markDocument(id: doc.id, status: .queued, failure: nil)   // paused: the checkpoint holds the parts read so far; it goes on next time
                 break
             } catch {
                 let failure = Self.explain(error, kind: doc.kind)

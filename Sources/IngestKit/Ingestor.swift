@@ -25,6 +25,10 @@ public struct IngestOptions: Sendable {
     public var log: @Sendable (String) -> Void = { _ in }
     /// Receives progress as the document is read, including partial obligations while the model streams.
     public var progress: @Sendable (IngestEvent) -> Void = { _ in }
+    /// Where an earlier read of this document stopped: its finished parts are reused, the rest read.
+    public var resume: IngestCheckpoint?
+    /// Told where the read stands after every finished part, so the caller can keep it for a read that stops.
+    public var checkpoint: (@Sendable (IngestCheckpoint) async -> Void)?
 
     public init() {}
 }
@@ -147,24 +151,45 @@ public actor Ingestor {
         let textChunks = Chunker.chunks(pages: document.textPages, budgetTokens: extractor.chunkBudgetTokens, charsPerToken: extractor.charsPerToken)
         let images = document.imagePages
         log("\(document.info.name): \(document.pages.count) page(s) → \(textChunks.count) text chunk(s), \(images.count) image(s)")
-        options.progress(.started(document: document.info.name, textChunks: textChunks.count, images: images.count))
+        // A read that stopped earlier: its finished parts stand, if the chunking is the same; otherwise it starts afresh.
+        let resume = options.resume.flatMap { $0.applies(route: extractor.route, textChunks: textChunks.count, images: images.count) ? $0 : nil }
+        if options.resume != nil, resume == nil { log("checkpoint set aside: the read is chunked or routed differently now") }
+        if let resume { log("resuming: \(resume.finishedParts) of \(resume.totalParts) part(s) from the checkpoint") }
+        var checkpoint = IngestCheckpoint(route: extractor.route, textChunks: textChunks.count, images: images.count)
+        options.progress(.started(document: document.info.name, textChunks: textChunks.count, images: images.count, resumed: resume?.finishedParts ?? 0))
         var context = RollingContext()
         if let known = options.knownCourse { context.seed(known) }
         var outcomes: [ExtractionOutcome] = []
-        for chunk in textChunks {
+        // Every part in turn: a part the checkpoint holds shows up as it did then, without the wait; the rest is read,
+        // and the checkpoint grows by one part each time, so a read that stops loses at most the part under way.
+        for position in 0 ..< (textChunks.count + images.count) {
             try Task.checkCancellation()
-            let results = try await extractor.extract(chunk, context: context, document: document.info.name, chunkCount: textChunks.count)
+            let results: [ExtractionOutcome]
+            if let kept = resume?.entry(at: position) {
+                results = kept.outcomes
+                Self.replay(position, results, route: extractor.route, to: options.progress)
+            } else if position < textChunks.count {
+                results = try await extractor.extract(textChunks[position], context: context, document: document.info.name, chunkCount: textChunks.count)
+            } else {
+                let i = position - textChunks.count, image = images[i]
+                results = try await extractor.extract(image: image.image, orientation: image.orientation, page: image.page, imageIndex: i, imageCount: images.count,
+                                                      position: position, context: context, document: document.info.name).map { [$0] } ?? []
+            }
             for r in results { context.absorb(r.extraction) }
             outcomes += results
-        }
-        for (i, image) in images.enumerated() {
-            try Task.checkCancellation()
-            if let r = try await extractor.extract(image: image.image, orientation: image.orientation, page: image.page, imageIndex: i, imageCount: images.count,
-                                                   position: textChunks.count + i, context: context, document: document.info.name) {
-                context.absorb(r.extraction)
-                outcomes.append(r)
-            }
+            checkpoint.record(index: position, outcomes: results)
+            if resume?.entry(at: position) == nil, let keep = options.checkpoint { await keep(checkpoint) }
         }
         return outcomes
+    }
+
+    /// A kept part's events, as the model would have sent them, so the reading bar and the provisional list show it.
+    private static func replay(_ index: Int, _ results: [ExtractionOutcome], route: ModelRoute, to progress: @Sendable (IngestEvent) -> Void) {
+        progress(.chunkStarted(index: index))
+        let items = results.enumerated().flatMap { n, r in r.extraction.obligations.enumerated().map { i, o in
+            ProvisionalObligation(id: "kept-\(index)-\(n)-\(i)", title: o.title, dateAsWritten: o.dateAsWritten, component: o.component) } }
+        if !items.isEmpty { progress(.partial(chunk: index, obligations: items)) }
+        let usage = results.last?.usage ?? UsageRecord(step: "kept", chunk: index, route: route, inputTokens: 0, outputTokens: 0, durationMs: 0)
+        progress(.chunkFinished(index: index, obligations: results.reduce(0) { $0 + $1.extraction.obligations.count }, usage: usage))
     }
 }

@@ -301,7 +301,9 @@ struct ReadingSection: View {
 
     private var progressLine: String {
         let total = reading.chunks + reading.images
-        let part = total > 1 ? "part \(min(max(reading.chunk, 1), total)) of \(total) · " : ""
+        let n = min(max(reading.chunk, 1), total)
+        let pickedUp = reading.resumed > 0 && n == reading.resumed + 1   // a read that stopped goes on from its checkpoint
+        let part = total > 1 ? (pickedUp ? "picking up at part \(n) of \(total) · " : "part \(n) of \(total) · ") : ""
         return part + "\(reading.items.count) found so far"
     }
 }

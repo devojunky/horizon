@@ -60,6 +60,9 @@ struct DocumentsView: View {
     }
 
     private func status(_ doc: SourceDocument) -> String {
-        switch doc.status { case .queued: "Queued"; case .parsed: "Parsed"; case .failed: "Failed"; case .awaitingCloudParse: "Waiting for Private Cloud Compute"; case .cancelled: "Cancelled" }
+        switch doc.status {
+        case .queued: doc.readSoFar.map { "Queued · \($0.finished) of \($0.total) parts read" } ?? "Queued"   // paused mid-read: it goes on from there
+        case .parsed: "Parsed"; case .failed: "Failed"; case .awaitingCloudParse: "Waiting for Private Cloud Compute"; case .cancelled: "Cancelled"
+        }
     }
 }

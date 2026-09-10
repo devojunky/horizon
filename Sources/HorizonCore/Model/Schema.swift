@@ -114,6 +114,9 @@ public enum HorizonSchemaV1: VersionedSchema {
         /// Soft delete: the document sits in Recently Deleted, its file kept, restorable for `Bin.age`; shared again
         /// meanwhile, it is read afresh.
         public var deletedAt: Date?
+        /// Where a read that stopped stands (`IngestCheckpoint`, encoded): the next read goes on from there. Cleared
+        /// when the document is read to the end, or shared again from the bin.
+        public var checkpoint: Data?
         public var course: Course?
         @Relationship(deleteRule: .nullify, inverse: \Obligation.sourceDocument) public var obligations: [Obligation]?
 
@@ -142,4 +145,12 @@ public typealias Policy = HorizonSchemaV1.Policy
 public enum HorizonMigrationPlan: SchemaMigrationPlan {
     public static var schemas: [any VersionedSchema.Type] { [HorizonSchemaV1.self] }
     public static var stages: [MigrationStage] { [] }
+}
+
+public extension SourceDocument {
+    /// How far a read that stopped got, from its checkpoint: parts finished, of the whole. Nil when nothing is kept.
+    var readSoFar: (finished: Int, total: Int)? {
+        guard let checkpoint, let kept = try? IngestCheckpoint(data: checkpoint), kept.finishedParts > 0 else { return nil }
+        return (kept.finishedParts, kept.totalParts)
+    }
 }

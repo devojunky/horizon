@@ -68,6 +68,8 @@ final class AppModel {
         var chunk = 0
         var chunks = 0
         var images = 0
+        /// Parts an earlier read of the document finished, taken from its checkpoint: the bar starts past them.
+        var resumed = 0
         var found: [ProvisionalObligation] = []      // finished chunks
         var current: [ProvisionalObligation] = []    // the chunk being written now
         var items: [ProvisionalObligation] { found + current }
@@ -105,6 +107,13 @@ final class AppModel {
     private var drainTask: Task<Void, Never>?
     private var cancelledDocument: UUID?
     private var cancelNotice: String?   // shown until the next document is read
+    #if os(iOS)
+    /// iOS keeps the app running for a while after the user leaves, as long as it asks: every drain asks, so a read
+    /// under way goes on in the background. When that time runs out the read is paused, not cancelled: the checkpoint
+    /// keeps every part read so far, and the read goes on the moment the app is back, or in a background task.
+    private var backgroundTime: UIBackgroundTaskIdentifier = .invalid
+    private var paused = false   // background time ran out mid-read; nothing restarts until the app is active again
+    #endif
 
     static let deviceName: String = {
         #if canImport(UIKit)
@@ -145,8 +154,8 @@ final class AppModel {
 
     private func apply(_ p: DocumentProgress) {
         switch p.event {
-        case .started(_, let chunks, let images):
-            withAnimation { reading = Reading(documentID: p.documentID, filename: p.filename, chunks: chunks, images: images) }   // the user's name for it, not the stored hash
+        case .started(_, let chunks, let images, let resumed):
+            withAnimation { reading = Reading(documentID: p.documentID, filename: p.filename, chunks: chunks, images: images, resumed: resumed) }   // the user's name for it, not the stored hash
         case .chunkStarted(let index):
             guard var r = reading else { return }   // copy, mutate, write back: no overlapping access to `reading`
             r.chunk = index + 1; r.current = []; r.advance(to: Double(index) / r.total)
@@ -171,6 +180,49 @@ final class AppModel {
         print("horizon: \(message)")   // the terminal sees what the unified log sees
         #endif
     }
+
+    /// The scene is in front again: a plan from another day goes, and whatever is queued (a read paused when the app
+    /// left, a document shared meanwhile) is read.
+    func appBecameActive() {
+        expirePlanIfStale()
+        #if os(iOS)
+        paused = false
+        Task { await syncActivity() }   // an activity cannot start before the app is visible: the launch's try may have failed
+        #endif
+        Task { await drainAndSync() }
+    }
+
+    #if os(iOS)
+    /// The user left: a read under way goes on under the background time asked for in `drainAndSync`; a processing
+    /// task is booked for whatever is left, with the network when the reading happens in the cloud.
+    func appEnteredBackground() {
+        if reading != nil {
+            let left = UIApplication.shared.backgroundTimeRemaining   // effectively infinite until iOS starts the clock: never an Int
+            Self.log("background: reading goes on while iOS allows" + (left < 3600 ? " (\(Int(left)) s)" : ""))
+        }
+        BackgroundIngest.schedule(needsNetwork: readingRoute != .onDevice)
+    }
+
+    private func holdBackgroundTime() {
+        guard backgroundTime == .invalid else { return }
+        backgroundTime = UIApplication.shared.beginBackgroundTask(withName: "Reading documents") { [weak self] in self?.backgroundTimeExpired() }
+    }
+
+    private func releaseBackgroundTime() {
+        guard backgroundTime != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTime)
+        backgroundTime = .invalid
+    }
+
+    /// Pauses the read: the document stays queued with its checkpoint, and the drain stops until the app is back.
+    private func backgroundTimeExpired() {
+        Self.log("background time ran out: the read is paused; it goes on when the app is back, or in a background task")
+        paused = true
+        drainTask?.cancel()
+        BackgroundIngest.schedule(needsNetwork: readingRoute != .onDevice)
+        releaseBackgroundTime()
+    }
+    #endif
 
     func requestReminders() async {
         do { remindersAuthorized = try await reminders.requestAccess() } catch { remindersAuthorized = false; lastError = error.localizedDescription }
@@ -219,11 +271,18 @@ final class AppModel {
         defer { busy = false }
         repeat {
             rerun = false
-            let task = Task { await self.drainOnce() }   // held so that Cancel can reach the read in progress
+            #if os(iOS)
+            holdBackgroundTime()
+            #endif
+            let task = Task { await self.drainOnce() }   // held so that Cancel, or the end of background time, can reach the read in progress
             drainTask = task
-            await task.value
+            await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }   // a background task expiring stops the read the same way
             drainTask = nil
-        } while rerun
+            #if os(iOS)
+            releaseBackgroundTime()
+            if paused { return }
+            #endif
+        } while rerun && !Task.isCancelled
     }
 
     /// Stops the document being read. It is marked cancelled (Documents offers Retry) and whatever else is queued
@@ -234,10 +293,10 @@ final class AppModel {
     }
 
     private func drainOnce() async {
-        Self.log("drain: reminders \(remindersAuthorized.map { "\($0)" } ?? "unknown")")
         if remindersAuthorized == nil { await requestReminders() }
         let cloud = readInCloud && cloudUnavailableReason == nil   // the setting only counts where the cloud can be used
         let openAI = openAIConfiguration
+        Self.log("drain: reminders \(remindersAuthorized.map { "\($0)" } ?? "unknown"), route \(openAI.map { "openAI (\($0.model), key of \($0.apiKey.count) chars)" } ?? (cloud ? "privateCloudCompute" : "onDevice"))")
         withAnimation { statusLine = openAI != nil ? "Reading documents with OpenAI…" : cloud ? "Reading documents in Private Cloud Compute…" : "Reading documents…" }
         await coordinator.setOpenAI(openAI)
         await coordinator.setRoute(openAI != nil ? .openAI : cloud ? .privateCloudCompute : .onDeviceFirst)
@@ -249,6 +308,10 @@ final class AppModel {
             cancelNotice = "Reading cancelled. Retry it from Documents."
             withAnimation { statusLine = cancelNotice }
             rerun = true   // finish the rest (and the Reminders sync) in a task that is not cancelled
+            return
+        }
+        if Task.isCancelled {   // background time ran out: the checkpoint keeps what was read; the rest waits for the app, or a background task
+            withAnimation { statusLine = "Reading paused. It goes on when Horizon is back." }
             return
         }
         if !reports.isEmpty { self.reports = reports + self.reports.prefix(20); cancelNotice = nil }   // failed reads stay visible from the store (RootView)

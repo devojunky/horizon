@@ -30,6 +30,7 @@ public actor HorizonStore {
         document.course = course
         document.status = .parsed
         document.failure = nil
+        document.checkpoint = nil   // read to the end
         document.ingestedAt = Date()
         document.pageCount = result.document.pageCount
         document.route = result.route.rawValue
@@ -155,6 +156,7 @@ public actor HorizonStore {
         document.deletedAt = nil
         document.status = .queued
         document.failure = nil
+        document.checkpoint = nil
         for item in document.obligations ?? [] where item.deletedAt != nil { item.retiredWithSource = true }
     }
 
@@ -435,6 +437,16 @@ public actor HorizonStore {
     public func markDocument(id: UUID, status: DocumentStatus, failure: String? = nil) throws {
         guard let doc = try fetchDocument(id: id) else { return }
         doc.status = status; doc.failure = failure
+        try modelContext.save()
+    }
+
+    /// Where a read of the document stopped, if one did.
+    public func checkpoint(for id: UUID) throws -> Data? { try fetchDocument(id: id)?.checkpoint }
+
+    /// Keeps where a read stands, part by part, so a read that stops goes on from there.
+    public func saveCheckpoint(id: UUID, data: Data?) throws {
+        guard let doc = try fetchDocument(id: id) else { return }
+        doc.checkpoint = data
         try modelContext.save()
     }
 

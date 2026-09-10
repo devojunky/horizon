@@ -294,7 +294,10 @@ struct DocumentsTable: View {
 
 extension SourceDocument {
     var statusLabel: String {
-        switch status { case .queued: "Queued"; case .parsed: "Read"; case .failed: "Failed"; case .awaitingCloudParse: "Waiting for the cloud"; case .cancelled: "Cancelled" }
+        switch status {
+        case .queued: readSoFar.map { "Queued · \($0.finished) of \($0.total) parts read" } ?? "Queued"   // paused mid-read: it goes on from there
+        case .parsed: "Read"; case .failed: "Failed"; case .awaitingCloudParse: "Waiting for the cloud"; case .cancelled: "Cancelled"
+        }
     }
 }
 

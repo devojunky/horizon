@@ -15,8 +15,8 @@ func ocrTools() -> [any Tool] {
     #endif
 }
 
-struct ExtractionOutcome: Sendable {
-    enum Kind: Sendable { case text, image }
+struct ExtractionOutcome: Sendable, Codable, Equatable {
+    enum Kind: String, Sendable, Codable { case text, image }
     var kind: Kind
     /// 0-based page of the source document the chunk came from (first page for a multi-page chunk).
     var page: Int
@@ -219,7 +219,9 @@ actor Extractor {
         } catch let error as PrivateCloudComputeLanguageModel.Error {
             throw IngestError.cloudUnavailable(error.localizedDescription)
         } catch LanguageModelError.rateLimited(let info) {
-            throw IngestError.cloudUnavailable("rate limited until \(info.resetDate.map { "\($0)" } ?? "later")")
+            let until = "rate limited until \(info.resetDate.map { "\($0)" } ?? "later")"
+            if route == .onDevice { throw IngestError.modelNotReady(until) }   // the device model holds back apps in the background: the document waits, its checkpoint kept
+            throw IngestError.cloudUnavailable(until)
         } catch {
             if route == .privateCloudCompute, !Self.isSafetyStop(error) {   // the cloud refused the request: wait for it rather than fail the document
                 throw IngestError.cloudUnavailable("\(error.localizedDescription)" + (Self.hasCloudEntitlement ? "" : "; the app is not signed with the Private Cloud Compute entitlement"))

@@ -3,7 +3,8 @@ import Foundation
 /// Progress of one ingest, in the order it happens. Partial items are the model's raw words as they stream in;
 /// they become real obligations only after `Merger` runs its guards at the end.
 public enum IngestEvent: Sendable, Equatable {
-    case started(document: String, textChunks: Int, images: Int)
+    /// `resumed`: parts already finished by an earlier read of the document, reused from its checkpoint.
+    case started(document: String, textChunks: Int, images: Int, resumed: Int = 0)
     case chunkStarted(index: Int)
     /// Everything the model has said so far for this chunk. Replaces the previous partial for the same chunk.
     case partial(chunk: Int, obligations: [ProvisionalObligation])

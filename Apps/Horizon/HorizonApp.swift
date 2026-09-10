@@ -20,6 +20,14 @@ struct HorizonApp: App {
             container = try! HorizonContainer.inMemory()
         }
         let model = AppModel(container: container)
+        #if DEBUG
+        // `--openai-key <key>` stores a key and turns OpenAI on, to exercise the route and its failures without typing;
+        // `--read-on-device` turns it off again. Set here, before the first drain can read the route.
+        if let i = CommandLine.arguments.firstIndex(of: "--openai-key"), i + 1 < CommandLine.arguments.count {
+            model.openAIKey = CommandLine.arguments[i + 1]; model.useOpenAI = true
+        }
+        if CommandLine.arguments.contains("--read-on-device") { model.readingRoute = .onDevice }
+        #endif
         _model = State(initialValue: model)
         Design.installAppearance()
         #if os(iOS)
@@ -37,10 +45,6 @@ struct HorizonApp: App {
                 .task {
                     #if DEBUG
                     print("horizon: launch task, arguments \(CommandLine.arguments.dropFirst().joined(separator: " "))")
-                    // `--openai-key <key>` (DEBUG) stores a key and turns OpenAI on, to exercise the route and its failures without typing.
-                    if let i = CommandLine.arguments.firstIndex(of: "--openai-key"), i + 1 < CommandLine.arguments.count {
-                        model.openAIKey = CommandLine.arguments[i + 1]; model.useOpenAI = true
-                    }
                     // `xcrun simctl launch booted com.daniel.horizon --ingest-sample` drives the sample read without a tap.
                     if CommandLine.arguments.contains("--ingest-sample"), let sample = Bundle.main.url(forResource: "sample-syllabus", withExtension: "pdf") {
                         await model.importFiles([sample]); return
@@ -58,9 +62,9 @@ struct HorizonApp: App {
                 #endif
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { model.expirePlanIfStale(); Task { await model.drainAndSync() } }
+            if phase == .active { model.appBecameActive() }
             #if os(iOS)
-            if phase == .background { BackgroundIngest.schedule() }
+            if phase == .background { model.appEnteredBackground() }
             #endif
         }
         #if os(macOS)
@@ -76,7 +80,8 @@ struct HorizonApp: App {
 }
 
 #if os(iOS)
-/// Drains the inbox when iOS gives the app background time, so a document shared at night is in Reminders by morning.
+/// Drains the inbox when iOS gives the app background time, so a document shared at night is in Reminders by morning,
+/// and a read paused when the user left goes on from its checkpoint.
 enum BackgroundIngest {
     @MainActor static func register(model: AppModel) {
         BGTaskScheduler.shared.register(forTaskWithIdentifier: Identifiers.backgroundIngestTask, using: nil) { task in
@@ -85,15 +90,17 @@ enum BackgroundIngest {
                 task.setTaskCompleted(success: !Task.isCancelled)
             }
             task.expirationHandler = {
-                work.cancel()   // the drain checks cancellation between documents; the rest stays queued
+                work.cancel()   // reaches the read under way: the part being read is lost, the checkpoint keeps the rest, the document stays queued
                 task.setTaskCompleted(success: false)
             }
         }
     }
 
-    static func schedule() {
+    /// `needsNetwork`: a read in the cloud is only worth starting with the network there (without it OpenAI would fall
+    /// back to the device, unasked, in the background).
+    static func schedule(needsNetwork: Bool) {
         let request = BGProcessingTaskRequest(identifier: Identifiers.backgroundIngestTask)
-        request.requiresNetworkConnectivity = false
+        request.requiresNetworkConnectivity = needsNetwork
         request.requiresExternalPower = false
         BGTaskScheduler.shared.submitTaskRequest(request) { error in   // submission is asynchronous now; a refusal is worth a log line
             if let error { Logger(subsystem: Identifiers.bundlePrefix, category: "ingest").error("background ingest not scheduled: \(error.localizedDescription, privacy: .public)") }

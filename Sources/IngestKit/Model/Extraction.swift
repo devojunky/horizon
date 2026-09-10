@@ -96,3 +96,13 @@ struct NoClassFacts {
     @Guide(description: "YYYY-MM-DD, same as startDate for one day")
     var endDate: String?
 }
+
+
+// A finished chunk's facts are kept as a checkpoint (`IngestCheckpoint`) so a read that stops can go on from there.
+extension ChunkExtraction: Codable, Equatable {}
+extension CourseFacts: Codable, Equatable {}
+extension MeetingFacts: Codable, Equatable {}
+extension GradeComponentFacts: Codable, Equatable {}
+extension ObligationFacts: Codable, Equatable {}
+extension PolicyFacts: Codable, Equatable {}
+extension NoClassFacts: Codable, Equatable {}

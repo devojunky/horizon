@@ -110,10 +110,11 @@ public actor OpenAIClient {
         public init() {}
     }
 
-    /// Sixty seconds between bytes, fifteen minutes for the whole exchange; connectivity is our retries' business.
+    /// Five minutes between bytes (a reasoning model says nothing while it thinks, and a long document can take it
+    /// past a minute), fifteen for the whole exchange; connectivity is our retries' business.
     static let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 60
+        configuration.timeoutIntervalForRequest = 300
         configuration.timeoutIntervalForResource = 900
         configuration.waitsForConnectivity = false
         return URLSession(configuration: configuration)
@@ -163,7 +164,7 @@ public actor OpenAIClient {
         request.timeoutInterval = 30
         let (http, body): (HTTPURLResponse, AsyncThrowingStream<String, any Error>)
         do { (http, body) = try await transport.send(request) } catch { throw Self.mapTransport(error) }
-        guard (200..<300).contains(http.statusCode) else { throw try await Self.failure(http, body, model: configuration.model) }
+        guard (200..<300).contains(http.statusCode) else { throw try await Self.failure(http, body, model: configuration.model, log: log) }
         return "\(configuration.model) is available"
     }
 
@@ -172,7 +173,7 @@ public actor OpenAIClient {
     private func attemptOnce(_ urlRequest: URLRequest, onText: @Sendable (String) async -> Void) async throws -> Completion {
         let (http, body): (HTTPURLResponse, AsyncThrowingStream<String, any Error>)
         do { (http, body) = try await transport.send(urlRequest) } catch { throw Self.mapTransport(error) }
-        guard (200..<300).contains(http.statusCode) else { throw try await Self.failure(http, body, model: configuration.model) }
+        guard (200..<300).contains(http.statusCode) else { throw try await Self.failure(http, body, model: configuration.model, log: log) }
         var text = "", finish: String?, sawDone = false
         var input = 0, cached = 0, output = 0
         do {
@@ -254,7 +255,7 @@ public actor OpenAIClient {
     }
 
     /// The error behind a non-2xx head, with the message OpenAI put in the body (read up to a limit).
-    static func failure(_ http: HTTPURLResponse, _ body: AsyncThrowingStream<String, any Error>, model: String) async throws -> OpenAIError {
+    static func failure(_ http: HTTPURLResponse, _ body: AsyncThrowingStream<String, any Error>, model: String, log: @Sendable (String) -> Void = { _ in }) async throws -> OpenAIError {
         var text = ""
         do {
             for try await line in body {
@@ -264,6 +265,8 @@ public actor OpenAIClient {
         } catch { /* the message is a courtesy */ }
         let message = ((try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any]).flatMap { ($0["error"] as? [String: Any])?["message"] as? String }
             ?? String(text.prefix(300))
+        let masked = message.replacingOccurrences(of: #"sk-[A-Za-z0-9_*-]+"#, with: "sk-…", options: .regularExpression)   // a rejected key is quoted back, in part
+        log("openai: HTTP \(http.statusCode): \(masked.prefix(300))")   // the reason, where the classed error keeps only the class
         if http.statusCode == 429 {
             let after = (http.value(forHTTPHeaderField: "Retry-After")).flatMap(Double.init)
             return .rateLimited(retryAfter: after)
