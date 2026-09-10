@@ -4,6 +4,7 @@ import HorizonCore
 
 /// The app's screens (SPEC §6): Coverage, the Horizon strip, and Now.
 struct MainTabs: View {
+    @Environment(AppModel.self) private var model
     /// `--tab-horizon` / `--tab-now` (DEBUG) open on a tab, for screenshots from the command line.
     @State private var tab = Self.debugFlag("--tab-horizon") ? 1 : Self.debugFlag("--tab-now") ? 2 : 0
 
@@ -13,6 +14,9 @@ struct MainTabs: View {
             Tab("Coverage", systemImage: "eye", value: 0) { RootView() }
             Tab("Horizon", systemImage: "chart.bar.xaxis", value: 1) { HorizonStripView() }
             Tab("Now", systemImage: "sun.horizon", value: 2) { NowView() }
+        }
+        .onChange(of: model.openNowRequested) { _, wanted in   // a tap on the plan's Live Activity
+            if wanted { tab = 2; model.openNowRequested = false }
         }
         #else
         MacRootView()

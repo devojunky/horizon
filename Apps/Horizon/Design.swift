@@ -21,7 +21,9 @@ enum Design {
 
     static func points(_ value: Double?) -> Text {
         guard let value else { return Text("") }
-        return Text(value, format: .number.precision(.fractionLength(0...1))).monospacedDigit() + Text("%").foregroundStyle(quiet)
+        let figure = Text(value, format: .number.precision(.fractionLength(0...1))).monospacedDigit()
+        let sign = Text("%").foregroundStyle(quiet)
+        return Text("\(figure)\(sign)")
     }
 
     static func due(_ date: Date?, hasTime: Bool) -> String {
@@ -42,8 +44,8 @@ enum Design {
         #endif
     }
 
-    /// The masthead: serif titles in every navigation bar (iOS). Called once at launch.
-    static func installAppearance() {
+    /// The masthead: serif titles in every navigation bar (iOS). Called once at launch, on the main actor like every appearance proxy.
+    @MainActor static func installAppearance() {
         #if canImport(UIKit)
         func serif(_ size: CGFloat, _ weight: UIFont.Weight) -> UIFont {
             let base = UIFont.systemFont(ofSize: size, weight: weight)

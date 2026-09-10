@@ -114,9 +114,8 @@ struct CourseEditor: View {
                     Text("Grade")
                 } footer: {
                     let total = components.compactMap(\.weight).reduce(0, +)
-                    Text(total > 100.5 ? "The weights add up to \(total.formatted(.number.precision(.fractionLength(0...1))))%, more than a whole grade. "
-                         : "")
-                    + Text("Weights set the points at stake on each item and the colour of its mark on the strip. Count is how many of the component there are; Drops is how many lowest scores are dropped. The site is where its work lives; Coverage says when nothing has ever been read from there.")
+                    let overflow = total > 100.5 ? "The weights add up to \(total.formatted(.number.precision(.fractionLength(0...1))))%, more than a whole grade. " : ""
+                    Text("\(overflow)Weights set the points at stake on each item and the colour of its mark on the strip. Count is how many of the component there are; Drops is how many lowest scores are dropped. The site is where its work lives; Coverage says when nothing has ever been read from there.")
                 }
                 Section {
                     ForEach($breaks) { $span in

@@ -37,7 +37,9 @@ struct NowView: View {
                     TimelineView(.periodic(from: .now, by: 60)) { context in
                         PlanList(blocks: model.planning ? model.planDraft : plan?.blocks ?? [], note: model.planning ? nil : plan?.note,
                                  now: context.date, streaming: model.planning, revealed: model.planning || model.planStreamed || revealed == plan?.id,
-                                 reduceMotion: reduceMotion, edit: { editing = $0 }, delete: { model.deleteBlock($0) })
+                                 reduceMotion: reduceMotion, edit: { editing = $0 }, delete: { model.deleteBlock($0) },
+                                 mark: { model.markBlock($0, done: $1) })
+                            .onChange(of: context.date) { _, _ in Task { await model.syncActivity() } }   // the minute turns: the activity may have a new block on
                     }
                     .onAppear { if let plan { reveal(plan.id) } }
                     .onChange(of: plan?.id) { _, id in if let id { reveal(id) } }
@@ -105,6 +107,12 @@ struct NowView: View {
                 if MainTabs.debugFlag("--plan"), !model.planning { Task { await model.planToday() } }   // DEBUG: plans afresh, whatever is on file
                 if MainTabs.debugFlag("--edit-block"), let first = model.plan?.blocks.first { editing = first }
                 if MainTabs.debugFlag("--plan-instructions") { telling = true }
+                if MainTabs.debugFlag("--mark-first-done"), let first = model.plan?.blocks.first { model.markBlock(first.id, done: true) }
+                #if os(iOS)
+                if MainTabs.debugFlag("--intent-first-done"), let first = model.plan?.blocks.first {   // the Live Activity's button, without the button
+                    Task { do { _ = try await MarkBlockDoneIntent(blockID: first.id).perform() } catch { PlanCommands.log?("intent failed: \(error)") } }
+                }
+                #endif
             }
         }
     }
@@ -135,6 +143,9 @@ private struct PlanList: View {
     let reduceMotion: Bool
     var edit: (PlanBlock) -> Void
     var delete: (UUID) -> Void
+    var mark: (UUID, Bool) -> Void
+
+    private var done: Int { blocks.filter(\.isDone).count }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -142,7 +153,8 @@ private struct PlanList: View {
                 Section {
                     ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
                         Button { edit(block) } label: {
-                            BlockRow(block: block, now: now, first: index == 0, last: index == blocks.count - 1, arriving: streaming, reduceMotion: reduceMotion)
+                            BlockRow(block: block, now: now, first: index == 0, last: index == blocks.count - 1, arriving: streaming, reduceMotion: reduceMotion,
+                                     mark: streaming ? nil : { mark(block.id, $0) })
                         }
                         .buttonStyle(.plain)
                         .allowsHitTesting(!streaming)   // not `disabled`, which would dim the rows as they arrive
@@ -153,11 +165,17 @@ private struct PlanList: View {
                         .opacity(revealed ? 1 : 0)
                         .offset(y: revealed ? 0 : 14)
                         .animation(.spring(duration: 0.5).delay(reduceMotion ? 0 : Double(index) * 0.05), value: revealed)
+                        .swipeActions(edge: .leading, allowsFullSwipe: !streaming) {
+                            if !streaming {
+                                Button(block.isDone ? "Not Done" : "Done", systemImage: block.isDone ? "arrow.uturn.backward" : "checkmark") { mark(block.id, !block.isDone) }.tint(Design.accent)
+                            }
+                        }
                         .swipeActions(edge: .trailing, allowsFullSwipe: !streaming) {
                             if !streaming { Button("Delete", systemImage: "trash", role: .destructive) { delete(block.id) } }
                         }
                         .contextMenu {
                             if !streaming {
+                                Button(block.isDone ? "Mark Not Done" : "Mark Done", systemImage: block.isDone ? "arrow.uturn.backward" : "checkmark") { mark(block.id, !block.isDone) }
                                 Button("Edit Block…") { edit(block) }
                                 Button("Delete Block", role: .destructive) { delete(block.id) }
                             }
@@ -187,6 +205,7 @@ private struct PlanList: View {
                             Kicker(now.formatted(date: .omitted, time: .shortened))
                         }
                         if let note { Text(note).font(.footnote).foregroundStyle(.secondary).textCase(nil) }
+                        if done > 0, !streaming { Kicker(done == blocks.count ? "All done" : "\(done) of \(blocks.count) done") }
                     }
                     .padding(.bottom, 4)
                 }
@@ -216,12 +235,14 @@ struct BlockRow: View {
     /// The plan is streaming: this row draws itself in when it appears.
     var arriving = false
     var reduceMotion = false
+    /// Marks the block done or not; nil while the plan streams (no dot to press yet).
+    var mark: ((Bool) -> Void)? = nil
     @State private var headDrawn = true   // the rail from the row's edge to the dot
     @State private var landed = true      // the dot
     @State private var wordsIn = true     // the time and the words
 
     private enum Phase { case past, current, ahead }
-    private var phase: Phase { now >= block.end ? .past : now >= block.start ? .current : .ahead }
+    private var phase: Phase { block.isDone ? .past : now >= block.end ? .past : now >= block.start ? .current : .ahead }
     private static let dotCentre: CGFloat = 22   // from the row's top
 
     var body: some View {
@@ -245,16 +266,24 @@ struct BlockRow: View {
                         .scaleEffect(y: last ? 0 : 1, anchor: .top)
                         .animation(reduceMotion ? nil : .easeIn(duration: 0.22), value: last)
                 }
-                dot.padding(.top, Self.dotCentre - 5)
-                    .scaleEffect(landed ? 1 : 0.01)
+                Button { mark?(!block.isDone) } label: {   // the dot is the mark: press it to cross the block off
+                    dot.frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(mark == nil)
+                .padding(.top, Self.dotCentre - 22)
+                .scaleEffect(landed ? 1 : 0.01)
+                .accessibilityLabel(block.isDone ? "Done" : "Mark done")
             }
             .frame(width: 34)
             VStack(alignment: .leading, spacing: 3) {
                 if phase == .current { Kicker("Now", accent: true) }
+                if block.isDone { Kicker("Done") }
                 HStack(spacing: 8) {
                     Text(block.title)
                         .font(.body.weight(block.kind == .work ? .semibold : .regular))
                         .foregroundStyle(block.kind == .fixed ? .secondary : .primary)
+                        .strikethrough(block.isDone, color: .secondary)
                     if block.kind != .work, block.title.caseInsensitiveCompare(Self.kindName(block.kind)) != .orderedSame {   // "Rest" needs no "Rest" chip
                         Text(Self.kindName(block.kind)).font(.caption2).foregroundStyle(.secondary)
                             .padding(.horizontal, 6).padding(.vertical, 2).background(Design.rule, in: Capsule())
@@ -268,9 +297,10 @@ struct BlockRow: View {
             Spacer(minLength: 0)
         }
         .opacity(phase == .past ? 0.45 : 1)
+        .animation(.snappy, value: block.isDone)
         .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(Self.clock(block.start)) to \(Self.clock(block.end)), \(block.title)\(phase == .current ? ", now" : "")")
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(Self.clock(block.start)) to \(Self.clock(block.end)), \(block.title)\(block.isDone ? ", done" : phase == .current ? ", now" : "")")
         .onAppear {
             guard arriving, !reduceMotion else { return }
             headDrawn = false; landed = false; wordsIn = false
@@ -285,6 +315,12 @@ struct BlockRow: View {
 
     @ViewBuilder private var dot: some View {
         let size: CGFloat = 10
+        if block.isDone {   // crossed off: a filled dot with a check
+            ZStack {
+                Circle().fill(.primary).frame(width: size + 6, height: size + 6)
+                Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)).foregroundStyle(Design.paper)
+            }
+        } else {
         switch phase {
         case .current:
             ZStack {
@@ -302,6 +338,7 @@ struct BlockRow: View {
             case .fixed: Circle().fill(.secondary).frame(width: size, height: size)
             case .meal, .rest: Circle().stroke(.primary, lineWidth: 1.5).frame(width: size - 1.5, height: size - 1.5).background(Design.paper, in: Circle())
             }
+        }
         }
     }
 

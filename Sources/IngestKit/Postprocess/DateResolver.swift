@@ -121,9 +121,13 @@ struct DateResolver: Sendable {
         var end: DateComponents
     }
 
-    /// The text the detector runs on: numeric M/D dates get the term year appended so they are recognized.
+    /// The text the detector runs on: numeric M/D dates get the term year appended so they are recognized, and "due"
+    /// gets a colon. The detector reads "due <date>" as a span from today to that date and returns nothing at all
+    /// once the date is behind today (a syllabus read in October lost every September deadline); "due:" is read as
+    /// the date alone, whatever the day. Span locations and the "due" search below both use this text.
     private func candidate(for text: String) -> String {
         text.replacingOccurrences(of: #"\b(\d{1,2})/(\d{1,2})\b(?!/)"#, with: "$1/$2/\(defaultYear)", options: .regularExpression)
+            .replacingOccurrences(of: #"(?i)\bdue\b(?!:)"#, with: "due:", options: .regularExpression)
     }
 
     /// Detector matches that name a specific day (a month with a day number, or numeric M/D). Bare weekday names are

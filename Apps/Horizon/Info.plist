@@ -61,6 +61,8 @@
 	<string>Horizon scans printed syllabi and handouts with the camera.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>Horizon writes your deadlines to a Reminders list called Horizon, so they still fire if you stop opening the app.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>processing</string>

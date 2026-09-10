@@ -25,6 +25,8 @@ final class AppModel {
     var reports: [IngestCoordinator.Report] = []
     /// Set by a `horizon://obligation/<id>` link (the provenance link on every reminder); RootView opens it.
     var linkedObligationID: UUID?
+    /// Set by a `horizon://now` link (a tap on the plan's Live Activity); the tabs open Now.
+    var openNowRequested = false
     /// What the parser is reading right now, item by item as the model streams. Nil when idle.
     var reading: Reading?
     /// Read documents in Private Cloud Compute instead of on device (slow and hot on a phone). Persisted; needs the
@@ -95,6 +97,10 @@ final class AppModel {
         didSet { UserDefaults.standard.set(planInstructions, forKey: "planInstructions") }
     }
     private struct SavedPlan: Codable { var day: Date; var plan: DayPlan; var candidates: [PlanObligation]; var edited: Bool }
+    #if os(iOS)
+    /// The plan's Live Activity (the Lock Screen and the Dynamic Island); its Done button comes back through `PlanCommands`.
+    private let activities = PlanActivityController()
+    #endif
     private let calendarSource: any CalendarSource = EventKitCalendarSource()
     private var drainTask: Task<Void, Never>?
     private var cancelledDocument: UUID?
@@ -119,6 +125,19 @@ final class AppModel {
                                         progress: { p in Task { @MainActor in box.model?.apply(p) } })
         box.model = self
         loadPlan()
+        #if os(iOS)
+        activities.adopt()
+        PlanCommands.markDone = { [weak self] id in await self?.markBlock(id, done: true) }
+        PlanCommands.log = { Self.log($0) }
+        Task { await syncActivity() }
+        #endif
+    }
+
+    /// The Live Activity follows the plan on file. Called after every change to the plan and every minute while Now is open.
+    func syncActivity() async {
+        #if os(iOS)
+        await activities.sync(plan: plan, day: planDay)
+        #endif
     }
 
     /// Breaks the init cycle between the coordinator's sink and self.
@@ -160,6 +179,7 @@ final class AppModel {
     /// A `horizon://obligation/<id>` link opens that item; anything else is a file to ingest.
     func open(_ url: URL) async {
         if let id = Identifiers.obligationID(from: url) { linkedObligationID = id; return }
+        if url.scheme == "horizon", url.host == "now" { openNowRequested = true; return }
         guard url.isFileURL else { lastError = "Horizon cannot open \(url.absoluteString)"; return }
         await importFiles([url])
     }
@@ -243,7 +263,7 @@ final class AppModel {
                 lastError = nil
                 statusLine = report.created + report.updated > 0 ? "\(report.created) added, \(report.updated) updated in Reminders" : cancelNotice
             }
-            try? await store.purgeTombstones()
+            _ = try? await store.purgeTombstones()
             try? await coordinator.expireBin()   // what has sat in Recently Deleted for 30 days goes for good
         } catch {
             withAnimation { lastError = error.localizedDescription; statusLine = nil }
@@ -328,6 +348,7 @@ final class AppModel {
         planning = false
         planDraft = []   // in the same turn as `planning`, so the rows hand over without a frame apart
         persistPlan()
+        await syncActivity()
     }
 
     private func showDraft(_ blocks: [PlanBlock]) {
@@ -367,11 +388,22 @@ final class AppModel {
         setEdited(p)
     }
 
+    /// A block done (or not, after all), from the Now tab or the Live Activity's button. Not an edit of the plan.
+    func markBlock(_ id: UUID, done: Bool) {
+        Self.log("plan: mark \(id) \(done ? "done" : "not done"); on file \(plan?.blocks.count ?? -1) blocks")
+        guard var p = plan, let i = p.blocks.firstIndex(where: { $0.id == id }), p.blocks[i].isDone != done else { return }
+        p.blocks[i].completedAt = done ? Date() : nil
+        withAnimation { plan = p }
+        persistPlan()
+        Task { await syncActivity() }
+    }
+
     private func setEdited(_ p: DayPlan) {
         var p = p
         p.blocks.sort { $0.start < $1.start }
         withAnimation { plan = p; planEdited = true }
         persistPlan()
+        Task { await syncActivity() }
     }
 
     /// The plan is today's or nothing: called when the app comes forward and when Now appears.
@@ -380,6 +412,7 @@ final class AppModel {
         withAnimation { plan = nil; planEdited = false; planCandidates = [] }
         self.planDay = nil
         persistPlan()
+        Task { await syncActivity() }
     }
 
     private func persistPlan() {

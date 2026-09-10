@@ -14,9 +14,15 @@ enum Route: Hashable {
     case settings
 }
 
-/// Pushes a route on the home stack; pages down the stack (Documents, Recently Deleted) use it instead of links.
+/// Pushes a route on the home stack; pages down the stack (Documents, Recently Deleted) use it instead of links. The closure
+/// rides in a struct, the shape of SwiftUI's own actions (OpenURLAction): the environment cannot compare a bare closure.
+struct OpenRouteAction {
+    let open: @MainActor (Route) -> Void
+    @MainActor func callAsFunction(_ route: Route) { open(route) }
+}
+
 extension EnvironmentValues {
-    @Entry var openRoute: @MainActor (Route) -> Void = { _ in }
+    @Entry var openRoute = OpenRouteAction { _ in }
 }
 
 /// What intake has to say, above the stories: the document being read, Reminders access turned off, a document that
@@ -163,7 +169,7 @@ struct RootView: View {
                 case .settings: SettingsView()
                 }
             }
-            .environment(\.openRoute, open)
+            .environment(\.openRoute, OpenRouteAction(open: open))
             .onChange(of: courses.count, initial: true) { _, count in
                 if MainTabs.debugFlag("--open-course"), count > 0, path.isEmpty, let first = courses.first { open(.course(first.id)) }
             }

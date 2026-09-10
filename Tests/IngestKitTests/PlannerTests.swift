@@ -85,6 +85,29 @@ struct PlannerTests {
         #expect(PlanJSON.provisional("{\"blo").blocks.isEmpty)
     }
 
+    @Test func thePlanKnowsWhatIsOnAndWhatIsNext() throws {
+        var plan = DayPlan(blocks: [
+            PlanBlock(start: Self.at(9), end: Self.at(10), title: "Quiz 3", reason: "", kind: .work),
+            PlanBlock(start: Self.at(10), end: Self.at(11), title: "Lecture", reason: "", kind: .fixed),
+            PlanBlock(start: Self.at(12), end: Self.at(12, 40), title: "Eat", reason: "", kind: .meal),
+        ])
+        var f = plan.focus(at: Self.at(9, 30))
+        #expect(f.current?.title == "Quiz 3" && f.next?.title == "Lecture")
+        f = plan.focus(at: Self.at(11, 30))                                   // between blocks: nothing on, the meal ahead
+        #expect(f.current == nil && f.next?.title == "Eat")
+        plan.blocks[0].completedAt = Self.at(9, 20)                            // done early: the lecture is next, nothing is on
+        f = plan.focus(at: Self.at(9, 30))
+        #expect(f.current == nil && f.next?.title == "Lecture" && plan.doneCount == 1)
+        f = plan.focus(at: Self.at(13))                                       // the day is over
+        #expect(f.current == nil && f.next == nil)
+        // A plan saved before blocks could be done still loads, undone.
+        let old = #"{"blocks":[{"id":"6D2B0C3E-3B0E-4B2A-9A4C-3E9E1E6B3B01","start":0,"end":3600,"title":"Quiz 3","reason":"","kind":"work"}]}"#
+        let loaded = try JSONDecoder().decode(DayPlan.self, from: Data(old.utf8))
+        #expect(loaded.blocks[0].isDone == false)
+        let round = try JSONDecoder().decode(DayPlan.self, from: JSONEncoder().encode(plan))
+        #expect(round.blocks[0].completedAt == Self.at(9, 20))
+    }
+
     @Test func nothingDueAndNothingAskedNeedsNoModel() async {
         let busy = [PlanBusy(title: "Lecture", start: Self.at(10), end: Self.at(12))]
         let plan = await DayPlanner().plan(Self.input(now: Self.at(9), busy: busy))

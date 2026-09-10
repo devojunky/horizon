@@ -95,7 +95,9 @@ enum BackgroundIngest {
         let request = BGProcessingTaskRequest(identifier: Identifiers.backgroundIngestTask)
         request.requiresNetworkConnectivity = false
         request.requiresExternalPower = false
-        try? BGTaskScheduler.shared.submit(request)
+        BGTaskScheduler.shared.submitTaskRequest(request) { error in   // submission is asynchronous now; a refusal is worth a log line
+            if let error { Logger(subsystem: Identifiers.bundlePrefix, category: "ingest").error("background ingest not scheduled: \(error.localizedDescription, privacy: .public)") }
+        }
     }
 }
 #endif

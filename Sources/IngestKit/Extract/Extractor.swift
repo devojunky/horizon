@@ -359,11 +359,9 @@ actor Extractor {
             guard let written = n.dateAsWritten else { return nil }
             return NoClassFacts(dateAsWritten: written, startDate: n.startDate ?? nil, endDate: n.endDate ?? nil)
         }
-        let course = partial.course.flatMap { c -> CourseFacts? in
-            let facts = c ?? nil
-            guard let facts else { return nil }
-            return CourseFacts(code: facts.code ?? nil, title: facts.title ?? nil, instructor: facts.instructor ?? nil, term: facts.term ?? nil,
-                               termStart: facts.termStart ?? nil, termEnd: facts.termEnd ?? nil, room: facts.room ?? nil, meetings: [])
+        let course = partial.course.map { facts in
+            CourseFacts(code: facts.code ?? nil, title: facts.title ?? nil, instructor: facts.instructor ?? nil, term: facts.term ?? nil,
+                        termStart: facts.termStart ?? nil, termEnd: facts.termEnd ?? nil, room: facts.room ?? nil, meetings: [])
         }
         guard course != nil || !obligations.isEmpty || !components.isEmpty || !policies.isEmpty else { return nil }
         return ChunkExtraction(course: course, gradeComponents: components, obligations: obligations, policies: policies, noClassDates: noClass)

@@ -62,36 +62,52 @@ struct ShareView: View {
     static let readable: [UTType] = [.pdf, .image, .plainText, UTType("org.openxmlformats.wordprocessingml.document")].compactMap { $0 }
 
     /// PDFs, images, text and readable files become a temporary file the coordinator can copy in. Anything else is skipped.
+    /// Each kind is asked for the way it is held: a file the host points at comes as its URL (its own name kept), text as
+    /// bytes, and a PDF or an image as a file representation, however the host has it (a file, data, a UIImage).
     static func file(from provider: NSItemProvider) async throws -> URL? {
         let temp = FileManager.default.temporaryDirectory
         for type in [UTType.pdf, .image, .fileURL, .plainText] where provider.hasItemConformingToTypeIdentifier(type.identifier) {
-            let loaded = try await provider.loadItem(forTypeIdentifier: type.identifier)
-            switch loaded {
-            case let url as URL:
-                if type == .fileURL || url.isFileURL {
-                    guard let fileType = UTType(filenameExtension: url.pathExtension), readable.contains(where: { fileType.conforms(to: $0) }) else { continue }
-                    let copy = temp.appendingPathComponent(url.lastPathComponent)
-                    try? FileManager.default.removeItem(at: copy)
-                    try FileManager.default.copyItem(at: url, to: copy)
-                    return copy
-                }
-            case let data as Data:
-                let ext = type == .pdf ? "pdf" : type == .image ? "png" : "txt"
-                let copy = temp.appendingPathComponent("shared-\(UUID().uuidString).\(ext)")
-                try data.write(to: copy)
+            switch type {
+            case .fileURL:
+                guard let url = try await load({ provider.loadObject(ofClass: URL.self, completionHandler: $0) }), url.isFileURL,
+                      let fileType = UTType(filenameExtension: url.pathExtension), readable.contains(where: { fileType.conforms(to: $0) }) else { continue }
+                let copy = temp.appendingPathComponent(url.lastPathComponent)
+                try? FileManager.default.removeItem(at: copy)
+                try FileManager.default.copyItem(at: url, to: copy)
                 return copy
-            case let image as UIImage:
-                guard let data = image.pngData() else { continue }
-                let copy = temp.appendingPathComponent("screenshot-\(UUID().uuidString).png")
-                try data.write(to: copy)
-                return copy
-            case let text as String:
+            case .plainText:
+                guard let data = try await load({ provider.loadDataRepresentation(forTypeIdentifier: type.identifier, completionHandler: $0) }) else { continue }
                 let copy = temp.appendingPathComponent("shared-\(UUID().uuidString).txt")
-                try text.write(to: copy, atomically: true, encoding: .utf8)
+                try text(in: data).write(to: copy)
                 return copy
-            default: continue
+            default:
+                // The representation's file lives only until the handler returns, so the copy is made inside it.
+                return try await withCheckedThrowingContinuation { continuation in
+                    _ = provider.loadFileRepresentation(forTypeIdentifier: type.identifier) { url, error in
+                        guard let url else { continuation.resume(throwing: error ?? CocoaError(.fileReadUnknown)); return }
+                        let copy = temp.appendingPathComponent(url.lastPathComponent)
+                        try? FileManager.default.removeItem(at: copy)
+                        continuation.resume(with: Result { try FileManager.default.copyItem(at: url, to: copy); return copy })
+                    }
+                }
             }
         }
         return nil
+    }
+
+    /// One of the provider's completion-handler loaders as an async call: what it loaded, or nil when it had nothing.
+    private static func load<T: Sendable>(_ start: (@escaping @Sendable (T?, (any Error)?) -> Void) -> Progress) async throws -> T? {
+        try await withCheckedThrowingContinuation { continuation in
+            _ = start { value, error in
+                if let error { continuation.resume(throwing: error) } else { continuation.resume(returning: value) }
+            }
+        }
+    }
+
+    /// The bytes to write for a text item: a host still on the pre-iOS 11 item API hands its NSString over as a keyed
+    /// archive, which is unwrapped; anything else (a string object, a text file) is the text itself.
+    private static func text(in data: Data) -> Data {
+        guard data.starts(with: "bplist00".utf8), let string = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSString.self, from: data) else { return data }
+        return Data((string as String).utf8)
     }
 }

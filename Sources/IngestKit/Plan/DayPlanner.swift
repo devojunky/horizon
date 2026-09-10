@@ -49,8 +49,11 @@ public struct PlanBlock: Sendable, Equatable, Identifiable, Codable {
     public var title: String
     public var reason: String
     public var kind: Kind
-    public init(start: Date, end: Date, title: String, reason: String, kind: Kind) {
-        self.start = start; self.end = end; self.title = title; self.reason = reason; self.kind = kind
+    /// When the user marked it done, in the app or from the Live Activity. Nil while it is still to do.
+    public var completedAt: Date?
+    public var isDone: Bool { completedAt != nil }
+    public init(start: Date, end: Date, title: String, reason: String, kind: Kind, completedAt: Date? = nil) {
+        self.start = start; self.end = end; self.title = title; self.reason = reason; self.kind = kind; self.completedAt = completedAt
     }
 }
 
@@ -74,6 +77,16 @@ public struct DayPlan: Sendable, Equatable, Codable, Identifiable {
         usage = try c.decodeIfPresent(UsageRecord.self, forKey: .usage)
         note = try c.decodeIfPresent(String.self, forKey: .note)
     }
+
+    /// What the day is at `now`: the block that is on and not done, and the first block after it still to do (the
+    /// first one ahead when nothing is on). Done blocks and blocks already over are neither.
+    public func focus(at now: Date) -> (current: PlanBlock?, next: PlanBlock?) {
+        let pending = blocks.filter { !$0.isDone && $0.end > now }.sorted { $0.start < $1.start }
+        let current = pending.first { $0.start <= now }
+        let next = pending.first { $0.start > now && $0.id != current?.id }
+        return (current, next)
+    }
+    public var doneCount: Int { blocks.filter(\.isDone).count }
 }
 
 @Generable

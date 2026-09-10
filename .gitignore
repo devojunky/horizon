@@ -9,3 +9,6 @@ xcuserdata/
 Evals/Results/
 Config/Local.xcconfig
 *.xcodeproj
+
+# a local OpenAI key for tests, never committed
+key.textClipping

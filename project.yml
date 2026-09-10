@@ -32,6 +32,7 @@ targets:
     sources:
       - path: Apps/Horizon
         excludes: [Samples, AppIcon.icon]
+      - path: Apps/Shared
       - path: Apps/Horizon/Samples/sample-syllabus.pdf
         buildPhase: resources
       - path: Apps/Horizon/AppIcon.icon   # the Icon Composer document: layered, Liquid Glass; actool compiles it (see options.fileTypes)
@@ -42,6 +43,9 @@ targets:
       - package: HorizonPackage
         product: IngestKit
       - target: HorizonShare
+        embed: true
+        destinationFilters: [iOS]
+      - target: HorizonWidgets
         embed: true
         destinationFilters: [iOS]
     info:
@@ -55,6 +59,7 @@ targets:
         NSRemindersFullAccessUsageDescription: Horizon writes your deadlines to a Reminders list called Horizon, so they still fire if you stop opening the app.
         NSCalendarsFullAccessUsageDescription: Horizon reads your calendar to plan around classes and appointments.
         NSCameraUsageDescription: Horizon scans printed syllabi and handouts with the camera.
+        NSSupportsLiveActivities: true
         CFBundleURLTypes:
           - CFBundleURLName: com.daniel.horizon
             CFBundleURLSchemes: [horizon]
@@ -114,6 +119,22 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.daniel.horizon.share
+        GENERATE_INFOPLIST_FILE: NO
+  HorizonWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Apps/HorizonWidgets
+      - path: Apps/Shared
+    info:
+      path: Apps/HorizonWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Horizon
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.daniel.horizon.widgets
         GENERATE_INFOPLIST_FILE: NO
 schemes:
   Horizon:

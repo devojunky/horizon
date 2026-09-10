@@ -63,8 +63,11 @@ struct PlanBlockEditor: View {
                 } header: {
                     Text("Reason")
                 }
-                if block != nil {
-                    Section { Button("Delete Block", role: .destructive) { if let block { model.deleteBlock(block.id); dismiss() } } }
+                if let block {
+                    Section {
+                        Button(block.isDone ? "Mark Not Done" : "Mark Done", systemImage: block.isDone ? "arrow.uturn.backward" : "checkmark") { model.markBlock(block.id, done: !block.isDone); dismiss() }
+                        Button("Delete Block", role: .destructive) { model.deleteBlock(block.id); dismiss() }
+                    }
                 }
             }
             .paper()
