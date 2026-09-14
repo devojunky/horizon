@@ -10,6 +10,7 @@ struct DocumentsView: View {
     @Query(filter: #Predicate<SourceDocument> { $0.deletedAt == nil }, sort: \SourceDocument.queuedAt, order: .reverse) private var documents: [SourceDocument]
     @Query(filter: #Predicate<SourceDocument> { $0.deletedAt != nil }) private var deletedDocuments: [SourceDocument]
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
+    @State private var confirmDevice: SourceDocument?
 
     private var binned: Int { deletedDocuments.filter(\.isBinned).count }
 
@@ -35,7 +36,13 @@ struct DocumentsView: View {
                         }
                         if let failure = doc.failure { Text(failure).font(.footnote).foregroundStyle(Design.accent) }
                         if doc.status == .failed || doc.status == .awaitingCloudParse || doc.status == .cancelled {
-                            Button("Retry", systemImage: "arrow.clockwise") { Task { await model.retry(documentID: doc.id) } }.buttonStyle(.bordered).controlSize(.small).padding(.top, 2)
+                            HStack(spacing: 10) {
+                                Button("Retry", systemImage: "arrow.clockwise") { Task { await model.retry(documentID: doc.id) } }
+                                if doc.status == .awaitingCloudParse, !doc.readOnDevice {
+                                    Button("Read on This Device…", systemImage: "iphone") { confirmDevice = doc }
+                                }
+                            }
+                            .buttonStyle(.bordered).controlSize(.small).padding(.top, 2)
                         }
                         ForEach(doc.warnings, id: \.self) { Text($0).font(.footnote).foregroundStyle(.secondary) }
                     }
@@ -53,6 +60,12 @@ struct DocumentsView: View {
         .listStyle(.plain)
         .paper()
         .refreshable { await model.drainAndSync() }
+        .confirmationDialog("Read on this device instead?", isPresented: Binding(get: { confirmDevice != nil }, set: { if !$0 { confirmDevice = nil } }), titleVisibility: .visible, presenting: confirmDevice) { doc in
+            Button("Read on This Device") { Task { await model.readOnDevice(documentID: doc.id) } }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("The device model is less sure of tables and pictures than Claude, and it takes minutes on a long document. Nothing is sent to Anthropic.")
+        }
         .animation(.default, value: documents.map(\.id))
         .animation(.default, value: binned)
         .navigationTitle("Documents")
@@ -62,7 +75,7 @@ struct DocumentsView: View {
     private func status(_ doc: SourceDocument) -> String {
         switch doc.status {
         case .queued: doc.readSoFar.map { "Queued · \($0.finished) of \($0.total) parts read" } ?? "Queued"   // paused mid-read: it goes on from there
-        case .parsed: "Parsed"; case .failed: "Failed"; case .awaitingCloudParse: "Waiting for Private Cloud Compute"; case .cancelled: "Cancelled"
+        case .parsed: "Parsed"; case .failed: "Failed"; case .awaitingCloudParse: "Waiting for Claude"; case .cancelled: "Cancelled"
         }
     }
 }

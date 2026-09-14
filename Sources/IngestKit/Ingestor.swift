@@ -2,16 +2,16 @@ import Foundation
 import CoreGraphics
 
 public struct IngestOptions: Sendable {
-    public enum RoutePolicy: Sendable {
-        case onDeviceOnly
-        /// On-device first; Private Cloud Compute only when the on-device model is unavailable.
-        case onDeviceFirst
-        case privateCloudCompute
-        /// OpenAI with the user's key (`openAI`), falling back to the device when it cannot be used.
-        case openAI
+    public enum RoutePolicy: Sendable, Equatable {
+        /// Claude, with `claude`: the target. The whole document in one or two calls, its pages attached as pictures so
+        /// tables are read as printed. Cannot be reached → `IngestError.claudeUnavailable`; nothing falls back by itself.
+        case claude
+        /// The device's own model: small context, chunked reads, no eye for tables. The user's choice, or the fallback
+        /// they confirm for one document when Claude cannot be reached.
+        case onDevice
     }
-    public var route: RoutePolicy = .onDeviceFirst
-    public var openAI: OpenAIConfiguration?
+    public var route: RoutePolicy = .claude
+    public var claude: ClaudeConfiguration?
     /// What is already known about the course this document belongs to (from its syllabus, or the user's hand): seeds the
     /// prompt, the grade components and the term dates, so a schedule that names none of them still resolves.
     public var knownCourse: KnownCourse?
@@ -100,43 +100,25 @@ public actor Ingestor {
         try await ingest(document: DocumentNormalizer.normalize(image: image, name: name))
     }
 
-    /// Why Private Cloud Compute cannot be used on this device right now, or nil when it can.
-    public static func cloudAvailability() -> String? { Extractor.cloudAvailability() }
+    /// Whether Claude answers with this configuration: one tiny request, for Settings' Test Connection.
+    public static func probe(claude configuration: ClaudeConfiguration) async throws -> String { try await Extractor.probe(claude: configuration) }
 
     func ingest(document: NormalizedDocument) async throws -> IngestResult {
         guard !document.pages.isEmpty else { throw IngestError.emptyDocument }
         let log = options.log
         var warnings: [String] = []
-        var extractor: Extractor
+        let extractor: Extractor
         switch options.route {
-        case .onDeviceOnly:
+        case .claude:
+            guard let configuration = options.claude else { throw IngestError.claudeUnavailable("no API key") }
+            extractor = try await Extractor.make(route: .claude, claude: configuration, sampleText: document.fullText, log: log, progress: options.progress)
+        case .onDevice:
             extractor = try await Extractor.make(route: .onDevice, sampleText: document.fullText, log: log, progress: options.progress)
-        case .privateCloudCompute:
-            extractor = try await Extractor.make(route: .privateCloudCompute, sampleText: document.fullText, log: log, progress: options.progress)
-        case .onDeviceFirst:
-            do { extractor = try await Extractor.make(route: .onDevice, sampleText: document.fullText, log: log, progress: options.progress) }
-            catch IngestError.modelUnavailable(let why) {   // a device that will never have the model; "not ready" propagates for a retry
-                warnings.append("On-device model unavailable (\(why)); using Private Cloud Compute")
-                extractor = try await Extractor.make(route: .privateCloudCompute, sampleText: document.fullText, log: log, progress: options.progress)
-            }
-        case .openAI:
-            guard let configuration = options.openAI else { throw IngestError.remoteUnavailable("no API key") }
-            extractor = try await Extractor.make(route: .openAI, openAI: configuration, sampleText: document.fullText, log: log, progress: options.progress)
         }
 
         var completed = false
         defer { if !completed { options.progress(.finished(obligations: 0)) } }   // a failed or cancelled read must end in the UI too
-        var outcomes: [ExtractionOutcome]
-        do {
-            outcomes = try await run(extractor, document: document)
-        } catch IngestError.remoteUnavailable(let why) where extractor.route == .openAI {
-            // The key, the model or the network failed the whole read: the device reads it instead, and says so.
-            let note = "OpenAI could not be used (\(why)); read on device instead"
-            log(note); warnings.append(note)
-            warnings += await extractor.warnings
-            extractor = try await Extractor.make(route: .onDevice, sampleText: document.fullText, log: log, progress: options.progress)
-            outcomes = try await run(extractor, document: document)
-        }
+        let outcomes = try await run(extractor, document: document)
         warnings += await extractor.warnings
         guard !outcomes.isEmpty else { throw IngestError.extractionFailed(warnings.joined(separator: "; ")) }
         let result = Merger.merge(outcomes: outcomes, document: document, route: extractor.route, options: options, warnings: warnings)
@@ -169,7 +151,10 @@ public actor Ingestor {
                 results = kept.outcomes
                 Self.replay(position, results, route: extractor.route, to: options.progress)
             } else if position < textChunks.count {
-                results = try await extractor.extract(textChunks[position], context: context, document: document.info.name, chunkCount: textChunks.count)
+                let chunk = textChunks[position]
+                // Claude sees the chunk's pages as pictures beside the text, so a table garbled by the text layer is read as printed.
+                let pictures = extractor.route == .claude ? document.pictures(ofPages: chunk.firstPage...chunk.lastPage) : []
+                results = try await extractor.extract(chunk, pictures: pictures, context: context, document: document.info.name, chunkCount: textChunks.count)
             } else {
                 let i = position - textChunks.count, image = images[i]
                 results = try await extractor.extract(image: image.image, orientation: image.orientation, page: image.page, imageIndex: i, imageCount: images.count,

@@ -39,8 +39,10 @@ public enum DocumentKind: String, Codable, Sendable {
     case pdf, image, text, docx
 }
 
+/// Where a document was read or a plan made: Claude (the target), or the device's own model (small tasks, and the
+/// fallback the user confirms when Claude cannot be reached).
 public enum ModelRoute: String, Codable, Sendable {
-    case onDevice, privateCloudCompute, openAI
+    case onDevice, claude
 }
 
 public enum Platform: String, Codable, Sendable, CaseIterable {
@@ -198,9 +200,9 @@ public enum IngestError: Error, LocalizedError, Sendable {
     case modelUnavailable(String)
     /// The on-device model exists but is not ready yet (assets loading): transient, retry later.
     case modelNotReady(String)
-    case cloudUnavailable(String)
-    /// OpenAI could not be used for this document (the key, the model, the network); the caller falls back to the device.
-    case remoteUnavailable(String)
+    /// Claude could not read this document now (no key, a rejected key, no connection, a rate limit, a timeout): the
+    /// document waits for Claude, or for the user to have the device read it instead. Never a silent fallback.
+    case claudeUnavailable(String)
     case emptyDocument
     case extractionFailed(String)
 
@@ -210,8 +212,7 @@ public enum IngestError: Error, LocalizedError, Sendable {
         case .unreadable(let why): "Could not read document: \(why)"
         case .modelUnavailable(let why): "On-device model unavailable: \(why)"
         case .modelNotReady(let why): "On-device model not ready yet: \(why)"
-        case .cloudUnavailable(let why): "Private Cloud Compute unavailable, document queued: \(why)"
-        case .remoteUnavailable(let why): "OpenAI could not be used: \(why)"
+        case .claudeUnavailable(let why): "Claude could not read the document: \(why)"
         case .emptyDocument: "Document has no readable text or images"
         case .extractionFailed(let why): "The model produced nothing for this document: \(why)"
         }

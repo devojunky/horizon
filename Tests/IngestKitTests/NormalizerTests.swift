@@ -33,13 +33,24 @@ struct NormalizerTests {
         #expect(doc.textPages.count == 1 && doc.fullText.contains("September 9, 2026"))
     }
 
-    @Test func scannedPDFYieldsImageWithOCRText() throws {
+    @Test func scannedPDFYieldsAPictureAndNoText() throws {
         let doc = try DocumentNormalizer.normalize(fileURL: Self.makePDF("Scanned syllabus page. Midterm 1 on Wednesday, October 7, 2026.", scanned: true))
         #expect(doc.textPages.isEmpty && doc.pages.count == 1 && doc.imagePages.count == 1)
-        if case .image(let image, _, let ocr) = doc.pages[0] {
+        if case .image(let image, _) = doc.pages[0] {
             #expect(image.width == 1224)
-            #expect(ocr.contains("October 7") && doc.fullText.contains("Midterm 1"))   // Vision OCR feeds the source-text guards
+            #expect(doc.fullText.isEmpty)                       // no OCR of our own: Claude transcribes the picture, and the guards read that
+            #expect(doc.pictures(ofPages: 0...0).isEmpty)       // an image page is a picture already
         } else { Issue.record("expected an image page") }
+    }
+
+    @Test func aPDFTextPageCanBeShownAsAPicture() throws {
+        let doc = try DocumentNormalizer.normalize(fileURL: Self.makePDF("MA-UY 1124 Calculus II. Homework 1 due Wednesday, September 9, 2026 on WebAssign.", scanned: false))
+        let pictures = doc.pictures(ofPages: 0...0)
+        #expect(pictures.count == 1 && pictures[0].page == 0)
+        #expect(pictures.allSatisfy { max($0.image.width, $0.image.height) <= 1568 })   // the size Claude keeps whole
+        #expect(doc.pictures(ofPages: 3...4).isEmpty)                                    // pages it does not have
+        let text = DocumentNormalizer.normalize(text: "plain", name: "a.txt")
+        #expect(text.pictures(ofPages: 0...0).isEmpty)                                   // only a PDF renders
     }
 
     @Test func plainTextSplitsIntoPagesAndHashesStably() throws {

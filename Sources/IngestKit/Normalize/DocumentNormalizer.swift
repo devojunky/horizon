@@ -2,33 +2,50 @@ import Foundation
 import PDFKit
 import CoreGraphics
 import ImageIO
-import Vision
 import UniformTypeIdentifiers
 #if canImport(AppKit)
 import AppKit
 #endif
 
-/// A document reduced to pages of either text (PDFKit/plain text) or raster images (screenshots, scanned pages).
-/// Image pages also carry Vision OCR text so the deterministic guards in `Merger` have something to check against.
+/// A document reduced to pages of either text (PDFKit/plain text) or raster images (screenshots, scanned pages). No
+/// OCR of our own: Claude reads a picture and transcribes it (`PageReading`), which is what the deterministic guards in
+/// `Merger` check against; the device model has the system's text tool. A PDF keeps its bytes so a text page can also
+/// be shown to Claude as a picture, where the text layer garbles a table.
 public struct NormalizedDocument: @unchecked Sendable {
     public var info: DocumentInfo
     public var pages: [Page]
+    /// The PDF's bytes, for `pictures(ofPages:)`. Nil for anything but a PDF.
+    var pdfData: Data?
 
     public enum Page {
         case text(String)
-        case image(CGImage, orientation: CGImagePropertyOrientation?, ocrText: String)
+        case image(CGImage, orientation: CGImagePropertyOrientation?)
     }
 
     struct ImagePage { var page: Int; var image: CGImage; var orientation: CGImagePropertyOrientation? }
+    /// A page as a picture, with its index in the document.
+    struct Picture: @unchecked Sendable { var page: Int; var image: CGImage; var orientation: CGImagePropertyOrientation? }
 
     /// Text pages with their index in the document.
     var textPages: [(page: Int, text: String)] { pages.enumerated().compactMap { i, p in if case .text(let t) = p { (i, t) } else { nil } } }
     var imagePages: [ImagePage] {
-        pages.enumerated().compactMap { i, p in if case .image(let img, let o, _) = p { ImagePage(page: i, image: img, orientation: o) } else { nil } }
+        pages.enumerated().compactMap { i, p in if case .image(let img, let o) = p { ImagePage(page: i, image: img, orientation: o) } else { nil } }
     }
-    /// Text pages plus OCR text of image pages, in page order.
+    /// The text pages, in page order. Pictures contribute nothing here; their transcripts arrive with the extraction.
     var fullText: String {
-        pages.map { switch $0 { case .text(let t): t; case .image(_, _, let ocr): ocr } }.joined(separator: "\n")
+        pages.compactMap { if case .text(let t) = $0 { t } else { nil } }.joined(separator: "\n")
+    }
+
+    /// The text pages of a PDF in `range`, rendered as pictures at a size Claude keeps whole (its longest edge under
+    /// 1568 points). Empty for anything but a PDF, and for image pages, which are pictures already.
+    func pictures(ofPages range: ClosedRange<Int>) -> [Picture] {
+        guard let pdfData, let pdf = PDFDocument(data: pdfData) else { return [] }
+        return range.compactMap { index -> Picture? in
+            guard index < pdf.pageCount, case .text = pages[index], let page = pdf.page(at: index) else { return nil }
+            let bounds = page.bounds(for: .mediaBox)
+            let scale = min(2, 1500 / max(bounds.width, bounds.height, 1))
+            return DocumentNormalizer.rasterize(page, scale: scale).map { Picture(page: index, image: $0, orientation: nil) }
+        }
     }
 }
 
@@ -52,10 +69,10 @@ enum DocumentNormalizer {
                 if text.count >= minimumTextCharacters {
                     pages.append(.text(text))
                 } else if let image = rasterize(page) {
-                    pages.append(imagePage(image, orientation: nil))
+                    pages.append(.image(image, orientation: nil))
                 }
             }
-            return NormalizedDocument(info: info(name, data, .pdf, pdf.pageCount), pages: pages)
+            return NormalizedDocument(info: info(name, data, .pdf, pdf.pageCount), pages: pages, pdfData: data)
         }
         if type.conforms(to: .image) {
             guard let source = CGImageSourceCreateWithData(data as CFData, nil),
@@ -67,7 +84,7 @@ enum DocumentNormalizer {
                let raw = props[kCGImagePropertyOrientation] as? UInt32 {
                 orientation = CGImagePropertyOrientation(rawValue: raw)
             }
-            return NormalizedDocument(info: info(name, data, .image, 1), pages: [imagePage(image, orientation: orientation)])
+            return NormalizedDocument(info: info(name, data, .image, 1), pages: [.image(image, orientation: orientation)])
         }
         if fileURL.pathExtension.lowercased() == "docx" {
             #if canImport(AppKit)
@@ -96,7 +113,7 @@ enum DocumentNormalizer {
 
     static func normalize(image: CGImage, name: String) -> NormalizedDocument {
         let bytes = Data("\(name)-\(image.width)x\(image.height)".utf8)
-        return NormalizedDocument(info: info(name, bytes, .image, 1), pages: [imagePage(image, orientation: nil)])
+        return NormalizedDocument(info: info(name, bytes, .image, 1), pages: [.image(image, orientation: nil)])
     }
 
     /// Some text layers repeat a line many times (overlaid glyph runs). Keep each line's first occurrence, and cut a
@@ -140,37 +157,11 @@ enum DocumentNormalizer {
         return nil
     }
 
-    private static func imagePage(_ image: CGImage, orientation: CGImagePropertyOrientation?) -> NormalizedDocument.Page {
-        .image(image, orientation: orientation, ocrText: recognizeText(in: image, orientation: orientation))
-    }
-
-    /// Vision OCR reassembled into rows: observations whose vertical centres fall within half a line height of each
-    /// other form one row, left to right, cells separated by two spaces — so table rows read like PDF text rows.
-    /// Empty when Vision finds nothing.
-    static func recognizeText(in image: CGImage, orientation: CGImagePropertyOrientation?) -> String {
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = false
-        let handler = VNImageRequestHandler(cgImage: image, orientation: orientation ?? .up)
-        guard (try? handler.perform([request])) != nil, let observations = request.results else { return "" }
-        let cells = observations.compactMap { o in o.topCandidates(1).first.map { (text: $0.string, box: o.boundingBox) } }
-            .sorted { $0.box.midY > $1.box.midY }   // Vision's origin is bottom-left: larger y is higher on the page
-        var rows: [[(text: String, box: CGRect)]] = []
-        for cell in cells {
-            if let last = rows.last?.first, abs(last.box.midY - cell.box.midY) < max(last.box.height, cell.box.height) * 0.5 {
-                rows[rows.count - 1].append(cell)
-            } else {
-                rows.append([cell])
-            }
-        }
-        return rows.map { $0.sorted { $0.box.minX < $1.box.minX }.map(\.text).joined(separator: "  ") }.joined(separator: "\n")
-    }
-
     private static func info(_ name: String, _ data: Data, _ kind: DocumentKind, _ pages: Int) -> DocumentInfo {
         DocumentInfo(name: name, sha256: Normalize.sha256(data), kind: kind, pageCount: pages, ingestedAt: Date())
     }
 
-    static func rasterize(_ page: PDFPage) -> CGImage? {
+    static func rasterize(_ page: PDFPage, scale rasterScale: CGFloat = rasterScale) -> CGImage? {
         let bounds = page.bounds(for: .mediaBox)
         let width = Int(bounds.width * rasterScale), height = Int(bounds.height * rasterScale)
         guard width > 0, height > 0,

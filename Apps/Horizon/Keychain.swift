@@ -2,7 +2,7 @@ import Foundation
 import Security
 import HorizonCore
 
-/// The user's secrets (the OpenAI key), in the Keychain and nowhere else: readable after the first unlock, so a
+/// The user's secrets (the Claude key), in the Keychain and nowhere else: readable after the first unlock, so a
 /// background read can use it, never synced.
 enum Keychain {
     private static let service = Identifiers.bundlePrefix + ".secrets"

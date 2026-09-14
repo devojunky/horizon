@@ -440,10 +440,17 @@ struct StoreTests {
         let doc = try await store.documents().first!
         #expect(reports.count == 1 && doc.status == .queued && doc.failure?.contains("Waiting") == true)   // still queued: retried next drain
 
-        let noCloud = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac", parse: { _, _ in throw IngestError.cloudUnavailable("offline") })
+        let noCloud = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac", parse: { _, _ in throw IngestError.claudeUnavailable("no connection") })
         _ = await noCloud.drain()
         let parked = try await store.documents().first!
-        #expect(parked.status == .awaitingCloudParse)   // a genuine cloud need waits for BGProcessingTask
+        #expect(parked.status == .awaitingCloudParse && parked.failure == "no connection")   // waits for Claude: a processing task with the network, or the user's word
+        // The user's word: the device may read this one. The coordinator hands the parser the device route for it alone.
+        try await store.readOnDevice(id: parked.id)
+        let routes = Routes()
+        let onDevice = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac", parse: { _, options in routes.append(options.route); throw IngestError.modelNotReady("loading") })
+        _ = await onDevice.drain()
+        #expect(routes.value == [.onDevice])
+        #expect(try await store.documents().first?.status == .queued)   // cleared for the device, and back in the queue
 
         let parses = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac", parse: { _, _ in Fixture.calculus() })
         let done = await parses.drain()
@@ -529,4 +536,11 @@ final class Resumed: @unchecked Sendable {
         get { lock.withLock { stored } }
         set { lock.withLock { stored = newValue } }
     }
+}
+
+final class Routes: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [IngestOptions.RoutePolicy] = []
+    var value: [IngestOptions.RoutePolicy] { lock.withLock { stored } }
+    func append(_ route: IngestOptions.RoutePolicy) { lock.withLock { stored.append(route) } }
 }

@@ -99,16 +99,20 @@ public struct DocumentSnapshot: Sendable, Identifiable, Equatable {
     public var platform: Platform?
     public var courseID: UUID?
     public var deletedAt: Date?
+    /// The user has said this document may be read by the device model instead of Claude.
+    public var readOnDevice: Bool
 
     public init(id: UUID = UUID(), filename: String, sha256: String, kind: String, status: DocumentStatus, queuedAt: Date, ingestedAt: Date? = nil,
-                deviceName: String, failure: String? = nil, platform: Platform? = nil, courseID: UUID? = nil, deletedAt: Date? = nil) {
+                deviceName: String, failure: String? = nil, platform: Platform? = nil, courseID: UUID? = nil, deletedAt: Date? = nil, readOnDevice: Bool = false) {
         self.id = id; self.filename = filename; self.sha256 = sha256; self.kind = kind; self.status = status; self.queuedAt = queuedAt
         self.ingestedAt = ingestedAt; self.deviceName = deviceName; self.failure = failure; self.platform = platform; self.courseID = courseID; self.deletedAt = deletedAt
+        self.readOnDevice = readOnDevice
     }
 
     public init(_ d: SourceDocument) {
         id = d.id; filename = d.filename; sha256 = d.sha256; kind = d.kind; status = d.status; queuedAt = d.queuedAt
         ingestedAt = d.ingestedAt; deviceName = d.deviceName; failure = d.failure; platform = d.platform; courseID = d.course?.id; deletedAt = d.deletedAt
+        readOnDevice = d.readOnDevice
     }
 }
 

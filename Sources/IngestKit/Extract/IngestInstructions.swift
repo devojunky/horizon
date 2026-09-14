@@ -11,7 +11,8 @@ enum IngestInstructions {
     2. dateAsWritten holds only the date words copied exactly as printed; include a time only when it is printed next to that date. dueDate is that date as YYYY-MM-DD in the term's year.
     3. One obligation per graded or required item that has its own date or explicit TBD: homework, problem sets, quizzes, labs, projects, papers, presentations, midterms, finals. \
     A line or table row that names several items yields several obligations. Administrative deadlines with a date also count: opting out of a purchase, registering, dropping, or submitting a form by a date. \
-    Not obligations: grade breakdown rows, statements of frequency such as "weekly quizzes" or "due on Fridays", and lecture or lab topic listings. Do not merge or expand a series.
+    Not obligations: grade breakdown rows, and statements of frequency such as "weekly quizzes" or "due on Fridays". A lecture or lab topic is not an obligation, but a dated item printed beside it is: the schedule line "Week 3: Trig substitution. HW 3 due 9/23" yields HW 3. \
+    Do not merge or expand a series: list each dated item as printed, every one of them.
     3a. title is the item's own short name as printed (for example HW 3, Lab 2 report, Midterm 1), never its week, its topic, or the grade breakdown row it belongs to.
     3b. When a row or line has several dates, the deadline is the one under a Due or Report due heading or after the word due. Released, assigned, posted, opens, and lab-session dates are not deadlines.
     4. platform is where the item is submitted or hosted: lms for Canvas, Brightspace, Blackboard, Moodle, NYU Classes; webassign; gradescope; mylab for MyLab, Mastering, Pearson; not_stated when the document does not say.
@@ -23,20 +24,32 @@ enum IngestInstructions {
     A chunk with no course content yields empty lists.
     """
 
-    static func prompt(chunk: String, chunkIndex: Int, chunkCount: Int, document: String, context: RollingContext) -> String {
+    /// `pictures`: how many of the chunk's pages are attached as images (Claude), labelled "page N" by their number.
+    static func prompt(chunk: String, chunkIndex: Int, chunkCount: Int, document: String, context: RollingContext, pictures: Int = 0) -> String {
         var lines = ["Document: \(document). Chunk \(chunkIndex + 1) of \(chunkCount)."]
         if let course = context.courseLine { lines.append("Course: \(course).") }
         if let term = context.termLine { lines.append("Term: \(term).") }
         if !context.componentLines.isEmpty { lines.append("Known grade components, do not re-list: \(context.componentLines.joined(separator: "; ")).") }
+        if pictures > 0 {
+            lines.append("The chunk's \(pictures == 1 ? "page is" : "\(pictures) pages are") attached as pictures, labelled by page number. The text layer below can garble a table or a column: where it does, read the table from the picture, and copy dates exactly as the picture prints them.")
+        }
         lines.append("Extract every fact from this chunk:\n\n\(chunk)")
+        if pictures > 0 { lines.append(Self.answerShape) }
         return lines.joined(separator: "\n")
     }
 
-    static func imagePrompt(imageIndex: Int, imageCount: Int, document: String, context: RollingContext) -> String {
-        var lines = ["Document: \(document). Image \(imageIndex + 1) of \(imageCount), attached with label \"\(Extractor.imageLabel)\". Call getText on it if the text is dense or tabular."]
+    /// Claude is told the answer's keys in their order. The API makes the model write properties in the schema's
+    /// order; a model that skips optional keys and then wants one back out of order is forced into garbage and an empty
+    /// result (one run in two on a one-page syllabus without this line, none with it).
+    static let answerShape = "Answer with one JSON object in the required schema and nothing else, its keys in this order: course (code, title, instructor, term, termStart, termEnd, room, meetings), gradeComponents, obligations (one per dated item), policies, noClassDates. Empty lists where the chunk states nothing."
+
+    /// `withOCRTool`: the device model may call the system's text tool on the picture; Claude reads it directly and transcribes it.
+    static func imagePrompt(imageIndex: Int, imageCount: Int, document: String, context: RollingContext, withOCRTool: Bool) -> String {
+        var lines = ["Document: \(document). Image \(imageIndex + 1) of \(imageCount), attached with label \"\(Extractor.imageLabel)\"." + (withOCRTool ? " Call getText on it if the text is dense or tabular." : "")]
         if let course = context.courseLine { lines.append("Course: \(course).") }
         if let term = context.termLine { lines.append("Term: \(term).") }
         lines.append("Extract every fact shown in the attached image, including the course code and title if a header shows them. In an assignment table the deadline is the Due column; Released and Late Due columns are not deadlines.")
+        if !withOCRTool { lines.append("Answer with one JSON object in the required schema and nothing else: transcript first, then facts with its keys in this order: course (code, title, instructor, term, termStart, termEnd, room, meetings), gradeComponents, obligations (one per dated item), policies, noClassDates.") }
         return lines.joined(separator: "\n")
     }
 }

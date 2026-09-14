@@ -1,12 +1,11 @@
 import Foundation
 import FoundationModels
-import Security
 import Vision  // enables the OCRTool cross-import overlay (absent in the iOS simulator SDK)
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
 
-/// The system OCR tool where the SDK has it; on the simulator the model reads the image without it.
+/// The system OCR tool where the SDK has it, for the device model; on the simulator the model reads the image without it.
 func ocrTools() -> [any Tool] {
     #if canImport(_Vision_FoundationModels)
     [OCRTool()]
@@ -21,14 +20,20 @@ struct ExtractionOutcome: Sendable, Codable, Equatable {
     /// 0-based page of the source document the chunk came from (first page for a multi-page chunk).
     var page: Int
     var extraction: ChunkExtraction
+    /// A picture's text as Claude transcribed it: what the deterministic guards check the facts against, the way a PDF's
+    /// text layer serves a text chunk. Nil for text chunks, and for pictures the device model read.
+    var transcript: String?
     var usage: UsageRecord
 }
 
-/// Owns the model and the token budget. Every LanguageModelSession in IngestKit is created here, and so is the one
-/// OpenAI client. One fresh session per chunk: the on-device context is too small to carry a transcript.
+/// Owns the model and the token budget. Every LanguageModelSession in IngestKit is created here (the day plan's in
+/// `DayPlanner`), and so is every `ClaudeClient` call for reading. One fresh session per chunk: the device context is
+/// too small to carry a transcript, and Claude needs none.
 /// Chunk-level failures become `warnings`; only errors that make the whole ingest pointless are thrown.
 actor Extractor {
     static let imageLabel = "page"
+    /// Pages attached as pictures to one Claude chunk, at most: a long document is read in more than one call.
+    static let picturesPerChunk = 24
 
     let route: ModelRoute
     let contextSize: Int
@@ -40,22 +45,19 @@ actor Extractor {
     let outputBudgetTokens: Int
     private(set) var warnings: [String] = []
     private let system: SystemLanguageModel?
-    private let cloud: PrivateCloudComputeLanguageModel?
-    private let openAI: OpenAIClient?
+    private let claude: ClaudeClient?
     private let log: @Sendable (String) -> Void
     private let progress: @Sendable (IngestEvent) -> Void
 
-    static func make(route: ModelRoute, openAI configuration: OpenAIConfiguration? = nil, sampleText: String, log: @escaping @Sendable (String) -> Void,
+    static func make(route: ModelRoute, claude configuration: ClaudeConfiguration? = nil, sampleText: String, log: @escaping @Sendable (String) -> Void,
                      progress: @escaping @Sendable (IngestEvent) -> Void = { _ in }) async throws -> Extractor {
         switch route {
-        case .openAI:
-            // A large context, read in roomy chunks so a syllabus is one or two calls; the client's retries and the
-            // ingest's fallback to the device handle the network.
-            guard let configuration else { throw IngestError.remoteUnavailable("no API key") }
-            let client = OpenAIClient(configuration: configuration, log: log)
-            log("openai: model \(configuration.model), chunk budget 10000 tokens")
-            return Extractor(route: route, contextSize: 100_000, chunkBudgetTokens: 10_000, charsPerToken: 3.6, fixedOverheadTokens: 1500,
-                             outputBudgetTokens: 8_000, system: nil, cloud: nil, openAI: client, log: log, progress: progress)
+        case .claude:
+            // A large context, read in roomy chunks so a syllabus is one call with every page attached as a picture.
+            guard let configuration, !configuration.apiKey.isEmpty else { throw IngestError.claudeUnavailable("no API key") }
+            log("claude: \(configuration.model.rawValue), chunk budget 60000 tokens, \(picturesPerChunk) pictures per chunk")
+            return Extractor(route: route, contextSize: 200_000, chunkBudgetTokens: 60_000, charsPerToken: 3.5, fixedOverheadTokens: 2_000,
+                             outputBudgetTokens: 16_000, system: nil, claude: ClaudeClient(configuration: configuration, log: log), log: log, progress: progress)
         case .onDevice:
             let model = SystemLanguageModel.default
             switch model.availability {
@@ -74,27 +76,33 @@ actor Extractor {
             log("on-device: context \(model.contextSize), instructions \(instructions), schema \(schema), chunk budget \(budget) tokens, \(String(format: "%.2f", ratio)) chars/token")
             guard budget > 200 else { throw IngestError.modelUnavailable("context window too small for the extraction schema") }
             return Extractor(route: route, contextSize: model.contextSize, chunkBudgetTokens: budget, charsPerToken: ratio, fixedOverheadTokens: overhead,
-                             outputBudgetTokens: outputReserve - 64, system: model, cloud: nil, openAI: nil, log: log, progress: progress)
-        case .privateCloudCompute:
-            guard hasCloudEntitlement else { throw IngestError.cloudUnavailable("the app is not signed with the Private Cloud Compute entitlement") }
-            let model = PrivateCloudComputeLanguageModel()
-            guard case .available = model.availability else {
-                throw IngestError.cloudUnavailable(String(describing: model.availability))
-            }
-            let context = try await model.contextSize
-            let budget = context - 1500 - max(2000, context / 4)
-            log("private cloud compute: context \(context), chunk budget \(budget) tokens")
-            return Extractor(route: route, contextSize: context, chunkBudgetTokens: budget, charsPerToken: 3.5, fixedOverheadTokens: 1500,
-                             outputBudgetTokens: max(2000, context / 4) - 64, system: nil, cloud: model, openAI: nil, log: log, progress: progress)
+                             outputBudgetTokens: outputReserve - 64, system: model, claude: nil, log: log, progress: progress)
         }
     }
 
     private init(route: ModelRoute, contextSize: Int, chunkBudgetTokens: Int, charsPerToken: Double, fixedOverheadTokens: Int, outputBudgetTokens: Int,
-                 system: SystemLanguageModel?, cloud: PrivateCloudComputeLanguageModel?, openAI: OpenAIClient?, log: @escaping @Sendable (String) -> Void,
+                 system: SystemLanguageModel?, claude: ClaudeClient?, log: @escaping @Sendable (String) -> Void,
                  progress: @escaping @Sendable (IngestEvent) -> Void) {
         self.route = route; self.contextSize = contextSize; self.chunkBudgetTokens = chunkBudgetTokens
         self.charsPerToken = charsPerToken; self.fixedOverheadTokens = fixedOverheadTokens; self.outputBudgetTokens = outputBudgetTokens
-        self.system = system; self.cloud = cloud; self.openAI = openAI; self.log = log; self.progress = progress
+        self.system = system; self.claude = claude; self.log = log; self.progress = progress
+    }
+
+    /// Whether Claude answers with this configuration: one tiny request, so Settings can say so before a document is shared.
+    static func probe(claude configuration: ClaudeConfiguration) async throws -> String {
+        guard !configuration.apiKey.isEmpty else { throw IngestError.claudeUnavailable("no API key") }
+        do { return try await ClaudeClient(configuration: configuration).probe() }
+        catch { throw IngestError.claudeUnavailable(Self.explainClaude(error)) }
+    }
+
+    /// A Claude failure in the user's terms. "no connection" is the wording the coordinator stops a drain on.
+    static func explainClaude(_ error: any Error) -> String {
+        switch error {
+        case ClaudeError.network(let why): return "no connection (\(why))"
+        case ClaudeError.exhausted(_, let last) where last.hasPrefix("no connection"): return last
+        case let error as ClaudeError: return error.localizedDescription
+        default: return String(error.localizedDescription.prefix(200))
+        }
     }
 
     /// Output tokens a chunk is likely to produce: every date in it is probably an obligation (~90 tokens each).
@@ -103,9 +111,11 @@ actor Extractor {
         return 250 + 90 * dates
     }
 
-    /// Extract one text chunk. Splits and retries when the tokenizer disagrees with the estimate.
-    func extract(_ chunk: TextChunk, context: RollingContext, document: String, chunkCount: Int, depth: Int = 0) async throws -> [ExtractionOutcome] {
-        let prompt = IngestInstructions.prompt(chunk: chunk.text, chunkIndex: chunk.index, chunkCount: chunkCount, document: document, context: context)
+    /// Extract one text chunk. Splits and retries when the tokenizer disagrees with the estimate. `pictures` are the
+    /// chunk's pages as images (Claude only), so a table the text layer garbled is read as printed.
+    func extract(_ chunk: TextChunk, pictures: [NormalizedDocument.Picture] = [], context: RollingContext, document: String, chunkCount: Int, depth: Int = 0) async throws -> [ExtractionOutcome] {
+        let attached = Array(pictures.prefix(Self.picturesPerChunk))
+        let prompt = IngestInstructions.prompt(chunk: chunk.text, chunkIndex: chunk.index, chunkCount: chunkCount, document: document, context: context, pictures: attached.count)
         func split(_ why: String) async throws -> [ExtractionOutcome] {
             guard depth < 4, let halves = Chunker.halve(chunk) else {
                 warn("chunk \(chunk.index) (page \(chunk.firstPage + 1)): \(why); skipped")
@@ -113,7 +123,7 @@ actor Extractor {
             }
             log("chunk \(chunk.index): \(why), splitting")
             var out: [ExtractionOutcome] = []
-            for half in halves { out += try await extract(half, context: context, document: document, chunkCount: chunkCount, depth: depth + 1) }
+            for half in halves { out += try await extract(half, pictures: pictures, context: context, document: document, chunkCount: chunkCount, depth: depth + 1) }
             return out
         }
         if let system {
@@ -123,7 +133,7 @@ actor Extractor {
             if tokens + fixedOverheadTokens + expectedOutput > contextSize { return try await split("\(tokens) tokens plus ~\(expectedOutput) of output would overflow") }
         }
         do {
-            return try await respond(chunk: chunk.index, page: chunk.firstPage, kind: .text, tools: [], text: prompt, image: nil).map { [$0] } ?? []
+            return try await respond(chunk: chunk.index, page: chunk.firstPage, kind: .text, tools: [], text: prompt, pictures: attached).map { [$0] } ?? []
         } catch let error where Self.isContextOverflow(error) {
             return try await split("context overflow")
         }
@@ -131,11 +141,13 @@ actor Extractor {
 
     /// Extract one image page. A page too dense for the context is retried once at half size, then skipped with a warning.
     func extract(image: CGImage, orientation: CGImagePropertyOrientation?, page: Int, imageIndex: Int, imageCount: Int, position: Int, context: RollingContext, document: String) async throws -> ExtractionOutcome? {
-        let text = IngestInstructions.imagePrompt(imageIndex: imageIndex, imageCount: imageCount, document: document, context: context)
+        let tools = route == .onDevice ? ocrTools() : []
+        let text = IngestInstructions.imagePrompt(imageIndex: imageIndex, imageCount: imageCount, document: document, context: context, withOCRTool: !tools.isEmpty)
         for attempt in 0..<2 {
             let candidate = attempt == 0 ? image : (Self.halved(image) ?? image)
             do {
-                return try await respond(chunk: position, page: page, kind: .image, tools: ocrTools(), text: text, image: (candidate, orientation))
+                return try await respond(chunk: position, page: page, kind: .image, tools: tools, text: text,
+                                         pictures: [NormalizedDocument.Picture(page: page, image: candidate, orientation: orientation)])
             } catch let error where Self.isContextOverflow(error) {
                 log("image \(imageIndex) (page \(page + 1)): context overflow" + (attempt == 0 ? ", retrying at half size" : ""))
             }
@@ -160,32 +172,23 @@ actor Extractor {
     /// at the reserved budget; if the model runs out (a page of policies can do that) or the context overflows anyway,
     /// the complete items from the last snapshot are kept instead of retrying the chunk.
     /// Returns nil (with a warning) when the model declines or fails on this chunk alone.
-    private func respond(chunk: Int, page: Int, kind: ExtractionOutcome.Kind, tools: [any Tool], text: String,
-                         image: (CGImage, CGImagePropertyOrientation?)?) async throws -> ExtractionOutcome? {
+    private func respond(chunk: Int, page: Int, kind: ExtractionOutcome.Kind, tools: [any Tool], text: String, pictures: [NormalizedDocument.Picture]) async throws -> ExtractionOutcome? {
         let options = GenerationOptions(samplingMode: .greedy, maximumResponseTokens: outputBudgetTokens)
         try Task.checkCancellation()
         let start = ContinuousClock.now
         calls += 1
         let call = calls
-        if route == .openAI { return try await respondOpenAI(chunk: chunk, page: page, kind: kind, call: call, text: text, image: image, start: start) }
-        let prompt: () -> Prompt = {
-            if let image { Prompt { text; Attachment(image.0, orientation: image.1).label(Self.imageLabel) } } else { Prompt(text) }
+        if route == .claude { return try await respondClaude(chunk: chunk, page: page, kind: kind, call: call, text: text, pictures: pictures, start: start) }
+        let prompt = Prompt {
+            text
+            for picture in pictures { Attachment(picture.image, orientation: picture.orientation).label(Self.imageLabel) }
         }
         var last: LanguageModelSession.ResponseStream<ChunkExtraction>.Snapshot?
         let extraction: ChunkExtraction
         let usage: LanguageModelSession.Usage
         do {
-            let stream: LanguageModelSession.ResponseStream<ChunkExtraction>
-            switch route {
-            case .onDevice:
-                let session = LanguageModelSession(model: system!, tools: tools, instructions: Instructions(IngestInstructions.text))
-                stream = session.streamResponse(to: prompt(), generating: ChunkExtraction.self, options: options, contextOptions: ContextOptions())
-            case .privateCloudCompute:
-                let session = LanguageModelSession(model: cloud!, tools: tools, instructions: Instructions(IngestInstructions.text))
-                stream = session.streamResponse(to: prompt(), generating: ChunkExtraction.self, options: options, contextOptions: ContextOptions(reasoningLevel: .light))
-            case .openAI:
-                fatalError("handled above")
-            }
+            let session = LanguageModelSession(model: system!, tools: tools, instructions: Instructions(IngestInstructions.text))
+            let stream = session.streamResponse(to: prompt, generating: ChunkExtraction.self, options: options, contextOptions: ContextOptions())
             progress(.chunkStarted(index: chunk))
             var lastShown: (Int, String?) = (-1, nil)
             for try await snapshot in stream {
@@ -204,7 +207,7 @@ actor Extractor {
             // Salvage what streamed. A chunk with nothing complete falls back to splitting only for a genuine overflow.
             if let last {
                 let c = last.content
-                log("    streamed before the cut: meetings \((c.course ?? nil)?.meetings?.count ?? 0), components \(c.gradeComponents?.count ?? 0), obligations \(c.obligations?.count ?? 0), policies \(c.policies?.count ?? 0), noClass \(c.noClassDates?.count ?? 0), \(String(describing: c).count) chars; tail: \(last.rawContent.jsonString.suffix(600))")
+                log("    streamed before the cut: meetings \((c.course ?? nil)?.meetings?.count ?? 0), components \(c.gradeComponents?.count ?? 0), obligations \(c.obligations?.count ?? 0), policies \(c.policies?.count ?? 0), noClass \(c.noClassDates?.count ?? 0); tail: \(last.rawContent.jsonString.suffix(600))")
             }
             guard let snapshot = last, let salvaged = Self.salvage(snapshot.content) else {
                 if Self.isContextOverflow(error) { throw error }
@@ -216,42 +219,22 @@ actor Extractor {
             usage = snapshot.usage
         } catch is CancellationError {
             throw CancellationError()
-        } catch let error as PrivateCloudComputeLanguageModel.Error {
-            throw IngestError.cloudUnavailable(error.localizedDescription)
         } catch LanguageModelError.rateLimited(let info) {
-            let until = "rate limited until \(info.resetDate.map { "\($0)" } ?? "later")"
-            if route == .onDevice { throw IngestError.modelNotReady(until) }   // the device model holds back apps in the background: the document waits, its checkpoint kept
-            throw IngestError.cloudUnavailable(until)
+            throw IngestError.modelNotReady("rate limited until \(info.resetDate.map { "\($0)" } ?? "later")")   // the device model holds back apps in the background: the document waits, its checkpoint kept
         } catch {
-            if route == .privateCloudCompute, !Self.isSafetyStop(error) {   // the cloud refused the request: wait for it rather than fail the document
-                throw IngestError.cloudUnavailable("\(error.localizedDescription)" + (Self.hasCloudEntitlement ? "" : "; the app is not signed with the Private Cloud Compute entitlement"))
-            }
             warn("chunk \(chunk) (page \(page + 1)): model \(Self.isSafetyStop(error) ? "declined" : "failed"): \(error.localizedDescription)")
             return nil
         }
-        let elapsed = ContinuousClock.now - start
-        let record = UsageRecord(step: kind == .text ? "text" : "image", chunk: chunk, route: route,
-                                 inputTokens: usage.input.totalTokenCount, cachedTokens: usage.input.cachedTokenCount,
-                                 outputTokens: usage.output.totalTokenCount, reasoningTokens: usage.output.reasoningTokenCount,
-                                 durationMs: Int(elapsed / .milliseconds(1)))
-        log("chunk \(chunk) \(record.step): in \(record.inputTokens) out \(record.outputTokens) \(record.durationMs)ms, \(extraction.obligations.count) obligations")
-        progress(.chunkFinished(index: chunk, obligations: extraction.obligations.count, usage: record))
-        for o in extraction.obligations {
-            log("    raw: \(o.title) | \(o.dateAsWritten) | \(o.dueDate ?? "nil") | \(o.platform) | \(o.component ?? "-") | \(o.confidence)")
-        }
-        for c in extraction.gradeComponents {
-            log("    raw component: \(c.name) | \(c.weightPercent.map { "\($0)%" } ?? "nil") | \(c.count.map(String.init) ?? "-") | \(c.cadence) | \(c.platform)")
-        }
-        return ExtractionOutcome(kind: kind, page: page, extraction: extraction, usage: record)
+        return finish(chunk: chunk, kind: kind, page: page, extraction: extraction, transcript: nil, attempts: 1,
+                      input: usage.input.totalTokenCount, cached: usage.input.cachedTokenCount, output: usage.output.totalTokenCount, reasoning: usage.output.reasoningTokenCount, start: start)
     }
 
-    // MARK: OpenAI
+    // MARK: Claude
 
     /// The last rows shown for the call being streamed, so the UI is told only when a row appears or its date arrives.
     private var lastShown: (Int, String?) = (-1, nil)
 
-    private func showPartial(_ text: String, call: Int, chunk: Int) {
-        let items = ExtractionJSON.provisional(text, call: call)
+    private func showPartial(_ items: [ProvisionalObligation], chunk: Int) {
         let shown = (items.count, items.last?.dateAsWritten)
         if shown != lastShown {
             progress(.partial(chunk: chunk, obligations: items))
@@ -259,76 +242,101 @@ actor Extractor {
         }
     }
 
-    /// One call to OpenAI, streamed into the same partial rows and salvaged the same way when the output budget cuts
-    /// it. A request too large is a context overflow (the chunk splits); a failure the client could not retry past
-    /// is `remoteUnavailable`, and the ingest reads the document on the device instead.
-    private func respondOpenAI(chunk: Int, page: Int, kind: ExtractionOutcome.Kind, call: Int, text: String,
-                               image: (CGImage, CGImagePropertyOrientation?)?, start: ContinuousClock.Instant) async throws -> ExtractionOutcome? {
-        guard let openAI else { throw IngestError.remoteUnavailable("no client") }
+    /// One call to Claude, streamed into the same partial rows and salvaged the same way when the output budget cuts
+    /// it. A picture is transcribed first (`PageReading`), so the guards have text to check against. A request too
+    /// large is a context overflow (the chunk splits); anything the client could not get past is `claudeUnavailable`,
+    /// and the document waits.
+    private func respondClaude(chunk: Int, page: Int, kind: ExtractionOutcome.Kind, call: Int, text: String, pictures: [NormalizedDocument.Picture], start: ContinuousClock.Instant) async throws -> ExtractionOutcome? {
+        guard let claude else { throw IngestError.claudeUnavailable("no client") }
         var images: [Data] = []
-        if let image {
-            guard let png = Self.pngData(image.0, orientation: image.1) else { warn("image (page \(page + 1)): could not be encoded; skipped"); return nil }
-            images = [png]
+        for picture in pictures {
+            guard let jpeg = Self.jpegData(picture.image, orientation: picture.orientation) else { warn("page \(picture.page + 1): the picture could not be encoded; skipped"); continue }
+            images.append(jpeg)
         }
-        let request = OpenAIClient.Request(system: IngestInstructions.text, user: text, images: images, schemaName: "chunk_extraction",
-                                           schema: OpenAISchemas.extraction, maxOutputTokens: outputBudgetTokens)
+        let request = ClaudeClient.Request(system: IngestInstructions.text, user: text, images: images, schema: kind == .image ? ClaudeSchemas.pageReading : ClaudeSchemas.extraction, maxOutputTokens: outputBudgetTokens)
         progress(.chunkStarted(index: chunk))
         lastShown = (-1, nil)
-        let completion: OpenAIClient.Completion
+        if ProcessInfo.processInfo.environment["HORIZON_DEBUG_PROMPT"] != nil { log("    prompt (\(text.count) chars, \(images.count) pictures): \(text.prefix(400))…") }
+        let completion: ClaudeClient.Completion
         do {
-            completion = try await openAI.stream(request) { [weak self] partial in await self?.showPartial(partial, call: call, chunk: chunk) }
+            completion = try await claude.stream(request) { [weak self] partial in
+                await self?.showPartial(kind == .image ? PageReadingJSON.provisional(partial, call: call) : ExtractionJSON.provisional(partial, call: call), chunk: chunk)
+            }
         } catch is CancellationError {
             throw CancellationError()
-        } catch OpenAIError.payloadTooLarge {
-            throw OpenAIError.payloadTooLarge   // a context overflow: the caller splits the chunk
-        } catch let error as OpenAIError {
-            throw IngestError.remoteUnavailable(error.localizedDescription)
+        } catch ClaudeError.payloadTooLarge {
+            throw LanguageModelError.contextSizeExceeded(.init(contextSize: contextSize, tokenCount: 0, debugDescription: "the request was too large"))   // the caller splits the chunk
+        } catch let error as ClaudeError {
+            throw IngestError.claudeUnavailable(Self.explainClaude(error))
         }
         let extraction: ChunkExtraction
-        if completion.finishReason == "length" {
-            guard let salvaged = ExtractionJSON.salvage(completion.text) else {
-                warn("chunk \(chunk) (page \(page + 1)): output ran out before any item completed; skipped")
+        var transcript: String?
+        if completion.stopReason == "max_tokens" {
+            let salvaged: (String?, ChunkExtraction)? = kind == .image ? PageReadingJSON.salvage(completion.text).map { ($0.transcript, $0.facts) } : ExtractionJSON.salvage(completion.text).map { (nil, $0) }
+            guard let salvaged else { warn("chunk \(chunk) (page \(page + 1)): output ran out before any item completed; skipped"); return nil }
+            warn("chunk \(chunk) (page \(page + 1)): output ran out; kept \(salvaged.1.obligations.count) complete item(s)")
+            transcript = salvaged.0; extraction = salvaged.1
+        } else if completion.stopReason == "refusal" {
+            warn("chunk \(chunk) (page \(page + 1)): the model declined")
+            return nil
+        } else {
+            do {
+                if kind == .image { let read = try PageReadingJSON.decode(completion.text); transcript = read.transcript; extraction = read.facts }
+                else { extraction = try ExtractionJSON.decode(completion.text) }
+            } catch {
+                warn("chunk \(chunk) (page \(page + 1)): the reply was not the expected JSON; skipped")
+                log("    claude wrote (tail): \(completion.text.suffix(600))")
                 return nil
             }
-            warn("chunk \(chunk) (page \(page + 1)): output ran out; kept \(salvaged.obligations.count) complete item(s)")
-            extraction = salvaged
-        } else {
-            do { extraction = try ExtractionJSON.decode(completion.text) }
-            catch {
-                guard let salvaged = ExtractionJSON.salvage(completion.text) else { warn("chunk \(chunk) (page \(page + 1)): OpenAI's reply was not the expected JSON; skipped"); return nil }
-                warn("chunk \(chunk) (page \(page + 1)): OpenAI's reply was cut; kept \(salvaged.obligations.count) complete item(s)")
-                extraction = salvaged
-            }
         }
+        if extraction.obligations.isEmpty { log("    claude wrote (tail): \(completion.text.suffix(1200))") }   // a document with nothing due is rare: show what came back
+        return finish(chunk: chunk, kind: kind, page: page, extraction: extraction, transcript: transcript, attempts: completion.attempts,
+                      input: completion.inputTokens, cached: completion.cachedTokens, output: completion.outputTokens, reasoning: 0, start: start)
+    }
+
+    /// The record of a finished call, logged and reported.
+    private func finish(chunk: Int, kind: ExtractionOutcome.Kind, page: Int, extraction: ChunkExtraction, transcript: String?, attempts: Int,
+                        input: Int, cached: Int, output: Int, reasoning: Int, start: ContinuousClock.Instant) -> ExtractionOutcome {
         let elapsed = ContinuousClock.now - start
-        let record = UsageRecord(step: kind == .text ? "text" : "image", chunk: chunk, route: .openAI, inputTokens: completion.inputTokens,
-                                 cachedTokens: completion.cachedTokens, outputTokens: completion.outputTokens, reasoningTokens: 0, durationMs: Int(elapsed / .milliseconds(1)))
-        log("chunk \(chunk) \(record.step) (openai, \(completion.attempts) attempt(s)): in \(record.inputTokens) out \(record.outputTokens) \(record.durationMs)ms, \(extraction.obligations.count) obligations")
+        let record = UsageRecord(step: kind == .text ? "text" : "image", chunk: chunk, route: route, inputTokens: input, cachedTokens: cached,
+                                 outputTokens: output, reasoningTokens: reasoning, durationMs: Int(elapsed / .milliseconds(1)))
+        log("chunk \(chunk) \(record.step) (\(route.rawValue)\(attempts > 1 ? ", \(attempts) attempts" : "")): in \(record.inputTokens) out \(record.outputTokens) \(record.durationMs)ms, \(extraction.obligations.count) obligations" + (transcript.map { ", transcript \($0.count) chars" } ?? ""))
         progress(.chunkFinished(index: chunk, obligations: extraction.obligations.count, usage: record))
         for o in extraction.obligations {
             log("    raw: \(o.title) | \(o.dateAsWritten) | \(o.dueDate ?? "nil") | \(o.platform) | \(o.component ?? "-") | \(o.confidence)")
         }
-        return ExtractionOutcome(kind: kind, page: page, extraction: extraction, usage: record)
+        for c in extraction.gradeComponents {
+            log("    raw component: \(c.name) | \(c.weightPercent.map { "\($0)%" } ?? "nil") | \(c.count.map(String.init) ?? "-") | \(c.cadence) | \(c.platform)")
+        }
+        return ExtractionOutcome(kind: kind, page: page, extraction: extraction, transcript: transcript, usage: record)
     }
 
-    /// The page as PNG, turned the way it is meant to be read.
-    static func pngData(_ image: CGImage, orientation: CGImagePropertyOrientation?) -> Data? {
-        let upright: CGImage
-        switch orientation {
-        case .down?, .downMirrored?, .left?, .leftMirrored?, .right?, .rightMirrored?:
-            upright = rotated(image, orientation: orientation!) ?? image
-        default:
-            upright = image
-        }
+    /// The page as JPEG, turned the way it is meant to be read and no longer than 1568 points on a side (what the API
+    /// keeps whole), so a scan is a few hundred kilobytes, not a few megabytes.
+    static func jpegData(_ image: CGImage, orientation: CGImagePropertyOrientation?) -> Data? {
+        var upright = image
+        if let orientation, orientation != .up, let turned = rotated(image, orientation: orientation) { upright = turned }
+        let longest = max(upright.width, upright.height)
+        if longest > 1568, let smaller = scaled(upright, by: 1568 / CGFloat(longest)) { upright = smaller }
         let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else { return nil }
-        CGImageDestinationAddImage(destination, upright, nil)
+        guard let destination = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, upright, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
         guard CGImageDestinationFinalize(destination) else { return nil }
         return data as Data
     }
 
+    private static func scaled(_ image: CGImage, by factor: CGFloat) -> CGImage? {
+        let w = Int(CGFloat(image.width) * factor), h = Int(CGFloat(image.height) * factor)
+        guard w > 0, h > 0, let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                                 space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.interpolationQuality = .high
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return ctx.makeImage()
+    }
+
     private static func rotated(_ image: CGImage, orientation: CGImagePropertyOrientation) -> CGImage? {
         let quarterTurns: Int = switch orientation { case .down, .downMirrored: 2; case .left, .leftMirrored: 1; case .right, .rightMirrored: 3; default: 0 }
+        guard quarterTurns > 0 else { return nil }
         let swap = quarterTurns % 2 == 1
         let w = swap ? image.height : image.width, h = swap ? image.width : image.height
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
@@ -390,29 +398,8 @@ actor Extractor {
 
     static func isContextOverflow(_ error: any Error) -> Bool {
         if case LanguageModelError.contextSizeExceeded = error { return true }
-        if case OpenAIError.payloadTooLarge = error { return true }
         return false
     }
-
-    /// Why Private Cloud Compute cannot be used right now, or nil when it can. Nothing here touches
-    /// `PrivateCloudComputeLanguageModel` unless the process carries Apple's managed entitlement
-    /// (com.apple.developer.private-cloud-compute): without it FoundationModels traps on first use.
-    static func cloudAvailability() -> String? {
-        guard hasCloudEntitlement else { return "the app is not signed with the Private Cloud Compute entitlement" }
-        switch PrivateCloudComputeLanguageModel().availability {
-        case .available: return nil
-        case .unavailable(let reason): return String(describing: reason)
-        }
-    }
-
-    /// Whether this process is signed with the Private Cloud Compute entitlement, read from the entitlements plist
-    /// embedded in the executable's code signature (there is no API for a process's own entitlements on iOS). The
-    /// needle is assembled at runtime so this source file's own strings cannot match.
-    static let hasCloudEntitlement: Bool = {
-        guard let executable = Bundle.main.executableURL, let data = try? Data(contentsOf: executable, options: .mappedIfSafe) else { return false }
-        let needle = Data(("<key>" + "com.apple.developer." + "private-cloud-compute" + "</key>").utf8)
-        return data.range(of: needle) != nil
-    }()
 
     static func isSafetyStop(_ error: any Error) -> Bool {
         switch error {

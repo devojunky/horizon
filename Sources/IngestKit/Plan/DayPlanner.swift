@@ -119,8 +119,8 @@ public actor DayPlanner {
     """
 
     private let log: @Sendable (String) -> Void
-    private let transport: OpenAITransport
-    public init(log: @escaping @Sendable (String) -> Void = { _ in }, transport: OpenAITransport = .live) { self.log = log; self.transport = transport }
+    private let transport: ClaudeTransport
+    public init(log: @escaping @Sendable (String) -> Void = { _ in }, transport: ClaudeTransport = .live) { self.log = log; self.transport = transport }
 
     /// Free time between the fixed events, inside the day, from now on, at least 25 minutes long.
     public static func gaps(in input: PlanInput) -> [DateInterval] {
@@ -150,7 +150,9 @@ public actor DayPlanner {
 
     /// `progress` is told the plan so far as the model writes it: the blocks that are complete, validated and in time
     /// order, with the calendar's events up to the last of them, so a timetable can grow block by block.
-    public func plan(_ input: PlanInput, route: IngestOptions.RoutePolicy = .onDeviceFirst, openAI: OpenAIConfiguration? = nil,
+    /// A small task, so the device model plans by default; Claude when asked for (`route: .claude` with `claude`), and
+    /// when the device has no model and Claude is configured.
+    public func plan(_ input: PlanInput, route: IngestOptions.RoutePolicy = .onDevice, claude: ClaudeConfiguration? = nil,
                      progress: @escaping @Sendable ([PlanBlock]) -> Void = { _ in }) async -> DayPlan {
         let gaps = Self.gaps(in: input)
         let ranked = Array(Self.ranked(input).prefix(12))
@@ -162,7 +164,7 @@ public actor DayPlanner {
         let started = ContinuousClock.now
         let report = Reporter { draft in progress(Self.provisional(draft, gaps: gaps, input: input, ranked: ranked)) }
         do {
-            let (draft, usage, used) = try await respond(prompt, route: route, openAI: openAI, report: report)
+            let (draft, usage, used) = try await respond(prompt, route: route, claude: claude, report: report)
             let blocks = Self.validate(draft, gaps: gaps, input: input, ranked: ranked)
             let record = UsageRecord(step: "plan", chunk: 0, route: used, inputTokens: usage.input, cachedTokens: usage.cached,
                                      outputTokens: usage.output, reasoningTokens: usage.reasoning,
@@ -209,41 +211,41 @@ public actor DayPlanner {
 
     struct Tokens: Sendable { var input = 0, cached = 0, output = 0, reasoning = 0 }
 
-    /// OpenAI when asked for and reachable (its client retries; a failure falls through to Apple's models), else Private
-    /// Cloud Compute when entitled, else the device. Every route streams, and `report` sees the complete blocks so far.
-    private func respond(_ prompt: String, route: IngestOptions.RoutePolicy, openAI: OpenAIConfiguration?, report: Reporter) async throws -> (PlanDraft, Tokens, ModelRoute) {
-        if route == .openAI, let openAI {
+    /// The device model, or Claude when asked for (a failure there falls back to the device: the plan is a small task
+    /// and today's); a device without a model plans with Claude when it is configured. Every route streams, and
+    /// `report` sees the complete blocks so far.
+    private func respond(_ prompt: String, route: IngestOptions.RoutePolicy, claude: ClaudeConfiguration?, report: Reporter) async throws -> (PlanDraft, Tokens, ModelRoute) {
+        let device = SystemLanguageModel.default
+        var useClaude = route == .claude
+        if !useClaude, case .unavailable(let reason) = device.availability {
+            guard claude != nil else { throw IngestError.modelUnavailable(String(describing: reason)) }
+            log("plan: the device model is unavailable (\(String(describing: reason))); planning with Claude")
+            useClaude = true
+        }
+        if useClaude, let claude, !claude.apiKey.isEmpty {
             do {
-                let client = OpenAIClient(configuration: openAI, transport: transport, log: log)
-                let request = OpenAIClient.Request(system: Self.instructions, user: prompt, schemaName: "plan_draft", schema: OpenAISchemas.plan, maxOutputTokens: 1500)
+                let client = ClaudeClient(configuration: claude, transport: transport, log: log)
+                let request = ClaudeClient.Request(system: Self.instructions, user: prompt, schema: ClaudeSchemas.plan, maxOutputTokens: 1500)
                 let completion = try await client.stream(request) { text in report.report(PlanJSON.provisional(text)) }
                 let draft = try PlanJSON.decode(completion.text)
-                return (draft, Tokens(input: completion.inputTokens, cached: completion.cachedTokens, output: completion.outputTokens), .openAI)
+                return (draft, Tokens(input: completion.inputTokens, cached: completion.cachedTokens, output: completion.outputTokens), .claude)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                log("plan: OpenAI could not be used (\(error.localizedDescription)); planning with Apple's models")
+                guard case .available = device.availability else { throw IngestError.claudeUnavailable(Extractor.explainClaude(error)) }
+                log("plan: Claude could not be used (\(Extractor.explainClaude(error))); planning on the device")
                 report.reset()
                 report.report(PlanDraft(blocks: []))
             }
+        } else if useClaude {
+            throw IngestError.claudeUnavailable("no API key")
         }
         let options = GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 900)
-        let stream: LanguageModelSession.ResponseStream<PlanDraft>
-        let used: ModelRoute
-        if route != .onDeviceOnly, Extractor.hasCloudEntitlement, case .available = PrivateCloudComputeLanguageModel().availability {
-            let session = LanguageModelSession(model: PrivateCloudComputeLanguageModel(), instructions: Instructions(Self.instructions))
-            stream = session.streamResponse(to: Prompt(prompt), generating: PlanDraft.self, options: options, contextOptions: ContextOptions(reasoningLevel: .deep))
-            used = .privateCloudCompute
-        } else {
-            let model = SystemLanguageModel.default
-            guard case .available = model.availability else { throw IngestError.modelUnavailable(String(describing: model.availability)) }
-            let session = LanguageModelSession(model: model, instructions: Instructions(Self.instructions))
-            stream = session.streamResponse(to: Prompt(prompt), generating: PlanDraft.self, options: options)
-            used = .onDevice
-        }
+        let session = LanguageModelSession(model: device, instructions: Instructions(Self.instructions))
+        let stream = session.streamResponse(to: Prompt(prompt), generating: PlanDraft.self, options: options)
         for try await snapshot in stream { report.report(Self.complete(snapshot.content)) }
         let response = try await stream.collect()
-        return (response.content, Self.tokens(response.usage), used)
+        return (response.content, Self.tokens(response.usage), .onDevice)
     }
 
     /// The blocks a snapshot has finished: the fields come in order, so a block whose last field has arrived is whole.

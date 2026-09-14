@@ -29,38 +29,31 @@ final class AppModel {
     var openNowRequested = false
     /// What the parser is reading right now, item by item as the model streams. Nil when idle.
     var reading: Reading?
-    /// Read documents in Private Cloud Compute instead of on device (slow and hot on a phone). Persisted; needs the
-    /// PCC entitlement in the app's signature, which `cloudUnavailableReason` reports when missing.
-    var readInCloud: Bool = UserDefaults.standard.bool(forKey: "readInCloud") {
-        didSet { UserDefaults.standard.set(readInCloud, forKey: "readInCloud") }
+    /// Where documents are read: Claude (the target model, with the user's own key) or the device's own model (nothing
+    /// leaves the phone; no eye for tables or pictures). Persisted. A key entered turns Claude on; a key removed turns
+    /// it off.
+    enum ReadingRoute: String, CaseIterable { case claude, onDevice }
+    var readingRoute: ReadingRoute = ReadingRoute(rawValue: UserDefaults.standard.string(forKey: "readingRoute") ?? "") ?? .claude {
+        didSet { UserDefaults.standard.set(readingRoute.rawValue, forKey: "readingRoute") }
     }
-    let cloudUnavailableReason: String? = Ingestor.cloudAvailability()
-    /// Read and plan through OpenAI with the user's own key (`FeatureFlags.openAI` shows the setting). The key lives in
-    /// the Keychain; the model name and the switch in UserDefaults.
-    var useOpenAI: Bool = UserDefaults.standard.bool(forKey: "useOpenAI") {
-        didSet { UserDefaults.standard.set(useOpenAI, forKey: "useOpenAI") }
+    /// Which Claude. Persisted.
+    var claudeModel: ClaudeModelChoice = ClaudeModelChoice(rawValue: UserDefaults.standard.string(forKey: "claudeModel") ?? "") ?? .default {
+        didSet { UserDefaults.standard.set(claudeModel.rawValue, forKey: "claudeModel") }
     }
-    var openAIModel: String = UserDefaults.standard.string(forKey: "openAIModel") ?? OpenAIConfiguration.defaultModel {
-        didSet { UserDefaults.standard.set(openAIModel, forKey: "openAIModel") }
+    /// The user's own key, in the Keychain and nowhere else.
+    var claudeKey: String = Keychain.read("claude") ?? "" {
+        didSet { Keychain.write(claudeKey, account: "claude") }
     }
-    var openAIKey: String = Keychain.read("openai") ?? "" {
-        didSet { Keychain.write(openAIKey, account: "openai") }
+    /// The day plan is a small task: the device model makes it unless the user asks for Claude. Persisted.
+    var planWithClaude: Bool = UserDefaults.standard.bool(forKey: "planWithClaude") {
+        didSet { UserDefaults.standard.set(planWithClaude, forKey: "planWithClaude") }
     }
-    /// What the next read or plan uses, or nil when OpenAI is off, hidden, or has no key.
-    var openAIConfiguration: OpenAIConfiguration? {
-        guard FeatureFlags.openAI, useOpenAI, !openAIKey.isEmpty else { return nil }
-        return OpenAIConfiguration(apiKey: openAIKey, model: openAIModel)
+    /// What a read or plan on Claude uses, or nil without a key.
+    var claudeConfiguration: ClaudeConfiguration? {
+        claudeKey.isEmpty ? nil : ClaudeConfiguration(apiKey: claudeKey, model: claudeModel)
     }
-    /// Where documents are read and plans made, as one choice (Settings): OpenAI wins when it can be used, then the
-    /// cloud when the entitlement is there, else the device. Choosing one turns the others off.
-    enum ReadingRoute: CaseIterable { case onDevice, privateCloudCompute, openAI }
-    var readingRoute: ReadingRoute {
-        get { openAIConfiguration != nil ? .openAI : readInCloud && cloudUnavailableReason == nil ? .privateCloudCompute : .onDevice }
-        set {
-            useOpenAI = newValue == .openAI && !openAIKey.isEmpty
-            readInCloud = newValue == .privateCloudCompute
-        }
-    }
+    /// Where the next read goes: Claude when chosen and keyed, else the device.
+    var readRoute: IngestOptions.RoutePolicy { readingRoute == .claude && claudeConfiguration != nil ? .claude : .onDevice }
 
     struct Reading: Equatable {
         var documentID: UUID
@@ -200,7 +193,7 @@ final class AppModel {
             let left = UIApplication.shared.backgroundTimeRemaining   // effectively infinite until iOS starts the clock: never an Int
             Self.log("background: reading goes on while iOS allows" + (left < 3600 ? " (\(Int(left)) s)" : ""))
         }
-        BackgroundIngest.schedule(needsNetwork: readingRoute != .onDevice)
+        BackgroundIngest.schedule(needsNetwork: readRoute == .claude)
     }
 
     private func holdBackgroundTime() {
@@ -219,7 +212,7 @@ final class AppModel {
         Self.log("background time ran out: the read is paused; it goes on when the app is back, or in a background task")
         paused = true
         drainTask?.cancel()
-        BackgroundIngest.schedule(needsNetwork: readingRoute != .onDevice)
+        BackgroundIngest.schedule(needsNetwork: readRoute == .claude)
         releaseBackgroundTime()
     }
     #endif
@@ -294,12 +287,11 @@ final class AppModel {
 
     private func drainOnce() async {
         if remindersAuthorized == nil { await requestReminders() }
-        let cloud = readInCloud && cloudUnavailableReason == nil   // the setting only counts where the cloud can be used
-        let openAI = openAIConfiguration
-        Self.log("drain: reminders \(remindersAuthorized.map { "\($0)" } ?? "unknown"), route \(openAI.map { "openAI (\($0.model), key of \($0.apiKey.count) chars)" } ?? (cloud ? "privateCloudCompute" : "onDevice"))")
-        withAnimation { statusLine = openAI != nil ? "Reading documents with OpenAI…" : cloud ? "Reading documents in Private Cloud Compute…" : "Reading documents…" }
-        await coordinator.setOpenAI(openAI)
-        await coordinator.setRoute(openAI != nil ? .openAI : cloud ? .privateCloudCompute : .onDeviceFirst)
+        let route = readRoute
+        Self.log("drain: reminders \(remindersAuthorized.map { "\($0)" } ?? "unknown"), route \(route == .claude ? "claude (\(claudeModel.rawValue), key of \(claudeKey.count) chars)" : "onDevice")")
+        withAnimation { statusLine = route == .claude ? "Reading documents with Claude…" : "Reading documents on this device…" }
+        await coordinator.setClaude(claudeConfiguration)
+        await coordinator.setRoute(route)
         let reports = await coordinator.drain()
         withAnimation { reading = nil }   // however the read ended, the live section must not outlive it
         if let id = cancelledDocument {
@@ -315,10 +307,6 @@ final class AppModel {
             return
         }
         if !reports.isEmpty { self.reports = reports + self.reports.prefix(20); cancelNotice = nil }   // failed reads stay visible from the store (RootView)
-        // A read that OpenAI could not do was done on the device; say so where the user looks, not only in Documents.
-        if let fallback = reports.compactMap({ $0.summary?.warnings.first { $0.hasPrefix("OpenAI could not be used") } }).first {
-            cancelNotice = fallback
-        }
         withAnimation { statusLine = "Syncing with Reminders…" }
         do {
             let report = try await sync.sync()
@@ -368,6 +356,12 @@ final class AppModel {
         await drainAndSync()
     }
 
+    /// The user's word: this document may be read by the device model instead of Claude (asked for, never assumed).
+    func readOnDevice(documentID: UUID) async {
+        try? await store.readOnDevice(id: documentID)
+        await drainAndSync()
+    }
+
     func confirm(_ id: UUID, edits: ObligationEdits = ObligationEdits()) async {
         do { try await store.confirm(id: id, edits: edits) } catch { lastError = error.localizedDescription }
         await drainAndSync()
@@ -392,10 +386,9 @@ final class AppModel {
         } catch { lastError = error.localizedDescription }
         let obligations = (try? await store.planObligations(from: now, days: 21)) ?? []   // three weeks out: enough to choose from
         let planner = DayPlanner(log: { message in Task { @MainActor in AppModel.log(message) } })
-        let openAI = openAIConfiguration
-        let route: IngestOptions.RoutePolicy = openAI != nil ? .openAI : readInCloud && cloudUnavailableReason == nil ? .privateCloudCompute : .onDeviceFirst
+        let route: IngestOptions.RoutePolicy = planWithClaude && claudeConfiguration != nil ? .claude : .onDevice   // a small task: the device, unless asked
         let input = PlanInput(date: now, now: now, busy: busy, obligations: obligations, instructions: planInstructions)
-        var result = await planner.plan(input, route: route, openAI: openAI) { blocks in
+        var result = await planner.plan(input, route: route, claude: claudeConfiguration) { blocks in
             Task { @MainActor in self.showDraft(blocks) }   // the timetable grows as the model writes
         }
         if calendarOff { result.note = ([result.note, "Calendar access is off, so nothing on it counted as fixed."].compactMap { $0 }).joined(separator: " ") }

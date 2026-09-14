@@ -21,12 +21,13 @@ struct HorizonApp: App {
         }
         let model = AppModel(container: container)
         #if DEBUG
-        // `--openai-key <key>` stores a key and turns OpenAI on, to exercise the route and its failures without typing;
-        // `--read-on-device` turns it off again. Set here, before the first drain can read the route.
-        if let i = CommandLine.arguments.firstIndex(of: "--openai-key"), i + 1 < CommandLine.arguments.count {
-            model.openAIKey = CommandLine.arguments[i + 1]; model.useOpenAI = true
+        // `--claude-key <key>` stores a key and reads with Claude, to exercise the route and its failures without typing;
+        // `--read-on-device` / `--read-with-claude` set the route. Set here, before the first drain can read the route.
+        if let i = CommandLine.arguments.firstIndex(of: "--claude-key"), i + 1 < CommandLine.arguments.count {
+            model.claudeKey = CommandLine.arguments[i + 1]; model.readingRoute = .claude
         }
         if CommandLine.arguments.contains("--read-on-device") { model.readingRoute = .onDevice }
+        if CommandLine.arguments.contains("--read-with-claude") { model.readingRoute = .claude }
         #endif
         _model = State(initialValue: model)
         Design.installAppearance()
@@ -55,6 +56,13 @@ struct HorizonApp: App {
                     }
                     #endif
                     await model.drainAndSync()
+                    #if DEBUG
+                    // `--read-first-waiting-on-device`: the confirmation's outcome without a tap (a document waiting for Claude is read on the device).
+                    if CommandLine.arguments.contains("--read-first-waiting-on-device"),
+                       let waiting = try? await model.store.documents().first(where: { $0.status == .awaitingCloudParse }) {
+                        await model.readOnDevice(documentID: waiting.id)
+                    }
+                    #endif
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .EKEventStoreChanged)) { _ in Task { await model.drainAndSync() } }
                 #if os(macOS)
@@ -96,8 +104,7 @@ enum BackgroundIngest {
         }
     }
 
-    /// `needsNetwork`: a read in the cloud is only worth starting with the network there (without it OpenAI would fall
-    /// back to the device, unasked, in the background).
+    /// `needsNetwork`: a read with Claude is only worth starting with the network there.
     static func schedule(needsNetwork: Bool) {
         let request = BGProcessingTaskRequest(identifier: Identifiers.backgroundIngestTask)
         request.requiresNetworkConnectivity = needsNetwork

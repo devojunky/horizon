@@ -7,7 +7,9 @@ enum Merger {
                       options: IngestOptions, warnings: [String]) -> IngestResult {
         var warnings = warnings
         let extractions = outcomes.map(\.extraction)
-        let source = Source(text: document.fullText)
+        // The document's own words: its text layers, and every picture as Claude transcribed it (the device model
+        // transcribes nothing, so its pictures are checked against nothing and go to review).
+        let source = Source(text: ([document.fullText] + outcomes.compactMap(\.transcript)).filter { !$0.isEmpty }.joined(separator: "\n"))
 
         // Course: first stated value per field wins; meetings are unioned.
         var course: ParsedCourse?
@@ -114,8 +116,8 @@ enum Merger {
         var obligations: [ParsedObligation] = []
         var merged = 0, dropped = 0, skippedTopics = 0
         for outcome in outcomes {
-            // Text chunks are checked strictly against the document text. Image pages are checked against Vision OCR
-            // text, which can misread a date, so failures there downgrade to review instead of dropping.
+            // Text chunks are checked strictly against the document text. Pictures are checked against their transcript,
+            // which the same model wrote, so failures there downgrade to review instead of dropping.
             let strict = outcome.kind == .text && source.hasText
             let siblingTitles = Set(outcome.extraction.obligations.map { Normalize.key($0.title) })
             for facts in outcome.extraction.obligations {
@@ -166,8 +168,11 @@ enum Merger {
                 }
                 // The title must be the document's own wording. A name the document never prints ("Midterm 1" for
                 // "Exam 1", or one carried over from another item) is replaced by the label of the line that carries
-                // the item's date; a label cut from prose, or no label at all, means review.
-                if strict, !source.contains(title) || componentKeys.contains(Normalize.key(title)) {
+                // the item's date; a label cut from prose, or no label at all, means review. The device model needed
+                // this; Claude names an item as printed and composes "Lab 1 report" from a row that says "Lab 1: …"
+                // and "Report due", so its titles stand (renaming them cost the real syllabi their tests, and turned
+                // "Lab 1 report" into "Measurement and density"). What the document never prints still means review.
+                if strict, route == .onDevice, !source.contains(title) || componentKeys.contains(Normalize.key(title)) {
                     let found = resolution.date.flatMap { source.label(on: resolver.mentions($0), title: title, otherTitles: siblingTitles.subtracting([Normalize.key(title)])) }
                         .map { (text: Self.ownName($0.text), prose: $0.prose) }
                     if let label = found, Normalize.key(label.text).contains(Normalize.key(title)) {
@@ -236,17 +241,21 @@ enum Merger {
                 if strict, !spans.isEmpty, let date = resolution.date, source.titleShares(title, dateForms: resolver.mentions(date)) == false {
                     flags.append(.dateNotOnRow); confidence = min(confidence, options.reviewThreshold - 0.05)
                 }
-                // No wording to check, or an image Vision could not read: the model is on its own, so review.
-                if Self.isNoWording(facts.dateAsWritten) || (outcome.kind == .image && !source.hasText) {
+                // No wording to check, or a picture with no transcript to check it against: the model is on its own, so review.
+                if Self.isNoWording(facts.dateAsWritten) || (outcome.kind == .image && outcome.transcript == nil) {
                     if !flags.contains(.dateNotInSource) { flags.append(.dateNotInSource) }
                     confidence = min(confidence, options.reviewThreshold - 0.05)
                 }
                 confidence = min(1, max(0, confidence))
                 // Platform: the item's own row, then its grading row. A screenshot may add the one platform the page
-                // names, then the model's reading of the picture; for text the model's guess is not evidence ("lms" is its default).
+                // names, then the model's reading of the picture; for text the device model's guess is not evidence
+                // ("lms" is its default), but Claude's reading counts when the document names exactly that one site
+                // anywhere ("Reports are due … on Gradescope" above a table of reports).
                 let platform = source.platform(onLineMentioning: title)
                     ?? componentName.flatMap { componentPlatforms[Normalize.key($0)] }
-                    ?? (outcome.kind == .image ? (source.uniquePlatform ?? platform(facts.platform)) : (source.hasText ? .syllabusOnly : platform(facts.platform)))
+                    ?? (outcome.kind == .image ? (source.uniquePlatform ?? platform(facts.platform))
+                        : route == .claude && source.uniquePlatform != nil && source.uniquePlatform == self.platform(facts.platform) ? source.uniquePlatform!
+                        : (source.hasText ? .syllabusOnly : platform(facts.platform)))
                 if bareWord { flags.append(.titleFromLine); confidence = min(confidence, options.reviewThreshold - 0.05) }   // last word: nothing below raises it back
                 let status: ObligationStatus = resolution.date == nil ? (tbd ? .awaitingDate : .needsReview)
                     : (confidence < options.reviewThreshold ? .needsReview : .ready)
@@ -293,7 +302,7 @@ enum Merger {
         // boilerplate ("Attendance is mandatory and will be monitored") are dropped, not kept; a real sentence filed under
         // the wrong rule is re-filed by its words, and one that names no rule is dropped; a rule the model never quoted
         // is read from the document itself, the way a skipped grade-table row is. Without any text to check against
-        // (an image and no OCR), the model's words are kept and marked as unchecked.
+        // (a picture the device model read, with no transcript), the model's words are kept and marked as unchecked.
         var policies: [ParsedPolicy] = []
         var droppedPolicies = 0
         func accept(_ text: String, kind: PolicyKind, verbatim: Bool) {

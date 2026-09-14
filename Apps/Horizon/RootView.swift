@@ -33,6 +33,7 @@ struct IntakeStatus: View {
     @Environment(\.openURL) private var openURL
     /// Opens Documents, where a failed read can be retried.
     var openDocuments: () -> Void
+    @State private var confirmDevice: SourceDocument?
 
     /// Documents that could not be read, in one line: a failure must not vanish into Documents unannounced.
     var readFailure: String? {
@@ -41,9 +42,35 @@ struct IntakeStatus: View {
         return failed.count == 1 ? "Could not read \(first.filename): \(first.failure ?? "") Retry it from Documents." : "\(failed.count) documents could not be read. Retry them from Documents."
     }
 
+    /// Documents Claude could not read yet, in one line, with the way out: try again, or let the device read one.
+    var waitingForClaude: [SourceDocument] { documents.filter { $0.status == .awaitingCloudParse } }
+
     var body: some View {
         if let reading = model.reading {
             ReadingSection(reading: reading, cancel: { model.cancelReading() })
+        } else if let first = waitingForClaude.first {
+            Section {
+                VStack(alignment: .leading, spacing: 10) {
+                    let count = waitingForClaude.count
+                    Label(count == 1 ? "\(first.filename) is waiting for Claude: \(first.failure ?? "it could not be reached")." : "\(count) documents are waiting for Claude: \(first.failure ?? "it could not be reached").",
+                          systemImage: "cloud").foregroundStyle(.secondary)
+                    HStack(spacing: 10) {
+                        Button("Try Again") { Task { await model.drainAndSync() } }.buttonStyle(.bordered).controlSize(.small)
+                        Button(count == 1 ? "Read on This Device…" : "Read Them on This Device…") { confirmDevice = first }.buttonStyle(.bordered).controlSize(.small)
+                    }
+                }
+            }
+            .listRowSeparator(.hidden)
+            .onPaper()
+            .confirmationDialog("Read on this device instead?", isPresented: Binding(get: { confirmDevice != nil }, set: { if !$0 { confirmDevice = nil } }), titleVisibility: .visible) {
+                Button(waitingForClaude.count == 1 ? "Read on This Device" : "Read All on This Device") {
+                    let ids = waitingForClaude.map(\.id)
+                    Task { for id in ids { await model.readOnDevice(documentID: id) } }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The device model is less sure of tables and pictures than Claude, and it takes minutes on a long document. Nothing is sent to Anthropic.")
+            }
         } else if model.remindersAuthorized == false {
             Section {
                 VStack(alignment: .leading, spacing: 8) {

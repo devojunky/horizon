@@ -117,6 +117,9 @@ public enum HorizonSchemaV1: VersionedSchema {
         /// Where a read that stopped stands (`IngestCheckpoint`, encoded): the next read goes on from there. Cleared
         /// when the document is read to the end, or shared again from the bin.
         public var checkpoint: Data?
+        /// The user's word that this document may be read by the device model instead of Claude (the confirmation for
+        /// a document Claude could not be reached for). Never set by the app on its own.
+        public var readOnDevice: Bool = false
         public var course: Course?
         @Relationship(deleteRule: .nullify, inverse: \Obligation.sourceDocument) public var obligations: [Obligation]?
 

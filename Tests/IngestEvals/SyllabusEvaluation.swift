@@ -6,7 +6,9 @@ import IngestKit
 // Runs the parser over Evals/Fixtures and scores it with the Evaluations framework.
 // Slow (model calls), so it only runs when HORIZON_EVALS is set:
 //   HORIZON_EVALS=1 swift test --filter IngestEvals
-// HORIZON_FIXTURE=<substring> limits the run to matching fixture folders. HORIZON_PCC=1 routes through Private Cloud Compute.
+// HORIZON_FIXTURE=<substring> limits the run to matching fixture folders. Claude reads (the key from ANTHROPIC_API_KEY, else
+// claude_api_key.secret at the package root, git-ignored); HORIZON_ON_DEVICE=1 reads with the device model instead, and
+// HORIZON_CLAUDE_MODEL=opus5|haiku45 picks another Claude.
 // A per-fixture table is printed and written to Evals/Results/latest.md next to the framework's JSON result.
 
 struct FixtureSample: SampleProtocol {
@@ -123,13 +125,19 @@ struct IngestEvals {
     @Test func syllabusExtraction() async throws {
         let env = ProcessInfo.processInfo.environment
         var options = IngestOptions()
-        options.route = env["HORIZON_PCC"] != nil ? .privateCloudCompute : .onDeviceOnly
+        if env["HORIZON_ON_DEVICE"] != nil {
+            options.route = .onDevice
+        } else {
+            guard let key = ClaudeKey.find() else { Issue.record("no Claude key: set ANTHROPIC_API_KEY or write claude_api_key.secret, or set HORIZON_ON_DEVICE=1"); return }
+            options.route = .claude
+            options.claude = ClaudeConfiguration(apiKey: key, model: env["HORIZON_CLAUDE_MODEL"].flatMap { name in ClaudeModelChoice.allCases.first { "\($0)" == name } } ?? .default)
+        }
         let samples = try Fixtures.load(filter: env["HORIZON_FIXTURE"])
         #expect(!samples.isEmpty)
         let evaluation = SyllabusEvaluation(dataset: ArrayLoader(samples: samples), options: options)
-        let result = try await evaluation.run(info: ["route": "\(options.route)"])
+        let result = try await evaluation.run(info: ["route": "\(options.route)", "model": options.claude?.model.rawValue ?? "device"])
 
-        let report = "# Ingest evals — \(samples.count) fixtures, \(Int(result.duration))s, route \(options.route)\n\n" + evaluation.report(result, samples: samples)
+        let report = "# Ingest evals — \(samples.count) fixtures, \(Int(result.duration))s, route \(options.route) \(options.claude?.model.rawValue ?? "")\n\n" + evaluation.report(result, samples: samples)
         print("\n" + report)
         try FileManager.default.createDirectory(at: Fixtures.results, withIntermediateDirectories: true)
         try report.write(to: Fixtures.results.appendingPathComponent("latest.md"), atomically: true, encoding: .utf8)
@@ -140,3 +148,17 @@ struct IngestEvals {
         #expect(result.aggregateValue(.maximum(of: SyllabusEvaluation.readyErrors)) == 0)
     }
 }
+
+/// The Claude key for evals and the CLI: the environment, else the git-ignored `claude_api_key.secret` at the package root.
+/// Never printed.
+enum ClaudeKey {
+    static func find() -> String? {
+        if let key = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty { return key }
+        var dir = URL(fileURLWithPath: #filePath)
+        for _ in 0..<3 { dir.deleteLastPathComponent() }   // Tests/IngestEvals/<file> → the package root
+        guard let text = try? String(contentsOf: dir.appendingPathComponent("claude_api_key.secret"), encoding: .utf8) else { return nil }
+        let key = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return key.isEmpty ? nil : key
+    }
+}
+

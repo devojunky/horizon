@@ -47,7 +47,7 @@ public actor IngestCoordinator {
         case IngestError.emptyDocument: "The document has no readable text or images."
         case IngestError.unsupportedFile(let ext): "Horizon cannot read .\(ext) files."
         case IngestError.extractionFailed: "The model found nothing in it to read."
-        case IngestError.modelUnavailable(let why): "The on-device model is unavailable: \(why)"
+        case IngestError.modelUnavailable(let why): "The device model is unavailable: \(why)"
         default: error.localizedDescription
         }
     }
@@ -75,9 +75,10 @@ public actor IngestCoordinator {
         for record in try await store.expireBin(now: now) { storage.remove(sha256: record.sha256, extension: record.kind) }
     }
 
-    /// Where the next drain reads documents: on device, in Private Cloud Compute, or through OpenAI (user settings).
+    /// Where the next drain reads documents: Claude (with `setClaude`) or the device model (user settings). A document
+    /// the user has cleared for the device (`readOnDevice`) goes to the device whatever the setting.
     public func setRoute(_ route: IngestOptions.RoutePolicy) { options.route = route }
-    public func setOpenAI(_ configuration: OpenAIConfiguration?) { options.openAI = configuration }
+    public func setClaude(_ configuration: ClaudeConfiguration?) { options.claude = configuration }
 
     /// Parses every queued document, folds results into the store, then writes Reminders.
     public func drain() async -> [Report] {
@@ -88,6 +89,7 @@ public actor IngestCoordinator {
             let url = storage.url(sha256: doc.sha256, extension: doc.kind)
             guard storage.exists(sha256: doc.sha256, extension: doc.kind) else { continue }   // ingested on another device
             var perDocument = options
+            if doc.readOnDevice { perDocument.route = .onDevice }   // the user's word, for this document
             if let courseID = doc.courseID, let known = try? await store.knownCourse(for: courseID) { perDocument.knownCourse = known }   // filed under a course: read it as that course's
             let sink = progress, id = doc.id, name = doc.filename
             perDocument.progress = { event in sink(DocumentProgress(documentID: id, filename: name, event: event)) }
@@ -103,9 +105,12 @@ public actor IngestCoordinator {
                 try? await store.markDocument(id: doc.id, status: .queued, failure: "Waiting for the on-device model: \(why)")
                 reports.append(Report(document: doc, summary: nil, failure: "Waiting for the on-device model: \(why)"))
                 break   // nothing else will parse until the model is ready
-            } catch IngestError.cloudUnavailable(let why) {
+            } catch IngestError.claudeUnavailable(let why) {
+                // Claude could not read it now: it waits (a processing task with the network, the next drain, or the user's
+                // word to read it on the device). Never read on the device unasked.
                 try? await store.markDocument(id: doc.id, status: .awaitingCloudParse, failure: why)
-                reports.append(Report(document: doc, summary: nil, failure: "Queued for Private Cloud Compute: \(why)"))
+                reports.append(Report(document: doc, summary: nil, failure: "Waiting for Claude: \(why)"))
+                if why == "no API key" || why.hasPrefix("no connection") || why.contains("rejected") { break }   // the same will stop every document behind it
             } catch is CancellationError {
                 try? await store.markDocument(id: doc.id, status: .queued, failure: nil)   // paused: the checkpoint holds the parts read so far; it goes on next time
                 break

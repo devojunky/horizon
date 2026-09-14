@@ -64,27 +64,6 @@ struct PlannerTests {
         #expect(DayPlanner.provisional(PlanDraft(blocks: Array(whole.blocks.prefix(2))), gaps: gaps, input: input, ranked: ranked).map(\.title) == ["Quiz 3", "Lecture", "Eat"])
     }
 
-    @Test func aStreamedPlanArrivesBlockByBlockOverOpenAI() async throws {
-        let json = #"{"blocks": [{"start": "09:00", "end": "09:50", "title": "Quiz 3", "reason": "Due tonight.", "kind": "work"}, {"start": "10:00", "end": "10:40", "title": "HW 4", "reason": "Due tomorrow.", "kind": "work"}]}"#
-        let cut1 = json.range(of: "\"kind\": \"work\"}")!.upperBound, cut2 = json.range(of: "\"title\": \"HW 4\"")!.upperBound
-        let events = [OpenAIClientTests.event(String(json[..<cut1])), OpenAIClientTests.event(String(json[cut1..<cut2])), OpenAIClientTests.event(String(json[cut2...])),
-                      OpenAIClientTests.event(nil, finish: "stop"), OpenAIClientTests.event(nil, usage: (300, 60)), "data: [DONE]"]
-        let script = OpenAIClientTests.Script([.reply(status: 200, lines: events)])
-        let seen = OpenAIClientTests.Script([])
-        let input = Self.input(now: Self.at(9), obligations: [PlanObligation(title: "Quiz 3", due: Self.at(23), points: 6), PlanObligation(title: "HW 4", due: Self.at(23).addingTimeInterval(86400), points: 2)])
-        let plan = await DayPlanner(transport: script.transport).plan(input, route: .openAI, openAI: OpenAIConfiguration(apiKey: "sk-test", model: "gpt-5-mini")) { blocks in
-            seen.logs.append(blocks.map(\.title).joined(separator: ","))
-        }
-        #expect(seen.logs == ["Quiz 3", "Quiz 3,HW 4"])                     // one report per completed block, never the half-written one
-        #expect(plan.blocks.map(\.title) == ["Quiz 3", "HW 4"] && plan.route == .openAI && plan.usage?.inputTokens == 300)
-    }
-
-    @Test func aStreamedPlanCutShortStillReportsWhatCompleted() {
-        let text = #"{"blocks": [{"start": "09:00", "end": "09:50", "title": "Quiz 3", "reason": "Due tonight.", "kind": "work"}, {"start": "10:00", "end": "10:4"#
-        #expect(PlanJSON.provisional(text).blocks.map(\.title) == ["Quiz 3"])
-        #expect(PlanJSON.provisional("{\"blo").blocks.isEmpty)
-    }
-
     @Test func thePlanKnowsWhatIsOnAndWhatIsNext() throws {
         var plan = DayPlan(blocks: [
             PlanBlock(start: Self.at(9), end: Self.at(10), title: "Quiz 3", reason: "", kind: .work),
@@ -157,7 +136,7 @@ struct PlannerTests {
         checkpoint.record(index: 1, outcomes: [])                                   // a part the model had nothing for is finished too
         #expect(checkpoint.finishedParts == 2 && checkpoint.totalParts == 4)
         #expect(checkpoint.applies(route: .onDevice, textChunks: 3, images: 1))
-        #expect(!checkpoint.applies(route: .openAI, textChunks: 3, images: 1))     // another route chunks differently
+        #expect(!checkpoint.applies(route: .claude, textChunks: 3, images: 1))     // another route chunks differently
         #expect(!checkpoint.applies(route: .onDevice, textChunks: 4, images: 1))   // so does another build
         let round = try IngestCheckpoint(data: checkpoint.encoded())
         #expect(round == checkpoint && round.entry(at: 0)?.outcomes.first?.extraction.obligations.first?.title == "HW 1" && round.entry(at: 1)?.outcomes.isEmpty == true && round.entry(at: 2) == nil)

@@ -10,10 +10,11 @@ struct MergerTests {
     Late work: Late homework is not accepted; WebAssign closes at the deadline. The lowest two quiz scores are dropped.
     No class: Monday, October 12 (Fall Recess); Wednesday, November 25 – Friday, November 27 (Thanksgiving).
     """
-    static func outcome(_ chunk: Int, kind: ExtractionOutcome.Kind = .text, course: CourseFacts? = nil, components: [GradeComponentFacts] = [],
+    /// `transcript`: what Claude read off a picture (an image outcome without one is the device model's, checked against nothing).
+    static func outcome(_ chunk: Int, kind: ExtractionOutcome.Kind = .text, transcript: String? = nil, course: CourseFacts? = nil, components: [GradeComponentFacts] = [],
                         obligations: [ObligationFacts] = [], policies: [PolicyFacts] = [], noClass: [NoClassFacts] = []) -> ExtractionOutcome {
         ExtractionOutcome(kind: kind, page: chunk, extraction: ChunkExtraction(course: course, gradeComponents: components, obligations: obligations, policies: policies, noClassDates: noClass),
-                          usage: UsageRecord(step: "text", chunk: chunk, route: .onDevice, inputTokens: 1, cachedTokens: 0, outputTokens: 1, reasoningTokens: 0, durationMs: 1))
+                          transcript: transcript, usage: UsageRecord(step: "text", chunk: chunk, route: .onDevice, inputTokens: 1, cachedTokens: 0, outputTokens: 1, reasoningTokens: 0, durationMs: 1))
     }
     static func ob(_ title: String, _ written: String, iso: String? = nil, platform: String = "not_stated", component: String? = nil, confidence: String = "high") -> ObligationFacts {
         ObligationFacts(title: title, platform: platform, component: component, dateAsWritten: written, dueDate: iso, confidence: confidence)
@@ -425,7 +426,7 @@ struct MergerTests {
 
     @Test func screenshotsInheritThePagesOnlyPlatform() {
         let text = "Gradescope\nCS-UY 2413 Assignments\nHomework 1\nSep 16 at 11:59PM"
-        let r = Self.merge([Self.outcome(0, kind: .image, obligations: [Self.ob("Homework 1", "Sep 16 at 11:59PM", iso: "2026-09-16", platform: "lms")])], text: text)
+        let r = Self.merge([Self.outcome(0, kind: .image, transcript: text, obligations: [Self.ob("Homework 1", "Sep 16 at 11:59PM", iso: "2026-09-16", platform: "lms")])], text: "")
         #expect(r.obligations[0].platform == .gradescope)
         let prose = Self.merge([Self.outcome(0, kind: .text, obligations: [Self.ob("Quiz 1", "Thu 9/17", iso: "2026-09-17", platform: "not_stated")])])
         #expect(prose.obligations[0].platform == .syllabusOnly)   // a text document naming one platform does not tag in-class items with it
@@ -444,15 +445,16 @@ struct MergerTests {
     }
 
     @Test func imagePagesAreCheckedLeniently() {
-        // OCR text may misread a date: an unsupported date from an image page is kept for review, not dropped.
-        let r = Self.merge([Self.outcome(0, kind: .image, obligations: [Self.ob("Reaction Paper 1", "Oct 9, 2026 11:59 PM", iso: "2026-10-09")])])
+        // A picture's facts are checked against Claude's transcript of it, which the same model wrote: an unsupported
+        // date from a picture is kept for review, not dropped.
+        let r = Self.merge([Self.outcome(0, kind: .image, transcript: Self.source, obligations: [Self.ob("Reaction Paper 1", "Oct 9, 2026 11:59 PM", iso: "2026-10-09")])], text: "")
         #expect(r.obligations.count == 1 && r.obligations[0].status == .needsReview && r.obligations[0].flags.contains(.dateNotInSource))
-        let ok = Self.merge([Self.outcome(0, kind: .image, obligations: [Self.ob("HW 1", "Wed 9/9", iso: "2026-09-09")])])
+        let ok = Self.merge([Self.outcome(0, kind: .image, transcript: Self.source, obligations: [Self.ob("HW 1", "Wed 9/9", iso: "2026-09-09")])], text: "")
         #expect(ok.obligations[0].status == .ready)
     }
 
     @Test func unreadableImageGoesToReview() {
-        // Vision found no text: nothing can corroborate the model, so the item is kept but reviewed.
+        // No transcript (the device model read the picture): nothing can corroborate the model, so the item is kept but reviewed.
         let r = Self.merge([Self.outcome(0, kind: .image, obligations: [Self.ob("Reaction Paper 1", "Oct 9, 2026 11:59 PM", iso: "2026-10-09")])], text: "")
         #expect(r.obligations.count == 1 && r.obligations[0].status == .needsReview)
     }
@@ -504,15 +506,15 @@ struct MergerTests {
     }
 
     @Test func screenshotWithAReleasedColumnIsReviewed() {
-        // Cells OCR could not reassemble into a row: the page-wide Released column makes every dated item a review.
+        // A transcript that lost the rows: the page-wide Released column makes every dated item a review.
         let scattered = "Gradescope\nName\nReleased\nHomework 1\nSep 2 at 12:00PM\nDue\nSep 16 at 11:59PM"
-        let r = Self.merge([Self.outcome(0, kind: .image, obligations: [Self.ob("Homework 1", "Sep 2 at 12:00PM", iso: "2026-09-02")])], text: scattered)
+        let r = Self.merge([Self.outcome(0, kind: .image, transcript: scattered, obligations: [Self.ob("Homework 1", "Sep 2 at 12:00PM", iso: "2026-09-02")])], text: "")
         #expect(r.obligations[0].status == .needsReview && r.obligations[0].flags.contains(.dateAmbiguous))
         // Reassembled rows: the precise rule decides, so a correctly read Due date ships and a Released date does not.
         let rows = "Gradescope\nName  Released  Due  Late Due\nHomework 1  Sep 2 at 12:00PM  Sep 16 at 11:59PM  Sep 18 at 11:59PM"
-        let good = Self.merge([Self.outcome(0, kind: .image, obligations: [Self.ob("Homework 1", "Sep 16 at 11:59PM", iso: "2026-09-16")])], text: rows)
+        let good = Self.merge([Self.outcome(0, kind: .image, transcript: rows, obligations: [Self.ob("Homework 1", "Sep 16 at 11:59PM", iso: "2026-09-16")])], text: "")
         #expect(good.obligations[0].status == .ready)
-        let bad = Self.merge([Self.outcome(0, kind: .image, obligations: [Self.ob("Homework 1", "Sep 2 at 12:00PM", iso: "2026-09-02")])], text: rows)
+        let bad = Self.merge([Self.outcome(0, kind: .image, transcript: rows, obligations: [Self.ob("Homework 1", "Sep 2 at 12:00PM", iso: "2026-09-02")])], text: "")
         #expect(bad.obligations[0].status == .needsReview)
     }
 

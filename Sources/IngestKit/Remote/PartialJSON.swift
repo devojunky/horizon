@@ -100,7 +100,7 @@ enum PartialJSON {
 enum ExtractionJSON {
     /// A whole reply. Throws when it is not the object the schema describes.
     static func decode(_ text: String) throws -> ChunkExtraction {
-        guard let object = PartialJSON.parse(text) as? [String: Any] else { throw OpenAIError.malformed("the reply is not a JSON object") }
+        guard let object = PartialJSON.parse(text) as? [String: Any] else { throw ClaudeError.malformed("the reply is not a JSON object") }
         return extraction(from: object)
     }
 
@@ -165,9 +165,31 @@ enum ExtractionJSON {
 }
 
 /// The plan's JSON as the draft the planner validates.
+/// What Claude returns for a picture: the page transcribed, then the facts (`PageReading`'s JSON). The facts are a
+/// nested object, so the partial-reply helpers run on the text after its key.
+enum PageReadingJSON {
+    static func decode(_ text: String) throws -> (transcript: String, facts: ChunkExtraction) {
+        guard let object = PartialJSON.parse(text) as? [String: Any] else { throw ClaudeError.malformed("the reply is not a JSON object") }
+        return (object["transcript"] as? String ?? "", ExtractionJSON.extraction(from: object["facts"] as? [String: Any] ?? [:]))
+    }
+    /// Complete items of a reply cut short: the transcript if it closed, and whatever facts have closed.
+    static func salvage(_ text: String) -> (transcript: String, facts: ChunkExtraction)? {
+        guard let facts = ExtractionJSON.salvage(factsText(text)) else { return nil }
+        let transcript = PartialJSON.snapshot(text).values["transcript"].flatMap { PartialJSON.parse($0) as? String } ?? ""
+        return (transcript, facts)
+    }
+    static func provisional(_ text: String, call: Int) -> [ProvisionalObligation] { ExtractionJSON.provisional(factsText(text), call: call) }
+
+    /// The facts object as written so far: everything after its key.
+    static func factsText(_ text: String) -> String {
+        guard let key = text.range(of: "\"facts\""), let brace = text[key.upperBound...].firstIndex(of: "{") else { return "" }
+        return String(text[brace...])
+    }
+}
+
 enum PlanJSON {
     static func decode(_ text: String) throws -> PlanDraft {
-        guard let object = PartialJSON.parse(text) as? [String: Any] else { throw OpenAIError.malformed("the plan is not a JSON object") }
+        guard let object = PartialJSON.parse(text) as? [String: Any] else { throw ClaudeError.malformed("the plan is not a JSON object") }
         return PlanDraft(blocks: (object["blocks"] as? [[String: Any]] ?? []).compactMap(block))
     }
 

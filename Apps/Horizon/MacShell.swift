@@ -221,6 +221,7 @@ struct DocumentsTable: View {
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
     @State private var selection: Set<UUID> = []
     @State private var sortOrder = [KeyPathComparator(\SourceDocument.queuedAt, order: .reverse)]
+    @State private var confirmDevice: [SourceDocument] = []   // waiting for Claude; the Mac may read them once the user says so
 
     private var rows: [SourceDocument] { documents.sorted(using: sortOrder) }
     private func chosen(_ ids: Set<UUID>) -> [SourceDocument] { documents.filter { ids.contains($0.id) } }
@@ -259,10 +260,22 @@ struct DocumentsTable: View {
             .width(min: 200, ideal: 300)
         }
         .tableStyle(.inset(alternatesRowBackgrounds: true))
+        .confirmationDialog("Read on this Mac instead?", isPresented: Binding(get: { !confirmDevice.isEmpty }, set: { if !$0 { confirmDevice = [] } }), titleVisibility: .visible) {
+            Button(confirmDevice.count == 1 ? "Read on This Mac" : "Read \(confirmDevice.count) on This Mac") {
+                let ids = confirmDevice.map(\.id)
+                Task { for id in ids { await model.readOnDevice(documentID: id) } }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The Mac's own model is less sure of tables and pictures than Claude, and it takes minutes on a long document. Nothing is sent to Anthropic.")
+        }
         .contextMenu(forSelectionType: UUID.self) { ids in
             let docs = chosen(ids)
             if docs.contains(where: { $0.status == .failed || $0.status == .awaitingCloudParse || $0.status == .cancelled }) {
                 Button("Retry") { for doc in docs { Task { await model.retry(documentID: doc.id) } } }
+            }
+            if docs.contains(where: { $0.status == .awaitingCloudParse && !$0.readOnDevice }) {
+                Button("Read on This Mac Instead…") { confirmDevice = docs.filter { $0.status == .awaitingCloudParse } }
             }
             if docs.count == 1, let doc = docs.first, doc.course == nil, doc.status == .parsed, !courses.isEmpty {
                 Menu("File Under") {
@@ -283,7 +296,7 @@ struct DocumentsTable: View {
     }
 
     static func routeName(_ raw: String?) -> String {
-        switch raw { case "onDevice": "on this Mac"; case "privateCloudCompute": "Private Cloud Compute"; case "openAI": "OpenAI"; default: raw ?? "" }
+        switch raw { case "onDevice": "on this Mac"; case "claude": "Claude"; case "privateCloudCompute": "Private Cloud Compute"; case "openAI": "OpenAI"; default: raw ?? "" }   // the last two: documents read before Claude
     }
 
     private func delete(_ ids: Set<UUID>) {   // straight to Recently Deleted, restorable for 30 days
@@ -296,7 +309,7 @@ extension SourceDocument {
     var statusLabel: String {
         switch status {
         case .queued: readSoFar.map { "Queued · \($0.finished) of \($0.total) parts read" } ?? "Queued"   // paused mid-read: it goes on from there
-        case .parsed: "Read"; case .failed: "Failed"; case .awaitingCloudParse: "Waiting for the cloud"; case .cancelled: "Cancelled"
+        case .parsed: "Read"; case .failed: "Failed"; case .awaitingCloudParse: "Waiting for Claude"; case .cancelled: "Cancelled"
         }
     }
 }

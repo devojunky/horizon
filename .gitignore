@@ -12,3 +12,4 @@ Config/Local.xcconfig
 
 # a local OpenAI key for tests, never committed
 key.textClipping
+claude_api_key.secret

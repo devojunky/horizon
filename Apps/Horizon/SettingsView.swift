@@ -4,9 +4,10 @@ import IngestKit
 import UIKit
 #endif
 
-/// Where documents are read (and plans made), the OpenAI key that one of the choices needs, and what this device
-/// reports. Everything applies as it is changed; the key lives in the Keychain and the page says what leaves the
-/// device. On iOS one page, reached from the More menu; on the Mac the same sections make up the Settings window.
+/// Where documents are read (Claude, or this device), the Claude key and model, whether the day plan may use Claude,
+/// and what this device reports. Everything applies as it is changed; the key lives in the Keychain and the page says
+/// what leaves the device. On iOS one page, reached from the More menu; on the Mac the same sections make up the
+/// Settings window.
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
 
@@ -34,11 +35,10 @@ struct SettingsView: View {
     }
 }
 
-/// The reading route as one choice, and the OpenAI key and model it may need.
+/// The reading route as one choice, the Claude key and model, and the one small task Claude may take on.
 struct ReadingSettingsSections: View {
     @Environment(AppModel.self) private var model
     @State private var key = ""
-    @State private var modelName = ""
     @State private var testing = false
     @State private var verdict: (ok: Bool, text: String)?
 
@@ -50,75 +50,72 @@ struct ReadingSettingsSections: View {
     #endif
 
     var body: some View {
+        @Bindable var model = model
         Section {
-            RouteRow(title: "On this device", detail: "Nothing leaves \(here). A long syllabus takes a few minutes.",
+            RouteRow(title: "Claude", detail: hasKey ? "\(model.claudeModel.displayName). The text and pages of every document are sent to Anthropic under your key." : "Needs a key, below.",
+                     selected: model.readingRoute == .claude, disabled: !hasKey) { model.readingRoute = .claude }
+            RouteRow(title: "On \(here)", detail: "Nothing leaves \(here). Less sure of tables and pictures; a long syllabus takes minutes.",
                      selected: model.readingRoute == .onDevice) { model.readingRoute = .onDevice }
-            RouteRow(title: "Private Cloud Compute", detail: model.cloudUnavailableReason.map { "Unavailable: \($0)." } ?? "Apple's servers; nothing is kept. Faster on long documents.",
-                     selected: model.readingRoute == .privateCloudCompute, disabled: model.cloudUnavailableReason != nil) { model.readingRoute = .privateCloudCompute }
-            if FeatureFlags.openAI {
-                RouteRow(title: "OpenAI", detail: hasKey ? "Your key, model \(model.openAIModel). The text and pages of every document, and what the planner sees, are sent to OpenAI." : "Needs a key, below.",
-                         selected: model.readingRoute == .openAI, disabled: !hasKey) { model.readingRoute = .openAI }
-            }
         } header: {
             Kicker("Read documents")
         } footer: {
-            Text("The day plan is made the same way. If a route cannot be used, the device reads the document instead and says so.")
+            Text("When Claude cannot be reached, a document waits. Coverage offers to read it on \(here) instead, and asks first.")
         }
-        if FeatureFlags.openAI {
-            Section {
-                SecureField("sk-…", text: $key).textContentType(.password).autocorrectionDisabled()
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never)
-                    #endif
-                LabeledContent("Model") {
-                    TextField(OpenAIConfiguration.defaultModel, text: $modelName).multilineTextAlignment(.trailing).promptOnly().autocorrectionDisabled()
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        #endif
-                }
-                Button {
-                    Task { await test() }
-                } label: {
-                    HStack {
-                        Text("Test Connection")
-                        Spacer()
-                        if testing { ProgressView().controlSize(.small) }
-                    }
-                }
-                .disabled(!hasKey || testing)
-                if let verdict {
-                    Label(verdict.text, systemImage: verdict.ok ? "checkmark.circle" : "exclamationmark.triangle")
-                        .foregroundStyle(verdict.ok ? .secondary : Design.accent).font(.footnote)
-                }
-                if hasKey {
-                    Button("Remove Key", role: .destructive) { key = "" }
-                }
-            } header: {
-                Kicker("OpenAI")
-            } footer: {
-                Text("Kept in this device's Keychain, never synced. Any chat model that supports structured output and images will do; \(OpenAIConfiguration.defaultModel) is the default. Removing the key turns the route off.")
-            }
+        .onAppear { key = model.claudeKey }   // on a section that is drawn: an empty one never appears
+        .onChange(of: key) { _, value in
+            verdict = nil
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            let had = !model.claudeKey.isEmpty
+            model.claudeKey = trimmed
+            if trimmed.isEmpty { model.readingRoute = .onDevice; model.planWithClaude = false }   // the route needs the key
+            else if !had { model.readingRoute = .claude }                                            // a key entered is Claude asked for
         }
-        Section {}   // an anchor for the state below
-            .onAppear { key = model.openAIKey; modelName = model.openAIModel }
-            .onChange(of: key) { _, value in
-                verdict = nil
-                model.openAIKey = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                if model.openAIKey.isEmpty, model.useOpenAI { model.readingRoute = .onDevice }   // the route needs the key
+        .onChange(of: model.claudeModel) { _, _ in verdict = nil }
+        Section {
+            SecureField("sk-ant-…", text: $key).textContentType(.password).autocorrectionDisabled()
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                #endif
+            Picker("Model", selection: $model.claudeModel) {
+                ForEach(ClaudeModelChoice.allCases) { Text($0.displayName).tag($0) }
             }
-            .onChange(of: modelName) { _, value in
-                verdict = nil
-                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                model.openAIModel = trimmed.isEmpty ? OpenAIConfiguration.defaultModel : trimmed
+            Text(model.claudeModel.detail).font(.footnote).foregroundStyle(.secondary)
+            Button {
+                Task { await test() }
+            } label: {
+                HStack {
+                    Text("Test Connection")
+                    Spacer()
+                    if testing { ProgressView().controlSize(.small) }
+                }
             }
+            .disabled(!hasKey || testing)
+            if let verdict {
+                Label(verdict.text, systemImage: verdict.ok ? "checkmark.circle" : "exclamationmark.triangle")
+                    .foregroundStyle(verdict.ok ? .secondary : Design.accent).font(.footnote)
+            }
+            if hasKey {
+                Button("Remove Key", role: .destructive) { key = "" }
+            }
+        } header: {
+            Kicker("Claude")
+        } footer: {
+            Text("Your own key from the Claude Console, kept in this device's Keychain and never synced; usage is billed to your Anthropic account. Removing the key turns Claude off.")
+        }
+        Section {
+            Toggle("Plan the day with Claude", isOn: $model.planWithClaude).disabled(!hasKey)
+        } header: {
+            Kicker("Small tasks")
+        } footer: {
+            Text("Planning the day is a small job \(here) does by itself. Turn this on for Claude's plans, with your instructions read more carefully.")
+        }
     }
 
     private func test() async {
         testing = true
         defer { testing = false }
-        let configuration = OpenAIConfiguration(apiKey: key.trimmingCharacters(in: .whitespacesAndNewlines), model: model.openAIModel)
         do {
-            verdict = (true, try await OpenAIClient(configuration: configuration).probe())
+            verdict = (true, try await Ingestor.probe(claude: ClaudeConfiguration(apiKey: key, model: model.claudeModel)))
         } catch {
             verdict = (false, error.localizedDescription)
         }

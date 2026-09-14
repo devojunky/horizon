@@ -443,6 +443,15 @@ public actor HorizonStore {
     /// Where a read of the document stopped, if one did.
     public func checkpoint(for id: UUID) throws -> Data? { try fetchDocument(id: id)?.checkpoint }
 
+    /// The user's word that the device model may read this document instead of Claude: it goes back in the queue,
+    /// its Claude checkpoint set aside (the device chunks differently).
+    public func readOnDevice(id: UUID) throws {
+        guard let doc = try fetchDocument(id: id) else { return }
+        doc.readOnDevice = true
+        doc.status = .queued; doc.failure = nil; doc.checkpoint = nil
+        try modelContext.save()
+    }
+
     /// Keeps where a read stands, part by part, so a read that stops goes on from there.
     public func saveCheckpoint(id: UUID, data: Data?) throws {
         guard let doc = try fetchDocument(id: id) else { return }
