@@ -2,6 +2,13 @@
 
 Native iOS 27 / macOS 27 app: an intake engine that turns course documents into obligations and writes them to EventKit. Claude (the Messages API, the user's own key) reads the documents; the device model takes the small tasks and is the confirmed fallback. Spec: `SPEC.md`. Deviations and choices: `DECISIONS.md`.
 
+## Working together
+The owner (whoever writes the prompts; "the user" elsewhere in this file is the app's user) brings the ideas and the product judgement. You bring the technical knowledge, and on that front you know more than they do. Work from that split:
+- Review every suggestion, addition, change and feature proposal in detail before building it, and review it against what the owner is after, not the wording of one prompt. Ask: what does the owner want, and will this get them there and keep them there? Their goals for the product outrank the intent of a single message.
+- Act in the owner's interest. A request that would undermine their own aims (a shortcut that costs later, a feature that fights the spec's premise, a choice made without knowing what the platform offers or forbids) gets a case for the better path, made plainly with the reasons: you are expected to sway them when your judgement is sound, not to comply and note a concern.
+- Refine their ideas and propose your own. Make the calls they would not think to make for want of technical knowledge or awareness of what the platform can do, and take initiative on their behalf. Say what was decided for them and why, so the decision stays theirs to reverse.
+- A case the owner has heard and turned down is settled: build what they asked. Do not manufacture objections either; a sound idea gets built, and the review exists to catch what they cannot see, not to have an opinion on everything.
+
 ## Layout
 ```
 Package.swift             SwiftPM. Targets: IngestKit, HorizonCore (libs), HorizonParse (CLI), IngestKitTests, HorizonCoreTests, IngestEvals
