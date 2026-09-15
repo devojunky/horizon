@@ -66,13 +66,23 @@ final class AppModel {
         var found: [ProvisionalObligation] = []      // finished chunks
         var current: [ProvisionalObligation] = []    // the chunk being written now
         var items: [ProvisionalObligation] { found + current }
-        /// Never moves backwards: parts finished plus how far the current part has streamed (about a dozen rows per
-        /// part). A part split in two reports the same index twice, so finishing counts half, and the next part's start 1.
+        /// Where the model is in the part being written: the stage and its count, with Claude's outline once it has
+        /// committed to the items. Nil between parts.
+        var progress: ReadProgress?
+        /// Never moves backwards: parts finished plus how far the current part has come. With an outline the part's
+        /// figure is exact (`ReadingProgress`); without one it is about a dozen rows per part. A part split in two
+        /// reports the same index twice, so finishing counts half, and the next part's start 1.
         var fraction: Double = 0
         mutating func advance(to value: Double) { fraction = min(1, max(fraction, value)) }
         var total: Double { Double(max(chunks + images, 1)) }
-        /// Where the part being read ends; the bar creeps toward it while the model thinks (`ProgressCreep`).
-        var nextMark: Double { min(1, Double(max(chunk, 1)) / total) }
+        /// Where the bar creeps toward while the model thinks (`ProgressCreep`): the next item's share of the stage
+        /// when the total is known, else the end of the part.
+        var nextMark: Double {
+            if let progress { return min(1, (Double(chunk - 1) + ReadingProgress.mark(progress)) / total) }   // never past the stage's band
+            return min(1, Double(max(chunk, 1)) / total)
+        }
+        /// The obligations promised by the outline for the part being read, when Claude has said.
+        var promised: Int? { progress?.outline?.titles.count }
     }
     /// Today's plan (SPEC §6.3), with the user's edits. Kept for the day, so a relaunch does not lose an edited plan;
     /// discarded once the day ends. Tomorrow starts from nothing.
@@ -155,11 +165,18 @@ final class AppModel {
             reading = r
         case .partial(_, let items):
             guard var r = reading else { return }
-            r.current = items; r.advance(to: (Double(r.chunk - 1) + min(0.9, Double(items.count) / 12)) / r.total)
+            r.current = items
+            if r.progress?.outline == nil { r.advance(to: (Double(r.chunk - 1) + min(0.9, Double(items.count) / 12)) / r.total) }   // no outline (the device): rows are the measure
+            reading = r
+        case .progress(_, let stage):
+            guard var r = reading else { return }
+            r.progress = stage
+            r.advance(to: (Double(r.chunk - 1) + ReadingProgress.fraction(stage)) / r.total)
             reading = r
         case .chunkFinished:
             guard var r = reading else { return }
-            r.found += r.current; r.current = []; r.advance(to: (Double(r.chunk - 1) + 0.5) / r.total)   // a split part may follow under the same index
+            r.found += r.current; r.current = []; r.progress = nil
+            r.advance(to: (Double(r.chunk - 1) + 0.5) / r.total)   // a split part may follow under the same index
             reading = r
         case .finished:
             withAnimation { reading = nil }

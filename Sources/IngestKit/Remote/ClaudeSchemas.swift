@@ -7,6 +7,14 @@ import Foundation
 /// required (the API allows that); counts and ranges are not allowed as keywords, so they live in the descriptions.
 enum ClaudeSchemas {
     static let extractionObject: Node = .object([
+        // The outline comes first: the model takes the measure of the whole document and commits to every item's
+        // name before writing any of them, which is both a plan for it and an exact total for the reading bar.
+        ("outline", .object([
+            ("obligationTitles", .array(.string("The item's own short name as printed"), "The name of every graded or required item in this chunk that has its own date or an explicit TBD, in document order; the obligations below follow this list one for one")),
+            ("gradeRows", .integer("How many rows of a grade breakdown table this chunk has; 0 if none")),
+            ("policies", .integer("How many policy sentences this chunk states, for late work, makeup exams, attendance, drop rules and extra credit; 0 if none")),
+            ("breaks", .integer("How many holidays, breaks and cancelled sessions this chunk lists; 0 if none")),
+        ], required: ["obligationTitles", "gradeRows", "policies", "breaks"], description: "The measure of the chunk, taken first")),
         ("course", .object([
             ("code", .string("Course code as printed")),
             ("title", .string(nil)),
@@ -46,9 +54,15 @@ enum ClaudeSchemas {
             ("startDate", .string("YYYY-MM-DD")),
             ("endDate", .string("YYYY-MM-DD, same as startDate for one day")),
         ], required: ["dateAsWritten"]), "Holidays, breaks, cancelled sessions")),
-    ], required: ["gradeComponents", "obligations", "policies", "noClassDates"], description: "Facts stated in one chunk of a course document. Omitted or empty for anything not stated in the chunk.")
+    ], required: ["outline", "gradeComponents", "obligations", "policies", "noClassDates"], description: "Facts stated in one chunk of a course document. Omitted or empty for anything not stated in the chunk.")
 
-    static let extraction: String = render(extractionObject)
+    static let extraction: String = render(ProcessInfo.processInfo.environment["HORIZON_NO_OUTLINE"] != nil ? withoutOutline(extractionObject) : extractionObject)   // the toggle is for the eval comparison only
+
+    /// The same schema with the outline left out, to measure what the outline buys.
+    static func withoutOutline(_ node: Node) -> Node {
+        guard case .object(let properties, let required, let description) = node else { return node }
+        return .object(properties.filter { $0.0 != "outline" }, required: required.filter { $0 != "outline" }, description: description)
+    }
 
     /// A picture: its text transcribed first, then the facts read off it.
     static let pageReading: String = render(.object([

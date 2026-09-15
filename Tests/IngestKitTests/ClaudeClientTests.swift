@@ -201,7 +201,8 @@ struct ClaudeClientTests {
         #expect(s.range(of: "\"course\"")!.lowerBound < s.range(of: "\"gradeComponents\"")!.lowerBound)
         #expect(s.range(of: "\"transcript\"") == nil && ClaudeSchemas.pageReading.range(of: "\"transcript\"")!.lowerBound < ClaudeSchemas.pageReading.range(of: "\"facts\"")!.lowerBound)
         let extraction = try JSONSerialization.jsonObject(with: Data(s.utf8)) as! [String: Any]
-        #expect((extraction["required"] as? [String]) == ["gradeComponents", "obligations", "policies", "noClassDates"])   // the course is optional, a chunk may not name it
+        #expect((extraction["required"] as? [String]) == ["outline", "gradeComponents", "obligations", "policies", "noClassDates"])   // the course is optional, a chunk may not name it
+        #expect(s.range(of: "\"outline\"")!.lowerBound < s.range(of: "\"course\"")!.lowerBound)   // the outline is written before anything else
     }
 }
 
@@ -210,4 +211,43 @@ final class Seen: @unchecked Sendable {
     private var stored: [String] = []
     var value: [String] { lock.withLock { stored } }
     func append(_ s: String) { lock.withLock { stored.append(s) } }
+}
+
+/// Where a streaming reply stands, read off the JSON so far: the outline first, then each stage and its count.
+struct ReadProgressTests {
+    static let outline = #"{"outline": {"obligationTitles": ["HW 1", "HW 2", "Quiz 1"], "gradeRows": 2, "policies": 1, "breaks": 1}"#
+
+    @Test func theOutlineComesFirstAndSetsTheTotals() {
+        let sizing = ExtractionJSON.progress(#"{"outline": {"obligationTitles": ["HW 1", "HW"#)
+        #expect(sizing.stage == .sizing && sizing.outline == nil && sizing.done == 1)   // the names counted as they arrive
+        let measured = ExtractionJSON.progress(Self.outline + #", "course": {"code": "MA"#)
+        #expect(measured.stage == .course && measured.outline?.titles == ["HW 1", "HW 2", "Quiz 1"] && measured.outline?.gradeRows == 2)
+        #expect(ExtractionJSON.progress("").stage == .sizing && ExtractionJSON.progress("{").stage == .sizing)
+    }
+
+    @Test func eachStageCountsItsFinishedItemsAndNamesTheNext() {
+        let rows = Self.outline + #", "course": {"meetings": []}, "gradeComponents": [{"name": "HW", "cadence": "weekly", "platform": "lms"}, {"na"#
+        let grading = ExtractionJSON.progress(rows)
+        #expect(grading.stage == .grading && grading.done == 1 && grading.total == 2)
+        let items = Self.outline + #", "course": {"meetings": []}, "gradeComponents": [], "obligations": [{"title": "HW 1", "platform": "lms", "dateAsWritten": "9/9", "confidence": "high"}, {"title": "HW"#
+        let obligations = ExtractionJSON.progress(items)
+        #expect(obligations.stage == .obligations && obligations.done == 1 && obligations.total == 3 && obligations.current == "HW 2")
+        let closed = Self.outline + #", "course": {"meetings": []}, "gradeComponents": [], "obligations": [], "policies": [], "noClassDates": [{"dateAsWritten": "Oct 12"}]}"#
+        let done = ExtractionJSON.progress(closed)
+        #expect(done.stage == .breaks && done.done == 1 && done.total == 1)
+    }
+
+    @Test func theOutlinesNamesStandInForItemsNotYetWritten() {
+        let text = Self.outline + #", "course": {"meetings": []}, "gradeComponents": [], "obligations": [{"title": "HW 1", "platform": "lms", "dateAsWritten": "9/9", "confidence": "high"}, {"title": "HW"#
+        let rows = ExtractionJSON.provisional(text, call: 2)
+        #expect(rows.map(\.title) == ["HW 1", "HW 2", "Quiz 1"] && rows.map(\.id) == ["2-0", "2-1", "2-2"])   // the same ids, so a row carries over
+        #expect(rows[0].dateAsWritten == "9/9" && rows[1].dateAsWritten == nil)
+    }
+
+    @Test func aPictureIsTranscribedBeforeItsStages() {
+        #expect(PageReadingJSON.progress(#"{"transcript": "Gradescope\nHomework"#).stage == .transcribing)
+        let facts = #"{"transcript": "…", "facts": "# + Self.outline + #", "course": {"meetings": []}, "gradeComponents": [], "obligations": [{"ti"#
+        let p = PageReadingJSON.progress(facts)
+        #expect(p.stage == .obligations && p.done == 0 && p.total == 3 && p.current == "HW 1")
+    }
 }

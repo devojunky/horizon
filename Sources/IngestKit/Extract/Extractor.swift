@@ -115,7 +115,7 @@ actor Extractor {
     /// chunk's pages as images (Claude only), so a table the text layer garbled is read as printed.
     func extract(_ chunk: TextChunk, pictures: [NormalizedDocument.Picture] = [], context: RollingContext, document: String, chunkCount: Int, depth: Int = 0) async throws -> [ExtractionOutcome] {
         let attached = Array(pictures.prefix(Self.picturesPerChunk))
-        let prompt = IngestInstructions.prompt(chunk: chunk.text, chunkIndex: chunk.index, chunkCount: chunkCount, document: document, context: context, pictures: attached.count)
+        let prompt = IngestInstructions.prompt(chunk: chunk.text, chunkIndex: chunk.index, chunkCount: chunkCount, document: document, context: context, pictures: attached.count, forClaude: route == .claude)
         func split(_ why: String) async throws -> [ExtractionOutcome] {
             guard depth < 4, let halves = Chunker.halve(chunk) else {
                 warn("chunk \(chunk.index) (page \(chunk.firstPage + 1)): \(why); skipped")
@@ -191,8 +191,11 @@ actor Extractor {
             let stream = session.streamResponse(to: prompt, generating: ChunkExtraction.self, options: options, contextOptions: ContextOptions())
             progress(.chunkStarted(index: chunk))
             var lastShown: (Int, String?) = (-1, nil)
+            var lastProgress: ReadProgress?
             for try await snapshot in stream {
                 last = snapshot
+                let stage = Self.stage(of: snapshot.content)
+                if stage != lastProgress { progress(.progress(chunk: chunk, stage)); lastProgress = stage }
                 let items = Self.provisional(snapshot.content, call: call)
                 let shown = (items.count, items.last?.dateAsWritten)
                 if shown != lastShown {   // a new item appeared, or the current one's date arrived
@@ -231,10 +234,15 @@ actor Extractor {
 
     // MARK: Claude
 
-    /// The last rows shown for the call being streamed, so the UI is told only when a row appears or its date arrives.
+    /// The last rows and stage shown for the call being streamed, so the UI is told only when something changes.
     private var lastShown: (Int, String?) = (-1, nil)
+    private var lastProgress: ReadProgress?
 
-    private func showPartial(_ items: [ProvisionalObligation], chunk: Int) {
+    private func showPartial(_ items: [ProvisionalObligation], stage: ReadProgress, chunk: Int) {
+        if stage != lastProgress {   // the stage first, so the rows that follow are measured against its total
+            progress(.progress(chunk: chunk, stage))
+            lastProgress = stage
+        }
         let shown = (items.count, items.last?.dateAsWritten)
         if shown != lastShown {
             progress(.partial(chunk: chunk, obligations: items))
@@ -255,12 +263,17 @@ actor Extractor {
         }
         let request = ClaudeClient.Request(system: IngestInstructions.text, user: text, images: images, schema: kind == .image ? ClaudeSchemas.pageReading : ClaudeSchemas.extraction, maxOutputTokens: outputBudgetTokens)
         progress(.chunkStarted(index: chunk))
-        lastShown = (-1, nil)
+        lastShown = (-1, nil); lastProgress = nil
+        progress(.progress(chunk: chunk, ReadProgress(stage: kind == .image ? .transcribing : .sizing)))
         if ProcessInfo.processInfo.environment["HORIZON_DEBUG_PROMPT"] != nil { log("    prompt (\(text.count) chars, \(images.count) pictures): \(text.prefix(400))…") }
         let completion: ClaudeClient.Completion
         do {
             completion = try await claude.stream(request) { [weak self] partial in
-                await self?.showPartial(kind == .image ? PageReadingJSON.provisional(partial, call: call) : ExtractionJSON.provisional(partial, call: call), chunk: chunk)
+                if kind == .image {
+                    await self?.showPartial(PageReadingJSON.provisional(partial, call: call), stage: PageReadingJSON.progress(partial), chunk: chunk)
+                } else {
+                    await self?.showPartial(ExtractionJSON.provisional(partial, call: call), stage: ExtractionJSON.progress(partial), chunk: chunk)
+                }
             }
         } catch is CancellationError {
             throw CancellationError()
@@ -386,6 +399,17 @@ actor Extractor {
     private func warn(_ message: String) {
         log(message)
         warnings.append(message)
+    }
+
+    /// Where the device model is in its reply: the last list it has started names the stage; it outlines nothing, so
+    /// there are no totals, and a bar can only creep.
+    static func stage(of partial: ChunkExtraction.PartiallyGenerated) -> ReadProgress {
+        if let breaks = partial.noClassDates { return ReadProgress(stage: .breaks, done: breaks.count) }
+        if let policies = partial.policies { return ReadProgress(stage: .policies, done: policies.count) }
+        if let items = partial.obligations { return ReadProgress(stage: .obligations, done: items.filter { $0.dateAsWritten != nil }.count) }
+        if let rows = partial.gradeComponents { return ReadProgress(stage: .grading, done: rows.count) }
+        if partial.course != nil { return ReadProgress(stage: .course) }
+        return ReadProgress(stage: .sizing)
     }
 
     /// The model's words so far, as rows the UI can show: only items whose title has arrived.

@@ -9,6 +9,10 @@ enum PartialJSON {
         var arrays: [String: [String]] = [:]
         /// Complete top-level values that are not arrays, as JSON text ("null" included).
         var values: [String: String] = [:]
+        /// The key whose value was being written when the text ended; nil once the object has closed, or before its first key.
+        var writing: String?
+        /// The text of that value so far, when it is an object still open (nil for arrays: their elements are in `arrays`).
+        var open: String?
     }
 
     static func snapshot(_ text: String) -> Snapshot {
@@ -22,6 +26,7 @@ enum PartialJSON {
             guard i < chars.count, chars[i] == UInt8(ascii: "\"") else { return snapshot }
             guard let keyEnd = scanString(chars, from: i) else { return snapshot }
             let key = String(decoding: chars[(i + 1)..<(keyEnd - 1)], as: UTF8.self)
+            snapshot.writing = key
             i = keyEnd
             skipSpace()
             guard i < chars.count, chars[i] == UInt8(ascii: ":") else { return snapshot }
@@ -43,13 +48,14 @@ enum PartialJSON {
                 }
                 snapshot.arrays[key] = elements
             } else {
-                guard let end = scanValue(chars, from: i) else { return snapshot }
+                guard let end = scanValue(chars, from: i) else { snapshot.open = String(decoding: chars[i...], as: UTF8.self); return snapshot }
                 snapshot.values[key] = String(decoding: chars[i..<end], as: UTF8.self)
                 i = end
             }
             skipSpace()
             guard i < chars.count else { return snapshot }
             if chars[i] == UInt8(ascii: ",") { i += 1; continue }
+            if chars[i] == UInt8(ascii: "}") { snapshot.writing = nil }   // the object closed: nothing is being written
             return snapshot
         }
     }
@@ -115,11 +121,56 @@ enum ExtractionJSON {
         return result
     }
 
-    /// The rows the UI can show while the reply streams: items whose title has arrived.
+    /// The rows the UI can show while the reply streams: the outline's names first, as placeholders with no date, each
+    /// replaced by the item once it is written (the same id, so the row carries over).
     static func provisional(_ text: String, call: Int) -> [ProvisionalObligation] {
-        PartialJSON.snapshot(text).arrays["obligations", default: []].enumerated().compactMap { index, element in
+        let snapshot = PartialJSON.snapshot(text)
+        var rows = snapshot.arrays["obligations", default: []].enumerated().compactMap { index, element -> ProvisionalObligation? in
             guard let item = PartialJSON.parse(element) as? [String: Any], let title = item["title"] as? String, !title.isEmpty else { return nil }
             return ProvisionalObligation(id: "\(call)-\(index)", title: title, dateAsWritten: item["dateAsWritten"] as? String, component: item["component"] as? String)
+        }
+        if let outline = outline(snapshot), outline.titles.count > rows.count {
+            let from = rows.count
+            rows += outline.titles[from...].enumerated().map { offset, title in ProvisionalObligation(id: "\(call)-\(from + offset)", title: title) }
+        }
+        return rows
+    }
+
+    /// The outline, once it has arrived whole.
+    static func outline(_ snapshot: PartialJSON.Snapshot) -> ReadProgress.Outline? {
+        guard let text = snapshot.values["outline"], let object = PartialJSON.parse(text) as? [String: Any] else { return nil }
+        let titles = (object["obligationTitles"] as? [Any] ?? []).compactMap { $0 as? String }
+        return ReadProgress.Outline(titles: titles, gradeRows: integer(object["gradeRows"]) ?? 0, policies: integer(object["policies"]) ?? 0, breaks: integer(object["breaks"]) ?? 0)
+    }
+
+    /// Where the reply stands: the key being written names the stage, the finished elements the count, the outline the total.
+    static func progress(_ text: String) -> ReadProgress { progress(PartialJSON.snapshot(text)) }
+
+    /// The names the outline has listed so far while it is still being written: the strings inside its titles array.
+    static func namesSoFar(_ snapshot: PartialJSON.Snapshot) -> Int {
+        guard let open = snapshot.open, let start = open.range(of: "\"obligationTitles\"") else { return 0 }
+        let rest = open[start.upperBound...]
+        guard let bracket = rest.firstIndex(of: "["), let closeAt = rest.firstIndex(of: "]") ?? Optional(rest.endIndex) else { return 0 }
+        let inside = rest[rest.index(after: bracket)..<closeAt]
+        return inside.matches(of: /"(?:[^"\\]|\\.)*"/).count
+    }
+
+    static func progress(_ snapshot: PartialJSON.Snapshot) -> ReadProgress {
+        let outline = outline(snapshot)
+        func count(_ key: String) -> Int { snapshot.arrays[key]?.count ?? 0 }
+        switch snapshot.writing {
+        case "outline"?: return ReadProgress(stage: .sizing, done: outline?.titles.count ?? namesSoFar(snapshot), outline: outline)
+        case "course"?: return ReadProgress(stage: .course, outline: outline)
+        case "gradeComponents"?: return ReadProgress(stage: .grading, done: count("gradeComponents"), total: outline?.gradeRows, outline: outline)
+        case "obligations"?:
+            let done = count("obligations")
+            return ReadProgress(stage: .obligations, done: done, total: outline.map { max($0.titles.count, done) },
+                                current: outline.flatMap { done < $0.titles.count ? $0.titles[done] : nil }, outline: outline)
+        case "policies"?: return ReadProgress(stage: .policies, done: count("policies"), total: outline?.policies, outline: outline)
+        case "noClassDates"?: return ReadProgress(stage: .breaks, done: count("noClassDates"), total: outline?.breaks, outline: outline)
+        case nil where snapshot.values.isEmpty && snapshot.arrays.isEmpty: return ReadProgress(stage: .sizing)
+        default:   // closed, or a key the schema does not name: every list is done
+            return ReadProgress(stage: .breaks, done: count("noClassDates"), total: outline.map { max($0.breaks, count("noClassDates")) }, outline: outline)
         }
     }
 
@@ -179,6 +230,12 @@ enum PageReadingJSON {
         return (transcript, facts)
     }
     static func provisional(_ text: String, call: Int) -> [ProvisionalObligation] { ExtractionJSON.provisional(factsText(text), call: call) }
+
+    /// Where the reply stands: the transcript first, then the facts' own stages.
+    static func progress(_ text: String) -> ReadProgress {
+        let facts = factsText(text)
+        return facts.isEmpty ? ReadProgress(stage: .transcribing) : ExtractionJSON.progress(facts)
+    }
 
     /// The facts object as written so far: everything after its key.
     static func factsText(_ text: String) -> String {

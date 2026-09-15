@@ -311,7 +311,7 @@ struct ReadingSection: View {
             if showDetails {
                 ForEach(reading.items) { item in
                     HStack(alignment: .firstTextBaseline) {
-                        Text(item.title)
+                        Text(item.title).foregroundStyle(item.dateAsWritten == nil ? .secondary : .primary)   // the outline's name, until the item is written
                         Spacer()
                         Text(item.dateAsWritten ?? "…").foregroundStyle(.secondary).monospacedDigit()
                     }
@@ -326,11 +326,14 @@ struct ReadingSection: View {
         .onAppear { showDetails = remembered }
     }
 
+    /// The part, then where the model is in it: with Claude's outline the stage and its count ("What's due · HW 3 ·
+    /// 7 of 18"); without one, the rows so far.
     private var progressLine: String {
         let total = reading.chunks + reading.images
         let n = min(max(reading.chunk, 1), total)
         let pickedUp = reading.resumed > 0 && n == reading.resumed + 1   // a read that stopped goes on from its checkpoint
         let part = total > 1 ? (pickedUp ? "picking up at part \(n) of \(total) · " : "part \(n) of \(total) · ") : ""
+        if let progress = reading.progress { return part + ReadingProgress.caption(progress) }
         return part + "\(reading.items.count) found so far"
     }
 }

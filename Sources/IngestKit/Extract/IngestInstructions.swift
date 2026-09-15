@@ -25,7 +25,8 @@ enum IngestInstructions {
     """
 
     /// `pictures`: how many of the chunk's pages are attached as images (Claude), labelled "page N" by their number.
-    static func prompt(chunk: String, chunkIndex: Int, chunkCount: Int, document: String, context: RollingContext, pictures: Int = 0) -> String {
+    /// `forClaude`: the reply begins with an outline (`ClaudeSchemas`), so the ask says what it is for.
+    static func prompt(chunk: String, chunkIndex: Int, chunkCount: Int, document: String, context: RollingContext, pictures: Int = 0, forClaude: Bool = false) -> String {
         var lines = ["Document: \(document). Chunk \(chunkIndex + 1) of \(chunkCount)."]
         if let course = context.courseLine { lines.append("Course: \(course).") }
         if let term = context.termLine { lines.append("Term: \(term).") }
@@ -33,15 +34,14 @@ enum IngestInstructions {
         if pictures > 0 {
             lines.append("The chunk's \(pictures == 1 ? "page is" : "\(pictures) pages are") attached as pictures, labelled by page number. The text layer below can garble a table or a column: where it does, read the table from the picture, and copy dates exactly as the picture prints them.")
         }
+        if forClaude, ProcessInfo.processInfo.environment["HORIZON_NO_OUTLINE"] == nil { lines.append(Self.outlineAsk) }
         lines.append("Extract every fact from this chunk:\n\n\(chunk)")
-        if pictures > 0 { lines.append(Self.answerShape) }
         return lines.joined(separator: "\n")
     }
 
-    /// Claude is told the answer's keys in their order. The API makes the model write properties in the schema's
-    /// order; a model that skips optional keys and then wants one back out of order is forced into garbage and an empty
-    /// result (one run in two on a one-page syllabus without this line, none with it).
-    static let answerShape = "Answer with one JSON object in the required schema and nothing else, its keys in this order: course (code, title, instructor, term, termStart, termEnd, room, meetings), gradeComponents, obligations (one per dated item), policies, noClassDates. Empty lists where the chunk states nothing."
+    /// The outline is the model's own plan: naming every item first makes it read the whole chunk before writing,
+    /// and the list that follows holds to the names, one for one. Key order is the schema's; the API enforces it.
+    static let outlineAsk = "Begin with the outline: the name of every graded or required item with its own date or explicit TBD, in document order, and the counts of grade rows, policy sentences and breaks. Then the parts in order: the course, the grade rows, the obligations (following the outline one for one, with the same names), the policies, the breaks."
 
     /// `withOCRTool`: the device model may call the system's text tool on the picture; Claude reads it directly and transcribes it.
     static func imagePrompt(imageIndex: Int, imageCount: Int, document: String, context: RollingContext, withOCRTool: Bool) -> String {
@@ -49,7 +49,7 @@ enum IngestInstructions {
         if let course = context.courseLine { lines.append("Course: \(course).") }
         if let term = context.termLine { lines.append("Term: \(term).") }
         lines.append("Extract every fact shown in the attached image, including the course code and title if a header shows them. In an assignment table the deadline is the Due column; Released and Late Due columns are not deadlines.")
-        if !withOCRTool { lines.append("Answer with one JSON object in the required schema and nothing else: transcript first, then facts with its keys in this order: course (code, title, instructor, term, termStart, termEnd, room, meetings), gradeComponents, obligations (one per dated item), policies, noClassDates.") }
+        if !withOCRTool { lines.append("Transcribe the picture first. Then " + Self.outlineAsk.replacingOccurrences(of: "Begin with", with: "begin the facts with")) }
         return lines.joined(separator: "\n")
     }
 }

@@ -172,6 +172,11 @@ enum Merger {
                 // this; Claude names an item as printed and composes "Lab 1 report" from a row that says "Lab 1: …"
                 // and "Report due", so its titles stand (renaming them cost the real syllabi their tests, and turned
                 // "Lab 1 report" into "Measurement and density"). What the document never prints still means review.
+                if strict, route == .claude, !source.contains(title), !source.containsWords(of: title) {
+                    // Claude composes names ("Lab 1 report" from "Lab 1: …" and "Report due"), so its title stands when
+                    // the document has its words; a name whose words the document never prints is the model's own: review.
+                    flags.append(.titleNotInSource); confidence = min(confidence, options.reviewThreshold - 0.05)
+                }
                 if strict, route == .onDevice, !source.contains(title) || componentKeys.contains(Normalize.key(title)) {
                     let found = resolution.date.flatMap { source.label(on: resolver.mentions($0), title: title, otherTitles: siblingTitles.subtracting([Normalize.key(title)])) }
                         .map { (text: Self.ownName($0.text), prose: $0.prose) }
@@ -400,6 +405,14 @@ enum Merger {
         }
 
         var mentionsTBD: Bool { DateResolver.isTBD(" " + key + " ") }
+
+        /// Whether every significant word of `phrase` (three letters or more, or a number) is a word of the document,
+        /// or the start of one ("report" for "Reports"). What a composed title is made of, if not the phrase itself.
+        func containsWords(of phrase: String) -> Bool {
+            let words = Normalize.key(phrase).split(separator: " ").map(String.init).filter { $0.count >= 3 || $0.contains(where: \.isNumber) }
+            guard !words.isEmpty else { return false }
+            return words.allSatisfy { word in key.contains(" " + word) || key.hasPrefix(word) }
+        }
 
         /// The first percentage following `name` on the same line, e.g. "Homework (WebAssign) ...... 15%".
         func percentage(onLineMentioning name: String) -> Double? {
