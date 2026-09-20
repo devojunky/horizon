@@ -116,6 +116,10 @@ private struct StripData {
     var weeks: Int = 1
     /// At the days level, everything a bar draws from, so the row of them is cheap to build again.
     var bars: [Bar] = []
+    /// What the page can be narrowed to: every course with something dated, and the unfiled when there are any.
+    var choices: [Band] = []
+    /// The band the page is narrowed to, when it is (a filter naming a course that has gone is no filter).
+    var narrowedTo: Band?
 
     struct Bar: Identifiable, Equatable {
         var id: Date { period.start }
@@ -126,7 +130,7 @@ private struct StripData {
         var pileupDate: Date?
     }
 
-    init(obligations: [Obligation], courses: [Course], level: Strip.Level, calendar: Calendar) {
+    init(obligations: [Obligation], courses: [Course], level: Strip.Level, filter: Band.Kind, calendar: Calendar) {
         items = obligations.compactMap { o in
             guard let due = o.due else { return nil }
             return StripItem(id: o.id, title: o.title, courseID: o.course?.id, courseCode: o.course?.code ?? "", courseName: o.course?.title, due: due, dueHasTime: o.dueHasTime,
@@ -138,8 +142,15 @@ private struct StripData {
         bands = courses.filter { byCourse[$0.id] != nil }.map { Band(kind: .course($0.id), name: $0.displayName) }
         bandItems = courses.compactMap { byCourse[$0.id] }
         if let loose = byCourse[nil] { bands.append(Band(kind: .unfiled, name: "Unfiled")); bandItems.append(loose) }
-        if Strip.showsTotal(bands: bands.count) { bands.insert(Band(kind: .all, name: "All courses"), at: 0); bandItems.insert(items, at: 0) }
+        choices = bands
+        // The term's span comes from everything, narrowed or not, so a week stays where it is when the filter changes.
         span = Strip.span(termStarts: courses.compactMap(\.termStart), termEnds: courses.compactMap(\.termEnd), items: items, now: Date(), calendar: calendar)
+        if let index = bands.firstIndex(where: { $0.kind == filter }) {   // narrowed to one course: its band alone, its items alone, its own pileups
+            narrowedTo = bands[index]
+            items = bandItems[index]
+            bands = [bands[index]]; bandItems = [items]
+        }
+        if Strip.showsTotal(bands: bands.count) { bands.insert(Band(kind: .all, name: "All courses"), at: 0); bandItems.insert(items, at: 0) }
         collisions = Strip.collisions(items, calendar: calendar)
         periods = Strip.periods(in: span, level: level, calendar: calendar)
         weeks = level == .weeks ? periods.count : Strip.periods(in: span, level: .weeks, calendar: calendar).count
@@ -181,6 +192,7 @@ struct HorizonStripView: View {
     @State private var placed = false                // the strip opens on today, once
     @State private var landing: (date: Date, fraction: CGFloat)?   // where a change of level should put which date, once the new bars exist
     @State private var rows = RowsBox()
+    @State private var filter: Band.Kind = .all      // the course the page is narrowed to; everything, until the user says otherwise
     @State private var chosen: DateInterval?         // the week (from the overview) or the day (from its bar) whose work the list shows
     @State private var hover: DateInterval?          // macOS: the week or day under the pointer reads in the header without a click
     @State private var editing: Obligation?
@@ -226,7 +238,7 @@ struct HorizonStripView: View {
     }
 
     var body: some View {
-        let data = StripData(obligations: obligations, courses: courses, level: level, calendar: calendar)
+        let data = StripData(obligations: obligations, courses: courses, level: level, filter: filter, calendar: calendar)
         let listed = listed(data)
         let _ = rows.ids = listed.map(\.id)
         PageStack {
@@ -240,7 +252,7 @@ struct HorizonStripView: View {
                             RangeTabs(selection: Binding(get: { level }, set: { setLevel($0, data: data, g: g, width: geo.size.width) }))
                                 .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
                             #endif
-                            StripHeader(level: level, cell: cell(for: hover ?? chosen, among: data.items), total: data.items.count, collisions: data.collisions)
+                            StripHeader(level: level, cell: cell(for: hover ?? chosen, among: data.items), total: data.items.count, collisions: data.collisions, course: data.narrowedTo?.name)
                                 .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 10, trailing: 20))
                             if contentWidth > geo.size.width + 1 {   // the term does not fit across: a line that shows all of it, and where the strip is in it
                                 TermOverview(data: data, motion: motion, contentWidth: contentWidth, viewport: geo.size.width, calendar: calendar)
@@ -264,7 +276,7 @@ struct HorizonStripView: View {
                         .onPaper()
                         Section {
                             ForEach(listed) { obligation in
-                                Button { editing = obligation } label: { ObligationRow(obligation: obligation, mark: { mark(obligation.id, $0) }) }
+                                Button { editing = obligation } label: { ObligationRow(obligation: obligation, showCourse: data.narrowedTo == nil, mark: { mark(obligation.id, $0) }) }   // narrowed to a course, a row need not say which
                                     .buttonStyle(.plain)
                                     .id(obligation.id)   // what `reveal` scrolls to
                                     .obligationActions(done: obligation.completedAt != nil, mark: { mark(obligation.id, $0) }, edit: { editing = obligation },
@@ -299,6 +311,7 @@ struct HorizonStripView: View {
                     guard !empty, !placed else { return }
                     placed = true
                     if level == .days { landing = (Date(), 0.2); land(data, g, width: geo.size.width) }   // DEBUG `--zoom-days`: the days open on today
+                    if MainTabs.debugOnce("--filter-second-course"), data.choices.count > 1 { filter = data.choices[1].kind }   // DEBUG: narrowed to a course without a tap
                     if MainTabs.debugOnce("--scrub-week"), let heavy = data.collisions.first?.day ?? data.items.first?.due {   // DEBUG: a week chosen from the overview without a tap
                         chosen = Strip.period(containing: heavy, level: .weeks, calendar: calendar)
                         landing = (chosen!.start, 0.1); level = .days
@@ -310,6 +323,32 @@ struct HorizonStripView: View {
             }
             .background(Design.paper.ignoresSafeArea())
             .navigationTitle("Horizon")
+            .toolbar {
+                if data.choices.count > 1 {   // one course is its own filter
+                    let narrowed = Binding(get: { data.narrowedTo?.kind ?? .all }, set: { filter = $0 })
+                    ToolbarItem(placement: .primaryAction) {
+                        #if os(macOS)
+                        Picker("Course", selection: narrowed) {   // a pop-up button that says what is showing, where a Mac keeps a view's options
+                            Text("All Courses").tag(Band.Kind.all)
+                            Divider()
+                            ForEach(data.choices) { Text($0.name).tag($0.kind) }
+                        }
+                        .pickerStyle(.menu)
+                        .help("Show one course, or all of them")
+                        #else
+                        Menu {
+                            Picker("Course", selection: narrowed) {
+                                Text("All Courses").tag(Band.Kind.all)
+                                ForEach(data.choices) { Text($0.name).tag($0.kind) }
+                            }
+                        } label: {   // filled while the page is narrowed, so a filter is never on unseen
+                            Label("Filter by Course", systemImage: data.narrowedTo == nil ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+                        }
+                        .accessibilityValue(data.narrowedTo?.name ?? "All courses")
+                        #endif
+                    }
+                }
+            }
             #if os(macOS)
             .toolbar {
                 ToolbarItem(placement: .principal) {   // the range as a segmented control in the toolbar, where a Mac keeps a view's options
@@ -449,7 +488,7 @@ struct HorizonStripView: View {
                     .labelStyle(.titleAndIcon).font(.caption.weight(.medium)).buttonStyle(.borderless)
                     .accessibilityHint("Lists what is coming up instead")
             } else {
-                Kicker("Coming up")
+                Kicker(data.narrowedTo.map { "Coming up · \($0.name)" } ?? "Coming up").lineLimit(1)
                 Spacer()
             }
         }
@@ -896,19 +935,23 @@ private struct StripHeader: View {
     let cell: Strip.Cell?
     let total: Int
     let collisions: [Strip.Collision]
+    /// The course the page is narrowed to: said in the kicker, so what the figures are figures of is never in doubt.
+    var course: String? = nil
+
+    private func kicker(_ word: String) -> String { course.map { "\(word) · \($0)" } ?? word }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let cell {
                 let pileup = collisions.contains { $0.day >= cell.period.start && $0.day < cell.period.end }
                 let week = HorizonStripView.isWeek(cell.period)
-                Text(pileup ? "Pileup" : week ? "Week" : "Day").font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(pileup ? Design.accent : .secondary)
+                Text(kicker(pileup ? "Pileup" : week ? "Week" : "Day")).font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(pileup ? Design.accent : .secondary).lineLimit(1)
                 Text(week ? "Week of \(cell.period.start.formatted(.dateTime.month(.wide).day()))" : cell.period.start.formatted(.dateTime.weekday(.wide).month(.wide).day()))
                     .deck().lineLimit(2, reservesSpace: true).contentTransition(.numericText())
                 Text(cell.items.isEmpty ? "Nothing due." : "\(cell.count) item\(cell.count == 1 ? "" : "s"), \(cell.points.formatted(.number.precision(.fractionLength(0...1))))% of grades at stake.")
                     .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
             } else {
-                Text("Semester").font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(.secondary)
+                Text(kicker("Semester")).font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(.secondary).lineLimit(1)
                 Text(summary).deck().lineLimit(2, reservesSpace: true)
                 #if os(macOS)
                 Text(level == .weeks ? "Point at a week to read it; click to look closer." : "Point at a day to read it; click to keep it.").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
