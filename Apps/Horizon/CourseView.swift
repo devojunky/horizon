@@ -12,11 +12,17 @@ struct CourseView: View {
     @State private var editingCourse = false
     @State private var selected: UUID?   // macOS: the highlighted row; Delete removes it, double-click opens it
     @State private var preview: URL?     // the document being looked at, in Quick Look
+    @State private var lingering = Lingering()
     @Environment(\.dismiss) private var dismiss
 
     /// Every document on file for the course, newest first: what its items, its grade table and its policies came from.
+    /// They sit at the foot of the page, after the policies and before what is done.
     private var documents: [SourceDocument] { (course.documents ?? []).filter { $0.deletedAt == nil }.sorted { $0.queuedAt > $1.queuedAt } }
     private var obligations: [Obligation] { (course.obligations ?? []).filter { $0.deletedAt == nil }.sorted { ($0.due ?? .distantFuture) < ($1.due ?? .distantFuture) } }
+    /// What is still to do, in date order; an item just checked off stays here a moment, crossed off (`Lingering`).
+    private var toDo: [Obligation] { obligations.filter { $0.completedAt == nil || lingering.contains($0.id) } }
+    /// What is done, in date order, at the foot of the page.
+    private var done: [Obligation] { obligations.filter { $0.completedAt != nil && !lingering.contains($0.id) } }
 
     var body: some View {
         List(selection: $selected) {
@@ -50,6 +56,23 @@ struct CourseView: View {
                 } header: { Kicker("Grade") }
                 .onPaper()
             }
+            Section {
+                ForEach(toDo) { row($0) }
+                if obligations.isEmpty { Text("No items yet. Add a document, or an item by hand from the Coverage menu.").foregroundStyle(.secondary) }
+                else if toDo.isEmpty { Text("Everything on file is done.").foregroundStyle(.secondary) }
+            } header: { Kicker("Items") }
+            .onPaper()
+            if let policies = course.policies, !policies.isEmpty {
+                Section {
+                    ForEach(policies) { policy in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(label(policy.kind)).font(.caption).foregroundStyle(.secondary)
+                            Text(policy.text)
+                        }
+                    }
+                } header: { Kicker("Policies") }
+                .onPaper()
+            }
             if !documents.isEmpty {
                 Section {
                     ForEach(documents) { doc in
@@ -68,40 +91,16 @@ struct CourseView: View {
                 } header: { Kicker("Documents") }
                 .onPaper()
             }
-            Section {
-                ForEach(obligations) { item in
-                    let mark: (Bool) -> Void = { done in Task { await model.setCompleted(item.id, done) } }
-                    #if os(macOS)
-                    ObligationRow(obligation: item, showCourse: false, mark: mark)
-                        .tag(item.id)
-                        .contentShape(Rectangle())
-                        .onTapGesture(count: 2) { editing = item }
-                        .obligationActions(done: item.completedAt != nil, mark: mark, edit: { editing = item }, delete: { Task { await model.discard(item.id) } })
-                        .accessibilityHint("Double-click to edit")
-                    #else
-                    Button { editing = item } label: { ObligationRow(obligation: item, showCourse: false, mark: mark) }
-                        .buttonStyle(.plain)
-                        .obligationActions(done: item.completedAt != nil, mark: mark, edit: { editing = item }, delete: { Task { await model.discard(item.id) } })
-                        .accessibilityHint("Opens the editor")
-                    #endif
-                }
-                if obligations.isEmpty { Text("No items yet. Add a document, or an item by hand from the Coverage menu.").foregroundStyle(.secondary) }
-            } header: { Kicker("Items") }
-            .onPaper()
-            if let policies = course.policies, !policies.isEmpty {
+            if !done.isEmpty {   // what is behind the user comes last: the page leads with what is ahead
                 Section {
-                    ForEach(policies) { policy in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(label(policy.kind)).font(.caption).foregroundStyle(.secondary)
-                            Text(policy.text)
-                        }
-                    }
-                } header: { Kicker("Policies") }
+                    ForEach(done) { row($0) }
+                } header: { Kicker("Done") }
                 .onPaper()
             }
         }
         .listStyle(.plain)
         .paper()
+        .animation(.default, value: toDo.map(\.id))
         #if os(iOS)
         .navigationTitle(course.displayName)
         .toolbar {
@@ -118,8 +117,32 @@ struct CourseView: View {
         .onChange(of: course.deletedAt) { _, gone in if gone != nil { dismiss() } }
         .onAppear {
             if MainTabs.debugFlag("--open-item") { editing = obligations.first }
+            if MainTabs.debugOnce("--check-first-item"), let first = toDo.first {   // DEBUG: a check without a tap, to see the row linger, then move down to Done
+                Task { try? await Task.sleep(for: .seconds(2)); lingering.mark(first.id, done: true); await model.setCompleted(first.id, true) }
+            }
             if MainTabs.debugFlag("--open-course-editor") { editingCourse = true }
         }
+    }
+
+    /// An item's row, to do or done: the ring, the editor, the swipes and the menu.
+    @ViewBuilder private func row(_ item: Obligation) -> some View {
+        let mark: (Bool) -> Void = { done in
+            lingering.mark(item.id, done: done)
+            Task { await model.setCompleted(item.id, done) }
+        }
+        #if os(macOS)
+        ObligationRow(obligation: item, showCourse: false, mark: mark)
+            .tag(item.id)
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) { editing = item }
+            .obligationActions(done: item.completedAt != nil, mark: mark, edit: { editing = item }, delete: { Task { await model.discard(item.id) } })
+            .accessibilityHint("Double-click to edit")
+        #else
+        Button { editing = item } label: { ObligationRow(obligation: item, showCourse: false, mark: mark) }
+            .buttonStyle(.plain)
+            .obligationActions(done: item.completedAt != nil, mark: mark, edit: { editing = item }, delete: { Task { await model.discard(item.id) } })
+            .accessibilityHint("Opens the editor")
+        #endif
     }
 
     private func label(_ kind: PolicyKind) -> String {

@@ -30,6 +30,14 @@ struct MainTabs: View {
         false
         #endif
     }
+
+    /// A DEBUG flag that acts, rather than shows: true once per launch, however often the view that reads it appears.
+    static func debugOnce(_ flag: String) -> Bool {
+        guard debugFlag(flag), !spentFlags.contains(flag) else { return false }
+        spentFlags.insert(flag)
+        return true
+    }
+    private static var spentFlags: Set<String> = []
 }
 
 /// The three stops of the range control, by the days across the screen.
@@ -68,7 +76,7 @@ struct HorizonStripView: View {
     @State private var centreOn: Date?               // a stop lands on the scrubbed day, else today
     @State private var previousLevel: (level: Strip.Level, at: Date)?   // the level just left, for the crossfade
     @State private var editing: Obligation?
-    @State private var lingering: Set<UUID> = []     // just checked off under "Coming up": crossed off for a moment before it leaves, so a slip can be undone
+    @State private var lingering = Lingering()       // just checked off under "Coming up": crossed off for a moment before it leaves, so a slip can be undone
     private let calendar = Calendar.current
     private let axisHeight: CGFloat = 34
 
@@ -120,7 +128,8 @@ struct HorizonStripView: View {
             let today = calendar.startOfDay(for: Date())
             chosen = items.filter { $0.due >= today && (!$0.completed || lingering.contains($0.id)) }
         }
-        return chosen.sorted { $0.due != $1.due ? $0.due < $1.due : ($0.points ?? 0) > ($1.points ?? 0) }.compactMap { byID[$0.id] }
+        let settled: (StripItem) -> Bool = { $0.completed && !lingering.contains($0.id) }   // what is done comes last, once its moment is over
+        return chosen.sorted { settled($0) != settled($1) ? !settled($0) : $0.due != $1.due ? $0.due < $1.due : ($0.points ?? 0) > ($1.points ?? 0) }.compactMap { byID[$0.id] }
     }
 
     var body: some View {
@@ -219,7 +228,7 @@ struct HorizonStripView: View {
                 .onAppear {
                     if MainTabs.debugFlag("--zoom-two-weeks"), zoom == 1 { zoomTo(maxZoom) }
                     if MainTabs.debugFlag("--zoom-month"), zoom == 1 { zoomTo(zoom(for: .month)) }
-                    if MainTabs.debugFlag("--check-first-coming-up"), let first = listed.first {   // DEBUG: a check without a tap, to see the row linger and leave
+                    if MainTabs.debugOnce("--check-first-coming-up"), let first = listed.first {   // DEBUG: a check without a tap, to see the row linger and leave
                         Task { try? await Task.sleep(for: .seconds(2)); mark(first.id, true) }
                     }
                 }
@@ -255,12 +264,7 @@ struct HorizonStripView: View {
 
     /// A check under "Coming up" stays on the page for a moment, crossed off, then the row leaves; unchecked, it stays.
     private func mark(_ id: UUID, _ done: Bool) {
-        if done {
-            lingering.insert(id)
-            Task { try? await Task.sleep(for: .seconds(2.5)); lingering.remove(id) }
-        } else {
-            lingering.remove(id)
-        }
+        lingering.mark(id, done: done)
         Task { await model.setCompleted(id, done) }
     }
 

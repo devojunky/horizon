@@ -408,6 +408,20 @@ struct ObligationRow: View {
     }
 }
 
+/// Rows just checked off stay where they are for a moment, crossed off, before a list that leads with what is still
+/// to do lets them go (the course page moves them down to Done; "Coming up" drops them), so a slip can be undone
+/// where it was made. An uncheck lets go at once.
+@MainActor @Observable final class Lingering {
+    private(set) var ids: Set<UUID> = []
+    func contains(_ id: UUID) -> Bool { ids.contains(id) }
+
+    func mark(_ id: UUID, done: Bool) {
+        guard done else { ids.remove(id); return }
+        ids.insert(id)
+        Task { try? await Task.sleep(for: .seconds(2.5)); ids.remove(id) }
+    }
+}
+
 /// The mark on an obligation's row: a ring to press, a filled dot with a check once done (Now's done dot, at a row's size).
 struct DoneMark: View {
     let done: Bool

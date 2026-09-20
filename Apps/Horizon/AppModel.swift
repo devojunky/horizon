@@ -428,6 +428,7 @@ final class AppModel {
     /// An item checked off (or back on) in the app. Reminders owns completion, so the mark is written to its reminder
     /// by the sync that follows; nothing is read or drained, and no status line comes and goes for a check.
     func setCompleted(_ id: UUID, _ done: Bool) async {
+        Self.log("check: \(id) \(done ? "done" : "not done")")   // every check is on the record: it reaches Reminders
         do { try await store.setCompleted(id: id, done) } catch { lastError = error.localizedDescription; return }
         guard remindersAuthorized == true else { return }   // the store keeps the mark; it reaches Reminders once there is access
         do { _ = try await sync.sync() } catch { Self.log("sync after a check failed: \(error.localizedDescription)") }
