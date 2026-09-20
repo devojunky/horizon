@@ -84,13 +84,36 @@ public enum Strip {
     /// Whether a band for everything belongs above the courses' own: only when there are several to add up.
     public static func showsTotal(bands: Int) -> Bool { bands >= 2 }
 
-    // MARK: Levels (what the strip shows follows the zoom, as Health's charts do)
+    // MARK: Levels (two of them, each with bars a finger can hit)
 
-    public enum Level: Sendable, Equatable, CaseIterable { case weeks, days, items }
+    /// The strip reads as weeks or as days. A bar (one week, one day) is a control: it is never narrower than the
+    /// HIG's control size, so a phone shows about nine of them and the strip scrolls; there is no level at which a
+    /// whole month of days is squeezed onto a phone, because no finger could pick one out.
+    public enum Level: Sendable, Equatable, CaseIterable { case weeks, days }
 
-    /// The items themselves only when about two weeks or less are across the screen; days up to about two and a half
-    /// months; weeks beyond that. A whole semester never shows individual assignments.
-    public static func level(daysAcross: Double) -> Level { daysAcross <= 21 ? .items : daysAcross <= 75 ? .days : .weeks }
+    /// The least a bar may measure across: the HIG's default control size, 44 points for a finger, 28 for a pointer.
+    public static func minimumBar(touch: Bool) -> Double { touch ? 44 : 28 }
+
+    /// How wide one bar is at a level. Weeks: the whole term across `width` when its weeks stay wide enough to hit
+    /// (a Mac's window, an iPad), else weeks at the minimum. Days: two weeks across `width`, or as many days as stay
+    /// wide enough.
+    public static func barWidth(_ level: Level, width: Double, weeks: Int, minimumBar: Double) -> Double {
+        switch level {
+        case .weeks: max(minimumBar, (width / Double(max(weeks, 1))).rounded(.down))
+        case .days: max(minimumBar, (width / 14).rounded(.down))
+        }
+    }
+
+    /// Every week or day the span touches, in order, whole: the strip's bars, with or without anything in them.
+    public static func periods(in span: ClosedRange<Date>, level: Level, calendar: Calendar) -> [DateInterval] {
+        var periods: [DateInterval] = []
+        var period = self.period(containing: span.lowerBound, level: level, calendar: calendar)
+        while period.start <= span.upperBound, periods.count < 1000 {
+            periods.append(period)
+            period = self.period(containing: period.end.addingTimeInterval(3600), level: level, calendar: calendar)   // an hour in: past a daylight-saving seam
+        }
+        return periods
+    }
 
     /// Colour intensity in 0.2...1 for a cell or a mark: the accent at this opacity. Load is colour, not size.
     public static func heat(points: Double?) -> Double { 0.2 + 0.8 * mass(points: points) }
@@ -105,7 +128,7 @@ public enum Strip {
         public init(period: DateInterval, items: [StripItem], points: Double) { self.period = period; self.items = items; self.points = points }
     }
 
-    /// The period the strip reads as one unit at this level: the week or the day holding `day` (the items level reads days).
+    /// The period the strip reads as one unit at this level: the week or the day holding `day`.
     public static func period(containing day: Date, level: Level, calendar: Calendar) -> DateInterval {
         calendar.dateInterval(of: level == .weeks ? .weekOfYear : .day, for: day) ?? DateInterval(start: calendar.startOfDay(for: day), duration: 86_400)
     }

@@ -37,10 +37,23 @@ struct StripTests {
         #expect(Fixture.calendar.dateComponents([.month, .day], from: bare.lowerBound) == DateComponents(month: 9, day: 14))
     }
 
-    @Test func levelFollowsTheDaysAcrossTheScreen() {
-        #expect(Strip.level(daysAcross: 137) == .weeks && Strip.level(daysAcross: 76) == .weeks)   // a semester, three months
-        #expect(Strip.level(daysAcross: 30) == .days && Strip.level(daysAcross: 60) == .days)      // a month, two
-        #expect(Strip.level(daysAcross: 14) == .items && Strip.level(daysAcross: 21) == .items)    // two weeks, three
+    @Test func aBarIsNeverNarrowerThanAFingerNeeds() {
+        // A phone: a term of 19 weeks does not fit at 44 points a week, so weeks hold the minimum and the strip scrolls.
+        #expect(Strip.barWidth(.weeks, width: 400, weeks: 19, minimumBar: Strip.minimumBar(touch: true)) == 44)
+        #expect(Strip.barWidth(.days, width: 400, weeks: 19, minimumBar: Strip.minimumBar(touch: true)) == 44)     // two weeks across would be 28 a day: too narrow
+        // A Mac's window: the whole term across the width, and two weeks of days.
+        #expect(Strip.barWidth(.weeks, width: 1500, weeks: 19, minimumBar: Strip.minimumBar(touch: false)) == 78)
+        #expect(Strip.barWidth(.days, width: 1500, weeks: 19, minimumBar: Strip.minimumBar(touch: false)) == 107)
+        #expect(Strip.barWidth(.weeks, width: 300, weeks: 0, minimumBar: 28) == 300)
+    }
+
+    @Test func thePeriodsCoverTheSpanWholeAndInOrder() {
+        let span = Fixture.day(8, 26, hour: 0, minute: 0)...Fixture.day(12, 28, hour: 0, minute: 0)
+        let weeks = Strip.periods(in: span, level: .weeks, calendar: Fixture.calendar)
+        #expect(weeks.count == 19 && weeks.first!.contains(span.lowerBound) && weeks.last!.contains(span.upperBound))
+        #expect(zip(weeks, weeks.dropFirst()).allSatisfy { $0.end == $1.start })                                   // no gaps, no overlaps, through the clocks going back in November
+        let days = Strip.periods(in: span, level: .days, calendar: Fixture.calendar)
+        #expect(days.count == 125 && days.first!.start == span.lowerBound && Set(days.map(\.start)).count == 125)
     }
 
     @Test func cellsGroupItemsByWeekOrDayHeaviestFirst() {
@@ -49,7 +62,6 @@ struct StripTests {
         let days = Strip.cells([a, c, b, d], level: .days, calendar: Fixture.calendar)
         #expect(days.map(\.count) == [2, 1, 1] && days[0].items.map(\.title) == ["Exam 1", "PS2"])
         #expect(days[0].points == 29 && days[1].points == 0)                                    // done items carry no load
-        #expect(Strip.cells([a, c, b, d], level: .items, calendar: Fixture.calendar) == days)     // the items level reads days too
         let weeks = Strip.cells([a, c, b, d], level: .weeks, calendar: Fixture.calendar)
         #expect(weeks.count == 2 && weeks[0].count == 3 && weeks[0].points == 29)
         #expect(weeks[0].period == Strip.period(containing: Fixture.day(10, 8), level: .weeks, calendar: Fixture.calendar))

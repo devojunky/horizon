@@ -380,10 +380,11 @@ struct ObligationRow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 4) {
             if let mark {
-                Button { pressed += 1; mark(!done) } label: {
-                    DoneMark(done: done).frame(width: 32, height: 44, alignment: .leading).contentShape(Rectangle())
+                Button { pressed += 1; mark(!done) } label: {   // HIG: 44 by 44 to hit, though the ring is 20; the extra reaches into the row's margin, so the words stay where they were
+                    DoneMark(done: done).frame(width: 44, height: 44).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .padding(.leading, -12)
                 .sensoryFeedback(.selection, trigger: pressed)
                 .accessibilityLabel(done ? "Done" : "Mark done")
             }
