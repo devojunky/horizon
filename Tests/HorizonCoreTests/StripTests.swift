@@ -37,14 +37,24 @@ struct StripTests {
         #expect(Fixture.calendar.dateComponents([.month, .day], from: bare.lowerBound) == DateComponents(month: 9, day: 14))
     }
 
-    @Test func aBarIsNeverNarrowerThanAFingerNeeds() {
-        // A phone: a term of 19 weeks does not fit at 44 points a week, so weeks hold the minimum and the strip scrolls.
-        #expect(Strip.barWidth(.weeks, width: 400, weeks: 19, minimumBar: Strip.minimumBar(touch: true)) == 44)
-        #expect(Strip.barWidth(.days, width: 400, weeks: 19, minimumBar: Strip.minimumBar(touch: true)) == 44)     // two weeks across would be 28 a day: too narrow
-        // A Mac's window: the whole term across the width, and two weeks of days.
-        #expect(Strip.barWidth(.weeks, width: 1500, weeks: 19, minimumBar: Strip.minimumBar(touch: false)) == 78)
+    @Test func theOverviewFitsAndADayIsNeverNarrowerThanAFingerNeeds() {
+        // The overview is read, not hit: the term's weeks share the width, however narrow.
+        #expect(Strip.barWidth(.weeks, width: 400, weeks: 19, minimumBar: Strip.minimumBar(touch: true)) == 400.0 / 19)
+        #expect(Strip.barWidth(.weeks, width: 1500, weeks: 19, minimumBar: Strip.minimumBar(touch: false)) == 1500.0 / 19)
+        // A day is a control: on a phone two weeks across would be 28 points a day, so days hold 44 and the strip scrolls.
+        #expect(Strip.barWidth(.days, width: 400, weeks: 19, minimumBar: Strip.minimumBar(touch: true)) == 44)
         #expect(Strip.barWidth(.days, width: 1500, weeks: 19, minimumBar: Strip.minimumBar(touch: false)) == 107)
         #expect(Strip.barWidth(.weeks, width: 300, weeks: 0, minimumBar: 28) == 300)
+    }
+
+    @Test func aTouchOnTheOverviewMeansTheWeekWithSomethingInIt() {
+        let busy: Set<Int> = [2, 3, 9]
+        let at: (Double) -> Int? = { Strip.week(at: $0, barWidth: 20, weeks: 12, hasItems: busy.contains, reach: 22) }
+        #expect(at(50) == 2 && at(70) == 3)        // under the finger, and busy
+        #expect(at(85) == 3 && at(30) == 2)        // an empty week beside a busy one: the busy one was meant
+        #expect(at(130) == 6)                      // nothing within reach: the week under the finger, empty as it is
+        #expect(at(-5) == 0 && at(999) == 11)      // off either end: the first week, the last
+        #expect(Strip.week(at: 10, barWidth: 20, weeks: 0, hasItems: { _ in true }, reach: 22) == nil)
     }
 
     @Test func thePeriodsCoverTheSpanWholeAndInOrder() {

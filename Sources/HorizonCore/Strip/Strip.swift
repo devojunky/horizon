@@ -84,24 +84,36 @@ public enum Strip {
     /// Whether a band for everything belongs above the courses' own: only when there are several to add up.
     public static func showsTotal(bands: Int) -> Bool { bands >= 2 }
 
-    // MARK: Levels (two of them, each with bars a finger can hit)
+    // MARK: Levels (one to read, one to work from)
 
-    /// The strip reads as weeks or as days. A bar (one week, one day) is a control: it is never narrower than the
-    /// HIG's control size, so a phone shows about nine of them and the strip scrolls; there is no level at which a
-    /// whole month of days is squeezed onto a phone, because no finger could pick one out.
+    /// Two levels for two intents. `weeks` is the overview: the whole term across the screen, as dense as it needs
+    /// to be, read rather than tapped; the whole of it is one control, and a touch means "look closer here", which
+    /// forgives a miss by a week. `days` is where work is picked out: a bar is a day, a control of its own, never
+    /// narrower than the HIG's control size, and the strip scrolls.
     public enum Level: Sendable, Equatable, CaseIterable { case weeks, days }
 
-    /// The least a bar may measure across: the HIG's default control size, 44 points for a finger, 28 for a pointer.
+    /// The least a bar that is a control may measure across: the HIG's default control size, 44 points for a finger,
+    /// 28 for a pointer.
     public static func minimumBar(touch: Bool) -> Double { touch ? 44 : 28 }
 
-    /// How wide one bar is at a level. Weeks: the whole term across `width` when its weeks stay wide enough to hit
-    /// (a Mac's window, an iPad), else weeks at the minimum. Days: two weeks across `width`, or as many days as stay
-    /// wide enough.
+    /// How wide one bar is at a level. Weeks: the term's weeks share `width` exactly, however narrow that makes them
+    /// (they are read, not hit). Days: two weeks across `width`, or as many days as stay wide enough to hit.
     public static func barWidth(_ level: Level, width: Double, weeks: Int, minimumBar: Double) -> Double {
         switch level {
-        case .weeks: max(minimumBar, (width / Double(max(weeks, 1))).rounded(.down))
+        case .weeks: width / Double(max(weeks, 1))
         case .days: max(minimumBar, (width / 14).rounded(.down))
         }
+    }
+
+    /// The week a touch on the overview means: the one under it, unless that one is empty and a week with something
+    /// in it is within half a control's width (`reach`), since nobody looks closer at nothing on purpose.
+    public static func week(at x: Double, barWidth: Double, weeks: Int, hasItems: (Int) -> Bool, reach: Double) -> Int? {
+        guard weeks > 0, barWidth > 0 else { return nil }
+        let under = min(max(Int(x / barWidth), 0), weeks - 1)
+        if hasItems(under) { return under }
+        let near = (0..<weeks).filter(hasItems).min { abs((Double($0) + 0.5) * barWidth - x) < abs((Double($1) + 0.5) * barWidth - x) }
+        if let near, abs((Double(near) + 0.5) * barWidth - x) <= reach + barWidth / 2 { return near }
+        return under
     }
 
     /// Every week or day the span touches, in order, whole: the strip's bars, with or without anything in them.
