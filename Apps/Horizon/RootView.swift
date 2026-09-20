@@ -389,10 +389,20 @@ struct ObligationRow: View {
             }
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(obligation.title).font(.body.weight(.medium)).strikethrough(done, color: .secondary)
-                    HStack(spacing: 6) {
-                        if showCourse, let name = obligation.course?.displayName, !name.isEmpty { Text(name).lineLimit(1) }
-                        Text(Design.due(obligation.due, hasTime: obligation.dueHasTime)).monospacedDigit()
+                    Text(obligation.title).font(.body.weight(.medium)).strikethrough(done, color: .secondary).lineLimit(3)
+                    // The course and the date on one line when both fit; else the date under the course (HIG: stack
+                    // rather than squeeze). Neither ever wraps: a date broken across lines reads as two facts.
+                    let course = showCourse ? obligation.course?.displayName ?? "" : ""
+                    let due = Text(Design.due(obligation.due, hasTime: obligation.dueHasTime)).monospacedDigit()
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 6) {
+                            if !course.isEmpty { Text(course).lineLimit(1) }
+                            due.lineLimit(1)
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            if !course.isEmpty { Text(course).lineLimit(1).truncationMode(.middle) }
+                            due.lineLimit(1).minimumScaleFactor(0.8)
+                        }
                     }
                     .font(.subheadline).foregroundStyle(.secondary)
                 }

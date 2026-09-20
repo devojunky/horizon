@@ -60,4 +60,12 @@ struct StripTests {
         let a = item("PS2", Fixture.day(10, 7), points: 4), b = item("Exam 1", Fixture.day(10, 7, hour: 9, minute: 0), points: 25), c = item("HW", Fixture.day(10, 8), points: 2)
         #expect(Strip.items(on: Fixture.day(10, 7, hour: 12, minute: 0), in: [a, c, b], calendar: Fixture.calendar).map(\.title) == ["Exam 1", "PS2"])
     }
+
+    @Test func bandsShareTheRoomAndNeverShrinkPastACount() {
+        #expect(Strip.rowHeight(rows: 1, available: 300) == 96)          // one course: roomy, not a wall
+        #expect(Strip.rowHeight(rows: 5, available: 246) == 49)          // four courses and the total: compact
+        #expect(Strip.rowHeight(rows: 9, available: 246) == 44)          // a full load: the floor holds, the strip grows and the page scrolls
+        #expect(Strip.rowHeight(rows: 0, available: 246) == 96)
+        #expect(!Strip.showsTotal(bands: 1) && Strip.showsTotal(bands: 2))   // one course is its own total
+    }
 }

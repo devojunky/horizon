@@ -72,6 +72,18 @@ public enum Strip {
         items.filter { calendar.isDate($0.due, inSameDayAs: day) }.sorted { ($0.points ?? 0) > ($1.points ?? 0) }
     }
 
+    // MARK: Rows (the strip fits the load: the page under it is a list that needs its room)
+
+    /// The height of one band (its label line, its cells, the gap under them) when `rows` of them share `available`
+    /// points: roomy for a course or two, compact for a full load, never too small for a count to fit in a cell. Past
+    /// the minimum the strip simply grows, and the page scrolls.
+    public static func rowHeight(rows: Int, available: Double, minimum: Double = 44, maximum: Double = 96) -> Double {
+        min(maximum, max(minimum, (available / Double(max(rows, 1))).rounded(.down)))
+    }
+
+    /// Whether a band for everything belongs above the courses' own: only when there are several to add up.
+    public static func showsTotal(bands: Int) -> Bool { bands >= 2 }
+
     // MARK: Levels (what the strip shows follows the zoom, as Health's charts do)
 
     public enum Level: Sendable, Equatable, CaseIterable { case weeks, days, items }
