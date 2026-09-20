@@ -10,9 +10,14 @@ struct HorizonWidgets: WidgetBundle {
     }
 }
 
-/// Today's plan on the Lock Screen and in the Dynamic Island: the block on now with a live countdown and its reason,
-/// or the one up next and when; a Done button that marks it in the app; what comes after. Set like the app's
-/// timetable: a caps kicker, a serif title, the marker orange for the block that is on.
+/// Today's plan on the Lock Screen and in the Dynamic Island: the block on now with a live countdown, or the one up
+/// next and when, and a Done button that marks it in the app. Set like the app's timetable: a caps kicker, a serif
+/// title, the marker orange for the block that is on.
+///
+/// The Dynamic Island says less than the Lock Screen, on purpose (HIG: use only the space the content needs, large
+/// heavier text, small text sparingly, one action): what is on, how long is left, and Done. The block's reason and
+/// what comes after it are the Lock Screen's and the app's to say; in the island they were two lines of small grey
+/// type competing with the one figure that changes.
 struct PlanLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: PlanActivityAttributes.self) { context in
@@ -23,31 +28,28 @@ struct PlanLiveActivity: Widget {
             let state = context.state
             let block = state.current ?? state.next
             return DynamicIsland {
+                // Beside the camera: which block this is and when, and the time left. Under it, one row: the block's name
+                // with the width to be read, and the one action. Nothing sits in the centre, squeezed by the camera.
                 DynamicIslandExpandedRegion(.leading) {
                     VStack(alignment: .leading, spacing: 2) {
                         ActivityKicker(state.current != nil ? "Now" : state.finished ? "Done" : "Up next", accent: state.current != nil)
-                        if let block { Text(Clock.range(block)).font(.caption2).foregroundStyle(.secondary).monospacedDigit() }
+                        if let block { Text(Clock.range(block)).font(.caption2.weight(.medium)).foregroundStyle(.secondary).monospacedDigit() }
                     }
+                    .padding(.leading, 4)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    if let block { Countdown(block: block, on: state.current != nil).font(.system(.title3, design: .serif, weight: .semibold)) }
-                }
-                DynamicIslandExpandedRegion(.center) {
-                    Text(block?.title ?? "Today's plan is done.").font(.system(.title3, design: .serif, weight: .semibold)).lineLimit(1)
+                    if let block {   // hard against the trailing edge, as the kicker is against the leading: the two read as the island's ends
+                        Countdown(block: block, on: state.current != nil).font(.system(.title2, design: .serif, weight: .semibold))
+                            .multilineTextAlignment(.trailing).frame(maxWidth: .infinity, alignment: .trailing).padding(.trailing, 4)
+                    }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    if let block {
-                        HStack(alignment: .center, spacing: 12) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                if !block.reason.isEmpty { Text(block.reason).font(.footnote).foregroundStyle(.secondary).lineLimit(2) }
-                                if let next = state.next, state.current != nil { Text("Then \(next.title) at \(Clock.time(next.start))").font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
-                            }
-                            Spacer(minLength: 0)
-                            DoneButton(block: block)
-                        }
-                    } else {
-                        Text("\(state.done) of \(state.total) blocks done.").font(.footnote).foregroundStyle(.secondary)
+                    HStack(alignment: .center, spacing: 12) {
+                        Text(block?.title ?? "Today's plan is done.").font(.system(.title3, design: .serif, weight: .semibold)).lineLimit(2).minimumScaleFactor(0.85)
+                        Spacer(minLength: 0)
+                        if let block { DoneButton(block: block) }
                     }
+                    .padding(.horizontal, 4)
                 }
             } compactLeading: {   // the leading and trailing read as one unit: the sun, then the time it stands for
                 Image(systemName: state.current != nil ? "sun.horizon.fill" : "sun.horizon").foregroundStyle(ActivityDesign.accent).padding(.leading, 4)
@@ -80,6 +82,7 @@ private struct LockScreenPlan: View {
                     Text(Clock.range(block)).font(.caption).foregroundStyle(.secondary).monospacedDigit()
                     Spacer()
                     Countdown(block: block, on: on).font(.system(.title3, design: .serif, weight: .semibold))
+                        .multilineTextAlignment(.trailing).frame(maxWidth: 96, alignment: .trailing)   // a timer's text takes all the width it is offered and sets itself at its start: held to the trailing edge
                 }
                 Text(block.title).font(.system(.title2, design: .serif, weight: .semibold)).lineLimit(2)
                 if !block.reason.isEmpty { Text(block.reason).font(.footnote).foregroundStyle(.secondary).lineLimit(2) }
