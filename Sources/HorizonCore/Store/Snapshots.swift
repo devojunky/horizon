@@ -30,6 +30,8 @@ public struct ObligationSnapshot: Sendable, Identifiable, Equatable {
     public var courseTitle: String? = nil
     public var sourceDocumentID: UUID?
     public var sourcePage: Int?
+    /// Checked off (or back on) in the app, and Reminders not yet told.
+    public var completionPending: Bool = false
 
     public var link: URL { Identifiers.link(for: id) }
     /// The course as the app names it: its name, falling back to the code.
@@ -89,6 +91,8 @@ public struct CourseEdits: Sendable, Equatable {
 public struct DocumentSnapshot: Sendable, Identifiable, Equatable {
     public var id: UUID
     public var filename: String
+    /// The device model's name for it ("Calculus II Syllabus"), once it has one.
+    public var title: String?
     public var sha256: String
     public var kind: String
     public var status: DocumentStatus
@@ -103,17 +107,20 @@ public struct DocumentSnapshot: Sendable, Identifiable, Equatable {
     public var readOnDevice: Bool
 
     public init(id: UUID = UUID(), filename: String, sha256: String, kind: String, status: DocumentStatus, queuedAt: Date, ingestedAt: Date? = nil,
-                deviceName: String, failure: String? = nil, platform: Platform? = nil, courseID: UUID? = nil, deletedAt: Date? = nil, readOnDevice: Bool = false) {
-        self.id = id; self.filename = filename; self.sha256 = sha256; self.kind = kind; self.status = status; self.queuedAt = queuedAt
+                deviceName: String, failure: String? = nil, platform: Platform? = nil, courseID: UUID? = nil, deletedAt: Date? = nil, readOnDevice: Bool = false, title: String? = nil) {
+        self.id = id; self.filename = filename; self.title = title; self.sha256 = sha256; self.kind = kind; self.status = status; self.queuedAt = queuedAt
         self.ingestedAt = ingestedAt; self.deviceName = deviceName; self.failure = failure; self.platform = platform; self.courseID = courseID; self.deletedAt = deletedAt
         self.readOnDevice = readOnDevice
     }
 
     public init(_ d: SourceDocument) {
-        id = d.id; filename = d.filename; sha256 = d.sha256; kind = d.kind; status = d.status; queuedAt = d.queuedAt
+        id = d.id; filename = d.filename; title = d.title; sha256 = d.sha256; kind = d.kind; status = d.status; queuedAt = d.queuedAt
         ingestedAt = d.ingestedAt; deviceName = d.deviceName; failure = d.failure; platform = d.platform; courseID = d.course?.id; deletedAt = d.deletedAt
         readOnDevice = d.readOnDevice
     }
+
+    /// What the app calls the document: its title once it has one, else its file's name without the clutter.
+    public var displayName: String { DocumentName.display(title: title, filename: filename) }
 }
 
 extension ObligationSnapshot {
@@ -122,7 +129,8 @@ extension ObligationSnapshot {
                   pointsAtStake: o.pointsAtStake, confidence: o.confidence, state: o.state, origin: o.origin, flags: o.flags, notes: o.notes,
                   userOverrides: o.userOverrides, ekExternalID: o.ekExternalID, projectedTitle: o.projectedTitle, projectedDue: o.projectedDue,
                   projectedNotes: o.projectedNotes, completedAt: o.completedAt, deletedAt: o.deletedAt, changeNote: o.changeNote, createdOn: o.createdOn,
-                  courseID: o.course?.id, courseCode: o.course?.code, courseTitle: o.course?.title, sourceDocumentID: o.sourceDocument?.id, sourcePage: o.sourcePage)
+                  courseID: o.course?.id, courseCode: o.course?.code, courseTitle: o.course?.title, sourceDocumentID: o.sourceDocument?.id, sourcePage: o.sourcePage,
+                  completionPending: o.completionPending)
     }
 }
 

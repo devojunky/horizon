@@ -4,13 +4,17 @@ import IngestKit
 /// Progress of one document's read, for live UI.
 public struct DocumentProgress: Sendable, Equatable {
     public var documentID: UUID
-    public var filename: String
+    /// What the app calls the document now: its title when it has one, else its file's name, tidied. A title that
+    /// arrives mid-read comes as `IngestEvent.named`.
+    public var name: String
     public var event: IngestEvent
 }
 
 /// Inbox → parser → store → Reminders. The share extension and the folder watcher only `enqueue`; the app `drain`s.
 public actor IngestCoordinator {
     public typealias Parser = @Sendable (URL, IngestOptions) async throws -> IngestResult
+    /// Names a document on file: its stored copy, what to tell the model, and a digest of what was read from it (for a picture).
+    public typealias Namer = @Sendable (URL, DocumentTitleRequest, String?) async -> DocumentTitleOutcome
 
     private let store: HorizonStore
     private let storage: DocumentStorage
@@ -18,6 +22,7 @@ public actor IngestCoordinator {
     private var options: IngestOptions
     private let deviceName: String
     private let parse: Parser
+    private let name: Namer
     private let progress: @Sendable (DocumentProgress) -> Void
 
     public struct Report: Sendable, Equatable {
@@ -27,9 +32,11 @@ public actor IngestCoordinator {
     }
 
     public init(store: HorizonStore, storage: DocumentStorage, sync: SyncCoordinator?, options: IngestOptions = IngestOptions(), deviceName: String,
-                progress: @escaping @Sendable (DocumentProgress) -> Void = { _ in }, parse: Parser? = nil) {
+                progress: @escaping @Sendable (DocumentProgress) -> Void = { _ in }, parse: Parser? = nil, name: Namer? = nil) {
         self.store = store; self.storage = storage; self.sync = sync; self.options = options; self.deviceName = deviceName; self.progress = progress
         self.parse = parse ?? { url, options in try await Ingestor(options: options).ingest(fileURL: url) }
+        let log = options.log
+        self.name = name ?? { url, request, digest in await Ingestor.title(fileURL: url, request: request, digest: digest, log: log) }
     }
 
     /// Copies the file into the App Group container and records it. The same file shared twice is recorded once;
@@ -80,6 +87,25 @@ public actor IngestCoordinator {
     public func setRoute(_ route: IngestOptions.RoutePolicy) { options.route = route }
     public func setClaude(_ configuration: ClaudeConfiguration?) { options.claude = configuration }
 
+    /// Names the documents on file that nobody has tried to name: those read before titles existed, or while the
+    /// device model was away. A few per call, quietly; a document the model has no name for is marked so, and a model
+    /// that is not there ends the pass until another time.
+    public func nameUntitled(limit: Int = 4) async {
+        guard let untitled = try? await store.untitledDocuments() else { return }
+        for doc in untitled.prefix(limit) {
+            if Task.isCancelled { return }
+            guard storage.exists(sha256: doc.sha256, extension: doc.kind) else { continue }   // read on another device
+            var course: KnownCourse?
+            if let courseID = doc.courseID { course = try? await store.knownCourse(for: courseID) }
+            let request = DocumentTitleRequest(filename: doc.filename, course: course.flatMap { $0.title ?? $0.code })
+            switch await name(storage.url(sha256: doc.sha256, extension: doc.kind), request, try? await store.digest(for: doc.id)) {
+            case .titled(let title): try? await store.setDocumentTitle(id: doc.id, title: title)
+            case .nothing: try? await store.setDocumentTitle(id: doc.id, title: "")
+            case .unavailable: return
+            }
+        }
+    }
+
     /// Parses every queued document, folds results into the store, then writes Reminders.
     public func drain() async -> [Report] {
         var reports: [Report] = []
@@ -91,8 +117,14 @@ public actor IngestCoordinator {
             var perDocument = options
             if doc.readOnDevice { perDocument.route = .onDevice }   // the user's word, for this document
             if let courseID = doc.courseID, let known = try? await store.knownCourse(for: courseID) { perDocument.knownCourse = known }   // filed under a course: read it as that course's
-            let sink = progress, id = doc.id, name = doc.filename
-            perDocument.progress = { event in sink(DocumentProgress(documentID: id, filename: name, event: event)) }
+            // A document with no title yet is named along the way (the device model's small task, whatever reads it);
+            // the title is kept the moment it arrives, so a read that then fails still leaves the document named.
+            if doc.title == nil { perDocument.titleRequest = DocumentTitleRequest(filename: doc.filename, course: perDocument.knownCourse.flatMap { $0.title ?? $0.code }) }
+            let sink = progress, id = doc.id, name = doc.displayName, titles = store
+            perDocument.progress = { event in
+                if case .named(let title) = event { Task { try? await titles.setDocumentTitle(id: id, title: title ?? "") } }
+                sink(DocumentProgress(documentID: id, name: name, event: event))
+            }
             // A read that stopped earlier goes on from its checkpoint; every finished part is kept as it comes.
             if let data = try? await store.checkpoint(for: doc.id), let checkpoint = try? IngestCheckpoint(data: data) { perDocument.resume = checkpoint }
             let keeper = store

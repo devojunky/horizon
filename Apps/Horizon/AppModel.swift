@@ -15,6 +15,8 @@ final class AppModel {
     let store: HorizonStore
     let coordinator: IngestCoordinator
     let sync: SyncCoordinator
+    /// Where the documents' files are kept, each under its hash.
+    let storage: DocumentStorage
     private let reminders = EventKitReminderStore()
 
     var remindersAuthorized: Bool?
@@ -57,7 +59,8 @@ final class AppModel {
 
     struct Reading: Equatable {
         var documentID: UUID
-        var filename: String
+        /// What the document is called while it is read: its title once the device model has named it, else its file's name, tidied.
+        var name: String
         var chunk = 0
         var chunks = 0
         var images = 0
@@ -133,7 +136,8 @@ final class AppModel {
         var options = IngestOptions()
         options.log = { message in Task { @MainActor in AppModel.log(message) } }
         let box = ProgressBox()
-        coordinator = IngestCoordinator(store: store, storage: DocumentStorage.appGroup() ?? .temporary(), sync: sync, options: options, deviceName: Self.deviceName,
+        storage = DocumentStorage.appGroup() ?? .temporary()
+        coordinator = IngestCoordinator(store: store, storage: storage, sync: sync, options: options, deviceName: Self.deviceName,
                                         progress: { p in Task { @MainActor in box.model?.apply(p) } })
         box.model = self
         loadPlan()
@@ -158,7 +162,11 @@ final class AppModel {
     private func apply(_ p: DocumentProgress) {
         switch p.event {
         case .started(_, let chunks, let images, let resumed):
-            withAnimation { reading = Reading(documentID: p.documentID, filename: p.filename, chunks: chunks, images: images, resumed: resumed) }   // the user's name for it, not the stored hash
+            withAnimation { reading = Reading(documentID: p.documentID, name: p.name, chunks: chunks, images: images, resumed: resumed) }   // the user's name for it, not the stored hash
+        case .named(let title):
+            guard var r = reading, let title, !title.isEmpty else { return }   // the device model's name for it takes over from the file's
+            r.name = title
+            withAnimation { reading = r }
         case .chunkStarted(let index):
             guard var r = reading else { return }   // copy, mutate, write back: no overlapping access to `reading`
             r.chunk = index + 1; r.current = []; r.advance(to: Double(index) / r.total)
@@ -182,6 +190,17 @@ final class AppModel {
             withAnimation { reading = nil }
         }
     }
+
+    #if DEBUG
+    private var demoing = false
+    /// `--demo-reading`: the reading section at its widest (a long title, a long item, a read in parts, picked up from a
+    /// checkpoint), to check on any screen and at any type size that nothing in it wraps. Nothing is read.
+    func demoReading() {
+        demoing = true   // no drain clears it: the section stays up while the type size is changed under it
+        reading = Reading(documentID: UUID(), name: "Organizational Behavior and Leadership Syllabus", chunk: 2, chunks: 3, resumed: 1,
+                          progress: ReadProgress(stage: .obligations, done: 11, total: 18, current: "Problem Set 10: Sequences, Series and Convergence"), fraction: 0.55)
+    }
+    #endif
 
     private static let logger = Logger(subsystem: Identifiers.bundlePrefix, category: "ingest")
     private static func log(_ message: String) {
@@ -255,7 +274,7 @@ final class AppModel {
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             do {
                 let document = try await coordinator.enqueue(fileURL: url, courseID: courseID)
-                if document.status == .parsed { onFile.append(document.filename) }   // the same file again: nothing to read
+                if document.status == .parsed { onFile.append(document.displayName) }   // the same file again: nothing to read
             } catch {
                 lastError = error.localizedDescription
                 Self.log("import failed for \(url.lastPathComponent): \(error)")
@@ -276,6 +295,9 @@ final class AppModel {
     /// Parse whatever is queued, then reconcile with Reminders and write what is ready. Safe to run repeatedly; a call
     /// that arrives during a run makes it run once more afterwards.
     func drainAndSync() async {
+        #if DEBUG
+        if demoing { return }
+        #endif
         guard !busy else { rerun = true; return }
         busy = true
         defer { busy = false }
@@ -333,9 +355,28 @@ final class AppModel {
             }
             _ = try? await store.purgeTombstones()
             try? await coordinator.expireBin()   // what has sat in Recently Deleted for 30 days goes for good
+            await coordinator.nameUntitled()     // documents on file from before titles, a few at a time (the device model's small task)
         } catch {
             withAnimation { lastError = error.localizedDescription; statusLine = nil }
         }
+    }
+
+    // MARK: Looking at a document
+
+    /// Whether the document's file is on this device (one read on another device is a record only).
+    func hasFile(_ document: SourceDocument) -> Bool { storage.exists(sha256: document.sha256, extension: document.kind) }
+
+    /// The document's file for Quick Look, copied under the name the app calls it (the stored file is named by its
+    /// hash, and the preview's title is the file's name). One copy at a time: the last preview's goes.
+    func previewFile(for document: SourceDocument) -> URL? {
+        guard hasFile(document) else { return nil }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Preview", isDirectory: true)
+        try? FileManager.default.removeItem(at: folder)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let name = document.displayName.components(separatedBy: CharacterSet(charactersIn: "/:\\")).joined(separator: "-")
+        let copy = folder.appendingPathComponent(name).appendingPathExtension(document.kind)
+        do { try FileManager.default.copyItem(at: storage.url(sha256: document.sha256, extension: document.kind), to: copy); return copy }
+        catch { Self.log("preview: could not copy \(document.filename): \(error.localizedDescription)"); return nil }
     }
 
     // MARK: Recently Deleted
@@ -382,6 +423,14 @@ final class AppModel {
     func confirm(_ id: UUID, edits: ObligationEdits = ObligationEdits()) async {
         do { try await store.confirm(id: id, edits: edits) } catch { lastError = error.localizedDescription }
         await drainAndSync()
+    }
+
+    /// An item checked off (or back on) in the app. Reminders owns completion, so the mark is written to its reminder
+    /// by the sync that follows; nothing is read or drained, and no status line comes and goes for a check.
+    func setCompleted(_ id: UUID, _ done: Bool) async {
+        do { try await store.setCompleted(id: id, done) } catch { lastError = error.localizedDescription; return }
+        guard remindersAuthorized == true else { return }   // the store keeps the mark; it reaches Reminders once there is access
+        do { _ = try await sync.sync() } catch { Self.log("sync after a check failed: \(error.localizedDescription)") }
     }
 
     func discard(_ id: UUID) async {

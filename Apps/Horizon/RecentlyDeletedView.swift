@@ -32,7 +32,7 @@ struct BinEntry: Identifiable, Equatable {
             items = course.binnedObligations.count; documents = course.binnedDocuments.count
         }
         init(_ document: SourceDocument) {
-            id = document.id; kind = .document; name = document.filename; deletedAt = document.deletedAt ?? .now
+            id = document.id; kind = .document; name = document.displayName; deletedAt = document.deletedAt ?? .now
             items = document.binnedObligations.count; documents = 0
         }
 

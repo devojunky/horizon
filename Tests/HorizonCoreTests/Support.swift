@@ -29,9 +29,16 @@ actor FakeReminderStore: ReminderStore {
         return items[i]
     }
 
+    func setCompleted(externalID: String, _ completed: Bool, at date: Date?) async throws -> Bool {
+        guard let i = items.firstIndex(where: { $0.externalID == externalID }) else { return false }
+        items[i].isCompleted = completed; items[i].completionDate = completed ? date ?? Date() : nil
+        return true
+    }
+
     // What a user does in the Reminders app.
     func userDeletes(externalID: String) { items.removeAll { $0.externalID == externalID } }
     func userCompletes(externalID: String) { if let i = items.firstIndex(where: { $0.externalID == externalID }) { items[i].isCompleted = true; items[i].completionDate = Date() } }
+    func userUncompletes(externalID: String) { if let i = items.firstIndex(where: { $0.externalID == externalID }) { items[i].isCompleted = false; items[i].completionDate = nil } }
     func userEdits(externalID: String, title: String? = nil, due: Date? = nil) {
         guard let i = items.firstIndex(where: { $0.externalID == externalID }) else { return }
         if let title { items[i].title = title }

@@ -27,13 +27,39 @@ struct ReadingProgressTests {
     }
 
     @Test func theCaptionNamesTheStageAndTheCount() {
-        #expect(ReadingProgress.caption(ReadProgress(stage: .sizing)) == "Taking the measure of it…")
-        #expect(ReadingProgress.caption(ReadProgress(stage: .sizing, outline: Self.outline)) == "Measured: 4 things due")
-        #expect(ReadingProgress.caption(ReadProgress(stage: .sizing, done: 7)) == "Taking the measure of it · 7 due so far")
-        #expect(ReadingProgress.caption(ReadProgress(stage: .obligations, done: 2, total: 4, current: "Quiz 1")) == "What's due · Quiz 1 · 2 of 4")
+        #expect(ReadingProgress.caption(ReadProgress(stage: .sizing)) == "Sizing it up…")
+        #expect(ReadingProgress.caption(ReadProgress(stage: .sizing, outline: Self.outline)) == "Measured: 4 due")
+        #expect(ReadingProgress.caption(ReadProgress(stage: .sizing, done: 7)) == "Sizing it up · 7 due so far")
+        #expect(ReadingProgress.caption(ReadProgress(stage: .obligations, done: 2, total: 4, current: "Quiz 1")) == "What's due · 3 of 4 · Quiz 1")   // the third is under way
+        #expect(ReadingProgress.caption(ReadProgress(stage: .obligations, done: 4, total: 4)) == "What's due · 4 of 4")
         #expect(ReadingProgress.caption(ReadProgress(stage: .obligations, done: 2)) == "What's due · 2 so far")
         #expect(ReadingProgress.caption(ReadProgress(stage: .policies, done: 2, total: 2)) == "The fine print · 2 of 2")
-        #expect(ReadingProgress.caption(ReadProgress(stage: .grading)) == "How the grade adds up")
-        #expect(ReadingProgress.caption(ReadProgress(stage: .transcribing)) == "Reading the picture, line by line…")
+        #expect(ReadingProgress.caption(ReadProgress(stage: .grading)) == "How it's graded")
+        #expect(ReadingProgress.caption(ReadProgress(stage: .transcribing)) == "Reading the picture…")
+    }
+
+    /// The line never wraps: every stage's widest wording is short when nothing in it is the document's own, and
+    /// each wording after it is shorter, down to the count alone.
+    @Test func everyWordingIsShortAndTheLadderOnlyNarrows() {
+        let long = "Problem Set 10: Sequences, Series and Convergence Tests"
+        let cases = ReadProgress.Stage.allCases.flatMap { stage in
+            [ReadProgress(stage: stage), ReadProgress(stage: stage, done: 12), ReadProgress(stage: stage, done: 12, total: 18, current: long, outline: Self.outline)]
+        }
+        for progress in cases {
+            let wordings = ReadingProgress.captions(progress)
+            #expect(!wordings.isEmpty)
+            #expect(wordings.map(\.count) == wordings.map(\.count).sorted(by: >), "\(wordings)")
+            #expect(wordings.filter { !$0.contains(long) }.allSatisfy { $0.count <= 28 }, "\(wordings)")   // only an item's name can make a wording long
+            #expect(wordings[wordings.count - 1].count <= 18, "\(wordings)")                               // and the last resort fits anywhere
+        }
+    }
+
+    @Test func aReadInPartsSaysWhichAndDropsItLast() {
+        let items = ReadProgress(stage: .obligations, done: 7, total: 18, current: "Quiz 8")
+        #expect(ReadingProgress.lines(items, part: 1, of: 1) == ["What's due · 8 of 18 · Quiz 8", "What's due · 8 of 18", "8 of 18 due"])
+        #expect(ReadingProgress.lines(items, part: 2, of: 3) == ["Part 2 of 3 · What's due · 8 of 18 · Quiz 8", "Part 2 of 3 · What's due · 8 of 18", "Part 2 of 3 · 8 of 18 due", "8 of 18 due"])
+        let resumed = ReadingProgress.lines(nil, part: 2, of: 3, pickedUp: true, found: 5)
+        #expect(resumed == ["Resumed at part 2 of 3 · 5 found so far", "Part 2 of 3 · 5 found so far", "5 found so far"])
+        #expect(ReadingProgress.lines(nil, part: 1, of: 1, found: 0) == ["0 found so far"])
     }
 }

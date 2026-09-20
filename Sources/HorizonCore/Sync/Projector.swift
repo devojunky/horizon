@@ -11,6 +11,8 @@ public actor ReminderProjector {
 
     public struct Report: Sendable, Equatable {
         public var created = 0, updated = 0, repaired = 0, removed = 0, waiting = 0
+        /// Checks made in the app and written to their reminders.
+        public var checked = 0
     }
 
     public init(store: HorizonStore, reminders: any ReminderStore, calendar: Calendar = .current) {
@@ -50,6 +52,15 @@ public actor ReminderProjector {
             } else {
                 report.waiting += 1   // another device's row (its reminder will arrive through iCloud) or one it has since removed
             }
+        }
+
+        // The user's checks made in the app. Reminders owns completion, so each is written to its reminder and only
+        // then settled; an item with no reminder (in review, undated, another device's) keeps its mark in the store.
+        for obligation in try await store.pendingCompletions() {
+            guard let externalID = obligation.ekExternalID, known.contains(externalID) else { continue }
+            guard try await reminders.setCompleted(externalID: externalID, obligation.completedAt != nil, at: obligation.completedAt) else { continue }
+            try await store.completionProjected(id: obligation.id)
+            report.checked += 1
         }
         return (report, known)
     }
@@ -101,7 +112,8 @@ public enum Reconciler {
             present.insert(obligation.id)
             if obligation.deletedAt != nil { continue }
             if obligation.ekExternalID != item.externalID { changes.append(.repairExternalID(obligation.id, item.externalID)) }
-            if item.isCompleted != (obligation.completedAt != nil) { changes.append(.completion(obligation.id, item.isCompleted ? item.completionDate ?? Date() : nil)) }
+            // Reminders owns completion, except while the user's own check in the app is on its way there (the projector writes it next).
+            if item.isCompleted != (obligation.completedAt != nil), !obligation.completionPending { changes.append(.completion(obligation.id, item.isCompleted ? item.completionDate ?? Date() : nil)) }
             // A reminder that no longer says what we last wrote was edited by hand in Reminders.
             guard let projectedTitle = obligation.projectedTitle else { continue }
             let titleEdited = item.title != projectedTitle

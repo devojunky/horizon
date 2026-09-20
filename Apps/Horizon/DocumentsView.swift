@@ -19,7 +19,8 @@ struct DocumentsView: View {
             Section {
                 ForEach(documents) { doc in
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(doc.filename).font(.body.weight(.medium))
+                        Text(doc.displayName).font(.body.weight(.medium))
+                        if doc.displayName != doc.filename { Text(doc.filename).font(.footnote).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }   // the file it came as
                         Text("\(status(doc)) · \(doc.deviceName) · \(doc.queuedAt.formatted(date: .abbreviated, time: .shortened))").font(.footnote).foregroundStyle(.secondary)
                         if let course = doc.course {
                             Text(course.displayName).font(.footnote).foregroundStyle(.secondary)

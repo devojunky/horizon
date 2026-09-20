@@ -33,20 +33,45 @@ public enum ReadingProgress {
         return band.lowerBound + (band.upperBound - band.lowerBound) * min(1, Double(progress.done + 1) / Double(total))
     }
 
-    /// The stage in the user's words, with its count: "What's due · HW 3 · 7 of 18".
-    public static func caption(_ progress: ReadProgress) -> String {
-        func counted(_ head: String) -> String { progress.total.map { "\(head) · \(min(progress.done, $0)) of \($0)" } ?? (progress.done > 0 ? "\(head) · \(progress.done) so far" : head) }
-        switch progress.stage {
-        case .sizing: return progress.outline != nil ? "Measured: \(progress.outline!.titles.count) things due" : progress.done > 0 ? "Taking the measure of it · \(progress.done) due so far" : "Taking the measure of it…"
-        case .transcribing: return "Reading the picture, line by line…"
-        case .course: return "The course itself: who, where, when"
-        case .grading: return counted("How the grade adds up")
-        case .obligations:
-            guard let total = progress.total else { return counted("What's due") }
-            let item = progress.current.map { " · \($0)" } ?? ""
-            return "What's due\(item) · \(min(progress.done, total)) of \(total)"
-        case .policies: return counted("The fine print")
-        case .breaks: return counted("Days off and breaks")
+    /// The stage in the user's words with its count, widest first: "What's due · 8 of 18 · Quiz 8", then without the
+    /// item's name, then the count alone. The line is short by design and the view shows the first wording that fits
+    /// on one line (`lines`), so it never wraps, whatever the item is called or the type size.
+    public static func captions(_ progress: ReadProgress) -> [String] {
+        func counted(_ head: String, _ noun: String) -> [String] {
+            if let total = progress.total {
+                let count = "\(min(progress.done, total)) of \(total)"
+                return ["\(head) · \(count)", "\(count) \(noun)"]
+            }
+            return progress.done > 0 ? ["\(head) · \(progress.done) so far", "\(progress.done) \(noun)"] : [head]
         }
+        switch progress.stage {
+        case .sizing:
+            if let outline = progress.outline { return ["Measured: \(outline.titles.count) due"] }
+            return progress.done > 0 ? ["Sizing it up · \(progress.done) due so far", "\(progress.done) due so far"] : ["Sizing it up…"]
+        case .transcribing: return ["Reading the picture…", "Transcribing…"]
+        case .course: return ["Who, where, when"]
+        case .grading: return counted("How it's graded", "rows")
+        case .obligations:
+            guard let total = progress.total else { return counted("What's due", "due") }
+            // The item being written is the next one: "8 of 18 · Quiz 8" while the eighth is under way.
+            let count = "\(min(progress.done + (progress.current == nil ? 0 : 1), total)) of \(total)"
+            return (progress.current.map { ["What's due · \(count) · \($0)"] } ?? []) + ["What's due · \(count)", "\(count) due"]
+        case .policies: return counted("The fine print", "rules")
+        case .breaks: return counted("Days off", "days off")
+        }
+    }
+
+    /// The widest wording: what VoiceOver reads, and what a test pins.
+    public static func caption(_ progress: ReadProgress) -> String { captions(progress)[0] }
+
+    /// The whole line under the document's name, widest first: the part (when the read has several; "Resumed at" when
+    /// it goes on from a checkpoint) before each wording of the stage, and the narrowest wording alone as the last
+    /// resort. Between parts there is no stage, only the rows so far.
+    public static func lines(_ progress: ReadProgress?, part: Int, of parts: Int, pickedUp: Bool = false, found: Int = 0) -> [String] {
+        let wordings = progress.map(captions) ?? ["\(found) found so far"]
+        guard parts > 1 else { return wordings }
+        let labels = (pickedUp ? ["Resumed at part \(part) of \(parts)"] : []) + ["Part \(part) of \(parts)"]
+        let all = labels.flatMap { label in wordings.map { "\(label) · \($0)" } } + [wordings[wordings.count - 1]]
+        return all.sorted { $0.count > $1.count }
     }
 }

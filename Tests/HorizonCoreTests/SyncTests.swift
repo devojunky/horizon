@@ -204,6 +204,75 @@ struct SyncTests {
         #expect(completed != nil)
     }
 
+    @Test func aCheckInTheAppReachesRemindersAndThenRemindersOwnsItAgain() async throws {
+        let reminders = FakeReminderStore()
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let sync = SyncCoordinator.device("A", store: store, reminders: reminders)
+        _ = try await sync.sync()
+        let hw1 = try await store.obligations().first { $0.title == "HW 1" }!
+        let when = Fixture.day(9, 8, hour: 20, minute: 15)
+        try await store.setCompleted(id: hw1.id, true, at: when)
+        var row = try await store.obligations().first { $0.id == hw1.id }!
+        #expect(row.completedAt == when && row.completionPending)
+        let report = try await sync.sync()   // the reconciler sees an unchecked reminder and leaves the app's check alone; the projector writes it
+        var reminder = await reminders.items.first { $0.externalID == hw1.ekExternalID }!
+        row = try await store.obligations().first { $0.id == hw1.id }!
+        #expect(report.checked == 1 && reminder.isCompleted && reminder.completionDate == when && row.completedAt == when && !row.completionPending)
+        #expect(row.state == .projected)   // a check changes nothing else
+        // Unchecked in Reminders: with nothing pending, Reminders' word wins again.
+        await reminders.userUncompletes(externalID: reminder.externalID)
+        _ = try await sync.sync()
+        row = try await store.obligations().first { $0.id == hw1.id }!
+        #expect(row.completedAt == nil)
+        // And unchecked in the app after a check in Reminders.
+        await reminders.userCompletes(externalID: reminder.externalID)
+        _ = try await sync.sync()
+        try await store.setCompleted(id: hw1.id, false)
+        _ = try await sync.sync()
+        reminder = await reminders.items.first { $0.externalID == hw1.ekExternalID }!
+        row = try await store.obligations().first { $0.id == hw1.id }!
+        #expect(!reminder.isCompleted && reminder.completionDate == nil && row.completedAt == nil && !row.completionPending)
+        // Another device sees the check through its reminder.
+        try await store.setCompleted(id: hw1.id, true)
+        _ = try await sync.sync()
+        let b = try Fixture.store()
+        try await Fixture.replicate(from: store, to: b, includingExternalIDs: true)
+        _ = try await SyncCoordinator.device("B", store: b, reminders: reminders).sync()
+        #expect(try await b.obligations().first { $0.id == hw1.id }?.completedAt != nil)
+    }
+
+    @Test func aCheckWithNoReminderWaitsInTheStore() async throws {
+        let reminders = FakeReminderStore()
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(quizStatus: .needsReview), into: store)
+        let sync = SyncCoordinator.device("A", store: store, reminders: reminders)
+        let quiz = try await store.obligations().first { $0.title == "Quiz 1" }!
+        let exam = try await store.obligations().first { $0.title == "Midterm 1" }!
+        // Checked before anything has been written to Reminders: the reminder is created, then checked, in one sync.
+        try await store.setCompleted(id: exam.id, true)
+        try await store.setCompleted(id: quiz.id, true)   // in review: it has no reminder, and a check does not confirm it
+        let report = try await sync.sync()
+        let written = await reminders.items
+        #expect(report.created == 3 && report.checked == 1 && written.first { $0.title.hasPrefix("Midterm 1") }?.isCompleted == true)
+        var row = try await store.obligations().first { $0.id == quiz.id }!
+        #expect(row.state == .pendingReview && row.completedAt != nil && row.completionPending)
+        #expect(try await store.reviewQueue().isEmpty)   // done needs no review
+        // Unchecked, it is back in the queue; confirmed and checked again, the check follows it into Reminders.
+        try await store.setCompleted(id: quiz.id, false)
+        #expect(try await store.reviewQueue().map(\.title) == ["Quiz 1"])
+        try await store.confirm(id: quiz.id)
+        try await store.setCompleted(id: quiz.id, true)
+        _ = try await sync.sync()
+        row = try await store.obligations().first { $0.id == quiz.id }!
+        let quizReminder = await reminders.items.first { $0.title.hasPrefix("Quiz 1") }
+        #expect(quizReminder?.isCompleted == true && !row.completionPending)
+        // A deleted item cannot be checked.
+        try await store.softDelete(id: exam.id)
+        try await store.setCompleted(id: exam.id, false)
+        #expect(try await store.obligations(includeDeleted: true).first { $0.id == exam.id }?.completedAt != nil)
+    }
+
     @Test func handEditsInRemindersBecomeOverridesThatReingestRespects() async throws {
         let reminders = FakeReminderStore()
         let store = try Fixture.store()

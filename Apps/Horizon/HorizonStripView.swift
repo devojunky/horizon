@@ -52,6 +52,7 @@ private struct Band: Identifiable, Equatable {
 /// height never changes, and lists its items under the strip (what is coming up when nothing is scrubbed); a row opens
 /// the editor. New marks fade in as a document resolves.
 struct HorizonStripView: View {
+    @Environment(AppModel.self) private var model
     @Query(filter: #Predicate<Obligation> { $0.deletedAt == nil && $0.due != nil }, sort: \Obligation.due) private var obligations: [Obligation]
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
     @State private var zoom: CGFloat = 1            // 1 = the whole semester across the width
@@ -67,6 +68,7 @@ struct HorizonStripView: View {
     @State private var centreOn: Date?               // a stop lands on the scrubbed day, else today
     @State private var previousLevel: (level: Strip.Level, at: Date)?   // the level just left, for the crossfade
     @State private var editing: Obligation?
+    @State private var lingering: Set<UUID> = []     // just checked off under "Coming up": crossed off for a moment before it leaves, so a slip can be undone
     private let calendar = Calendar.current
     private let axisHeight: CGFloat = 34
 
@@ -116,7 +118,7 @@ struct HorizonStripView: View {
         let chosen: [StripItem]
         if let clicked = cell(for: scrub) { chosen = clicked.items } else {
             let today = calendar.startOfDay(for: Date())
-            chosen = items.filter { $0.due >= today && !$0.completed }
+            chosen = items.filter { $0.due >= today && (!$0.completed || lingering.contains($0.id)) }
         }
         return chosen.sorted { $0.due != $1.due ? $0.due < $1.due : ($0.points ?? 0) > ($1.points ?? 0) }.compactMap { byID[$0.id] }
     }
@@ -186,8 +188,10 @@ struct HorizonStripView: View {
                     List {
                         Section {
                             ForEach(listed) { obligation in
-                                Button { editing = obligation } label: { ObligationRow(obligation: obligation) }
+                                Button { editing = obligation } label: { ObligationRow(obligation: obligation, mark: { mark(obligation.id, $0) }) }
                                     .buttonStyle(.plain)
+                                    .obligationActions(done: obligation.completedAt != nil, mark: { mark(obligation.id, $0) }, edit: { editing = obligation },
+                                                       delete: { Task { await model.discard(obligation.id) } })
                                     .accessibilityHint("Opens the editor")
                             }
                             if listed.isEmpty { Text(scrub == nil ? "Nothing coming up." : "Nothing due.").foregroundStyle(.secondary) }
@@ -198,6 +202,7 @@ struct HorizonStripView: View {
                     }
                     .listStyle(.plain)
                     .animation(.default, value: scrub)
+                    .animation(.default, value: listed.map(\.id))
                 }
                 .padding(.top, 8)
                 .overlay {
@@ -214,6 +219,9 @@ struct HorizonStripView: View {
                 .onAppear {
                     if MainTabs.debugFlag("--zoom-two-weeks"), zoom == 1 { zoomTo(maxZoom) }
                     if MainTabs.debugFlag("--zoom-month"), zoom == 1 { zoomTo(zoom(for: .month)) }
+                    if MainTabs.debugFlag("--check-first-coming-up"), let first = listed.first {   // DEBUG: a check without a tap, to see the row linger and leave
+                        Task { try? await Task.sleep(for: .seconds(2)); mark(first.id, true) }
+                    }
                 }
             }
             .background(Design.paper.ignoresSafeArea())
@@ -243,6 +251,17 @@ struct HorizonStripView: View {
                 runAnimation(for: 0.9)
             }
         }
+    }
+
+    /// A check under "Coming up" stays on the page for a moment, crossed off, then the row leaves; unchecked, it stays.
+    private func mark(_ id: UUID, _ done: Bool) {
+        if done {
+            lingering.insert(id)
+            Task { try? await Task.sleep(for: .seconds(2.5)); lingering.remove(id) }
+        } else {
+            lingering.remove(id)
+        }
+        Task { await model.setCompleted(id, done) }
     }
 
     private func runAnimation(for seconds: Double) {

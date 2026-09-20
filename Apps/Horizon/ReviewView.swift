@@ -9,7 +9,7 @@ struct ReviewView: View {
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
     @State private var editing: Obligation?
 
-    private var pending: [Obligation] { obligations.filter { $0.deletedAt == nil && $0.state == .pendingReview } }
+    private var pending: [Obligation] { obligations.filter { $0.deletedAt == nil && $0.state == .pendingReview && $0.completedAt == nil } }   // done needs no review
 
     var body: some View {
         List {

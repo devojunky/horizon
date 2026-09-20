@@ -264,16 +264,15 @@ public actor HorizonStore {
         item.flags = parsed.flags.map(\.rawValue)
         item.dateAsWritten = parsed.dateAsWritten
         item.sourcePage = parsed.sourcePage
-        let previous = item.sourceDocument?.filename
+        let previous = item.sourceDocument.flatMap { $0.filename == document.filename ? nil : $0.displayName }   // another document fed it before; the same file reissued is not another
         item.sourceDocument = document
         item.updatedAt = Date()
         if isNew {
             item.state = switch parsed.status { case .ready: .readyToProject; case .needsReview: .pendingReview; case .awaitingDate: .awaitingDate }
         } else if !changed.isEmpty {
-            // "schedule.pdf says due Oct 6 → Oct 8; earlier from syllabus.pdf" names both sides of a disagreement.
-            item.changeNote = previous != nil && previous != document.filename
-                ? "\(document.filename) says " + changed.joined(separator: "; ") + "; earlier from \(previous!)"
-                : "Reissued document: " + changed.joined(separator: "; ")
+            // "Lab Schedule says due Oct 6 → Oct 8; earlier from Calculus II Syllabus" names both sides of a disagreement.
+            item.changeNote = previous.map { "\(document.displayName) says " + changed.joined(separator: "; ") + "; earlier from \($0)" }
+                ?? "Reissued document: " + changed.joined(separator: "; ")
             item.state = .pendingReview
         } else if item.state == .awaitingDate, item.due != nil {
             item.state = parsed.status == .ready ? .readyToProject : .pendingReview
@@ -452,6 +451,33 @@ public actor HorizonStore {
         try modelContext.save()
     }
 
+    /// The device model's name for the document; an empty one records that it was asked and had none, so it is not
+    /// asked again. A title already on file stands.
+    public func setDocumentTitle(id: UUID, title: String) throws {
+        guard let doc = try fetchDocument(id: id), (doc.title ?? "").isEmpty else { return }
+        doc.title = title
+        try modelContext.save()
+    }
+
+    /// Documents nobody has tried to name yet (read before titles existed, or while the device model was away).
+    /// One being read is named by its read.
+    public func untitledDocuments() throws -> [DocumentSnapshot] {
+        try fetchDocuments().filter { $0.deletedAt == nil && $0.title == nil && $0.status != .queued }.map(snapshot)
+    }
+
+    /// What a document turned out to hold, in a few lines, for naming a picture the device model never saw: the
+    /// course, the site, its items.
+    public func digest(for id: UUID) throws -> String? {
+        guard let doc = try fetchDocument(id: id) else { return nil }
+        var lines: [String] = []
+        if let course = doc.course { lines.append([course.code, course.title].filter { !$0.isEmpty }.joined(separator: " ")) }
+        if let platform = doc.platform, platform != .syllabusOnly { lines.append("Site: \(platform.rawValue)") }
+        let items = (doc.obligations ?? []).filter { $0.deletedAt == nil }.sorted { ($0.due ?? .distantFuture) < ($1.due ?? .distantFuture) }.prefix(12)
+        if !items.isEmpty { lines.append("Items: " + items.map { "\($0.title)\($0.dateAsWritten.map { ", \($0)" } ?? "")" }.joined(separator: "; ")) }
+        let text = lines.filter { !$0.isEmpty }.joined(separator: "\n")
+        return text.isEmpty ? nil : text
+    }
+
     /// Keeps where a read stands, part by part, so a read that stops goes on from there.
     public func saveCheckpoint(id: UUID, data: Data?) throws {
         guard let doc = try fetchDocument(id: id) else { return }
@@ -473,8 +499,32 @@ public actor HorizonStore {
         try fetchObligations().filter { includeDeleted || $0.deletedAt == nil }.map(snapshot)
     }
 
+    /// What waits for the user's eye. An item checked off needs none: it leaves the queue, and comes back if unchecked.
     public func reviewQueue() throws -> [ObligationSnapshot] {
-        try fetchObligations().filter { $0.deletedAt == nil && $0.state == .pendingReview }.map(snapshot)
+        try fetchObligations().filter { $0.deletedAt == nil && $0.state == .pendingReview && $0.completedAt == nil }.map(snapshot)
+    }
+
+    /// The user's check in the app, on or off. Reminders owns completion (SPEC §4.4), so the mark is held against the
+    /// reconciler (`completionPending`) until the projector has written it to the item's reminder; an item with no
+    /// reminder keeps it here. Nothing else about the item changes: a check is not a confirmation.
+    public func setCompleted(id: UUID, _ done: Bool, at now: Date = Date()) throws {
+        guard let item = try fetchObligation(id: id), item.deletedAt == nil, (item.completedAt != nil) != done else { return }
+        item.completedAt = done ? now : nil
+        item.completionPending = true
+        item.updatedAt = now
+        try modelContext.save()
+    }
+
+    /// Checks made in the app that Reminders has not been told of.
+    public func pendingCompletions() throws -> [ObligationSnapshot] {
+        try fetchObligations().filter { $0.deletedAt == nil && $0.completionPending }.map(snapshot)
+    }
+
+    /// The check is in Reminders now: from here on Reminders' word on it wins again.
+    public func completionProjected(id: UUID) throws {
+        guard let item = try fetchObligation(id: id) else { return }
+        item.completionPending = false
+        try modelContext.save()
     }
 
     /// Items to write to Reminders: confirmed or confident, not deleted, not yet projected in their current form.

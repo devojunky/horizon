@@ -29,6 +29,9 @@ public struct IngestOptions: Sendable {
     public var resume: IngestCheckpoint?
     /// Told where the read stands after every finished part, so the caller can keep it for a read that stops.
     public var checkpoint: (@Sendable (IngestCheckpoint) async -> Void)?
+    /// Set to have the document named along the way (`IngestEvent.named`): a small task for the device model,
+    /// whatever reads the document. Nil when it has a title already, or nobody is asking.
+    public var titleRequest: DocumentTitleRequest?
 
     public init() {}
 }
@@ -103,6 +106,14 @@ public actor Ingestor {
     /// Whether Claude answers with this configuration: one tiny request, for Settings' Test Connection.
     public static func probe(claude configuration: ClaudeConfiguration) async throws -> String { try await Extractor.probe(claude: configuration) }
 
+    /// Names a document already on file, from its first lines (or, for a picture, from `digest`: what was read from
+    /// it). The device model's task, like every title.
+    public static func title(fileURL: URL, request: DocumentTitleRequest, digest: String? = nil, log: @escaping @Sendable (String) -> Void = { _ in }) async -> DocumentTitleOutcome {
+        guard let document = try? DocumentNormalizer.normalize(fileURL: fileURL) else { return .nothing }
+        let opening = DocumentName.opening(of: document)
+        return await Extractor.title(from: opening.isEmpty ? digest ?? "" : opening, request: request, log: log)
+    }
+
     func ingest(document: NormalizedDocument) async throws -> IngestResult {
         guard !document.pages.isEmpty else { throw IngestError.emptyDocument }
         let log = options.log
@@ -118,7 +129,24 @@ public actor Ingestor {
 
         var completed = false
         defer { if !completed { options.progress(.finished(obligations: 0)) } }   // a failed or cancelled read must end in the UI too
-        let outcomes = try await run(extractor, document: document)
+        // The document's name is the device model's small task. Claude's read does not wait for it (the device is
+        // idle meanwhile); the device's own read lets it go first, so two sessions never share the model. A picture
+        // has no words until it is read: `run` names it after its first part.
+        let opening = DocumentName.opening(of: document)
+        var naming: Task<Void, Never>?
+        if let request = options.titleRequest, !opening.isEmpty {
+            let progress = options.progress
+            let task = Task { Self.report(await Extractor.title(from: opening, request: request, log: log), to: progress) }
+            if extractor.route == .onDevice { await task.value } else { naming = task }
+        }
+        let outcomes: [ExtractionOutcome]
+        do {
+            outcomes = try await withTaskCancellationHandler { try await run(extractor, document: document, named: !opening.isEmpty) } onCancel: { [naming] in naming?.cancel() }
+        } catch {
+            if error is CancellationError { naming?.cancel() } else { await naming?.value }   // a document left waiting for Claude still gets its name
+            throw error
+        }
+        await naming?.value
         warnings += await extractor.warnings
         guard !outcomes.isEmpty else { throw IngestError.extractionFailed(warnings.joined(separator: "; ")) }
         let result = Merger.merge(outcomes: outcomes, document: document, route: extractor.route, options: options, warnings: warnings)
@@ -127,9 +155,20 @@ public actor Ingestor {
         return result
     }
 
+    /// A title reaches the caller as an event; a model that is not there to ask says nothing, so it is asked another time.
+    private static func report(_ outcome: DocumentTitleOutcome, to progress: @Sendable (IngestEvent) -> Void) {
+        switch outcome {
+        case .titled(let title): progress(.named(title: title))
+        case .nothing: progress(.named(title: nil))
+        case .unavailable: break
+        }
+    }
+
     /// Every chunk and image page through one extractor, in order, with the rolling context between them.
-    private func run(_ extractor: Extractor, document: NormalizedDocument) async throws -> [ExtractionOutcome] {
+    /// `named`: the document's opening text has already gone to be named; otherwise it is named from its first part read.
+    private func run(_ extractor: Extractor, document: NormalizedDocument, named: Bool) async throws -> [ExtractionOutcome] {
         let log = options.log
+        var named = named
         let textChunks = Chunker.chunks(pages: document.textPages, budgetTokens: extractor.chunkBudgetTokens, charsPerToken: extractor.charsPerToken)
         let images = document.imagePages
         log("\(document.info.name): \(document.pages.count) page(s) → \(textChunks.count) text chunk(s), \(images.count) image(s)")
@@ -164,6 +203,10 @@ public actor Ingestor {
             outcomes += results
             checkpoint.record(index: position, outcomes: results)
             if resume?.entry(at: position) == nil, let keep = options.checkpoint { await keep(checkpoint) }
+            if !named, let request = options.titleRequest, !outcomes.isEmpty {   // a picture: named from what was read of it
+                named = true
+                Self.report(await Extractor.title(from: DocumentName.digest(of: outcomes), request: request, log: log), to: options.progress)
+            }
         }
         return outcomes
     }

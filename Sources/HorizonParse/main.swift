@@ -12,6 +12,7 @@ usage: horizon-parse <file> [options]
   --year YYYY          year for undated-year dates when the document names no term
   --term-start YYYY-MM-DD
   --threshold 0.7      review threshold for confidence
+  --title              only name the document (the device model, from its first lines) and print the title
   --verbose            progress and token usage on stderr
   --compact            single-line JSON
 """
@@ -29,6 +30,7 @@ var path: String?
 var compact = false
 var model = ClaudeModelChoice.default
 var askedClaude = false
+var titleOnly = false
 while !args.isEmpty {
     let a = args.removeFirst()
     switch a {
@@ -39,6 +41,7 @@ while !args.isEmpty {
         args.removeFirst(); model = v
     case "--verbose": options.log = { FileHandle.standardError.write(Data(($0 + "\n").utf8)) }
     case "--compact": compact = true
+    case "--title": titleOnly = true
     case "--year":
         guard let v = args.first.flatMap(Int.init) else { fail("--year needs a number", code: 2) }
         args.removeFirst(); options.defaultYear = v
@@ -55,6 +58,14 @@ while !args.isEmpty {
     }
 }
 guard let path else { fail(usage, code: 2) }
+if titleOnly {
+    let file = URL(fileURLWithPath: path)
+    switch await Ingestor.title(fileURL: file, request: DocumentTitleRequest(filename: file.lastPathComponent), log: options.log) {
+    case .titled(let title): print(title); exit(0)
+    case .nothing: fail("no title worth keeping; the app would show: \(DocumentName.tidy(file.lastPathComponent))")
+    case .unavailable: fail("the device model is not available to name it")
+    }
+}
 if options.route == .claude {
     // The key from the environment, else the git-ignored file beside the package. Never printed.
     let file = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()

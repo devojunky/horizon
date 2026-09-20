@@ -30,8 +30,15 @@ import AppKit
     var confirmingReplan = false
 }
 
+/// The item highlighted on a course's page, for the menu bar's Item commands.
+struct SelectedItem: Equatable {
+    var id: UUID
+    var done: Bool
+}
+
 extension FocusedValues {
     @Entry var navigation: MacNavigation?
+    @Entry var selectedItem: SelectedItem?
 }
 
 /// The Mac window: a sidebar of the app's areas and a detail column, the toolbar carrying what acts on every page
@@ -113,7 +120,7 @@ private struct Sidebar: View {
     @Query(filter: #Predicate<Course> { $0.deletedAt != nil && $0.erasedAt == nil }) private var binnedCourses: [Course]
     @Query(filter: #Predicate<SourceDocument> { $0.deletedAt != nil }) private var deletedDocuments: [SourceDocument]
 
-    private var toReview: Int { obligations.filter { $0.state == .pendingReview }.count }
+    private var toReview: Int { obligations.filter { $0.state == .pendingReview && $0.completedAt == nil }.count }   // done needs no review
     private var binned: Int { binnedCourses.count + deletedDocuments.filter(\.isBinned).count }
 
     var body: some View {
@@ -133,8 +140,10 @@ private struct Sidebar: View {
         .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 320)
     }
 
+    /// The icon in the app's accent whatever accent the system is set to (a sidebar's icons otherwise take the
+    /// system's, blue by default, and ignore a tint set on the window).
     private func row(_ page: MacNavigation.Page) -> some View {
-        Label(page.title, systemImage: page.symbol).tag(page)
+        Label { Text(page.title) } icon: { Image(systemName: page.symbol).foregroundStyle(Design.accent) }.tag(page)
     }
 }
 
@@ -228,9 +237,10 @@ struct DocumentsTable: View {
 
     var body: some View {
         Table(rows, selection: $selection, sortOrder: $sortOrder) {
-            TableColumn("Document", value: \.filename) { doc in
+            TableColumn("Document", value: \.displayName) { doc in
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(doc.filename).fontWeight(.medium)
+                    Text(doc.displayName).fontWeight(.medium)
+                    if doc.displayName != doc.filename { Text(doc.filename).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }   // the file it came as
                     if let failure = doc.failure { Text(failure).font(.caption).foregroundStyle(Design.accent) }
                     if !doc.warnings.isEmpty {   // what the read had to say, on hover
                         Text(doc.warnings.count == 1 ? "1 note from the read" : "\(doc.warnings.count) notes from the read").font(.caption).foregroundStyle(.secondary)
@@ -412,6 +422,7 @@ private struct DropVeil: View {
 struct HorizonCommands: Commands {
     let model: AppModel
     @FocusedValue(\.navigation) private var nav
+    @FocusedValue(\.selectedItem) private var item
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -435,6 +446,10 @@ struct HorizonCommands: Commands {
             Button("Edit Course…") { nav?.editingCourse = true }.keyboardShortcut("e").disabled(nav?.course == nil)
             Button("Delete Course") { if let id = nav?.course { Task { await model.deleteCourse(id) } } }
                 .keyboardShortcut(.delete, modifiers: .command).disabled(nav?.course == nil)
+        }
+        CommandMenu("Item") {   // the item highlighted on the course's page
+            Button(item?.done == true ? "Mark Not Done" : "Mark Done") { if let item { Task { await model.setCompleted(item.id, !item.done) } } }
+                .keyboardShortcut("d", modifiers: [.command, .shift]).disabled(item == nil)
         }
         CommandMenu("Plan") {
             Button(model.plan == nil ? "Plan Today" : "Plan Again") {

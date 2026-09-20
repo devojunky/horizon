@@ -50,6 +50,7 @@ struct HorizonApp: App {
                     if CommandLine.arguments.contains("--ingest-sample"), let sample = Bundle.main.url(forResource: "sample-syllabus", withExtension: "pdf") {
                         await model.importFiles([sample]); return
                     }
+                    if CommandLine.arguments.contains("--demo-reading") { model.demoReading(); return }   // the reading section at its widest; nothing is read
                     // `--ingest-file <path>` reads any file the simulator can see: unreadable ones, duplicates, and so on.
                     if let i = CommandLine.arguments.firstIndex(of: "--ingest-file"), i + 1 < CommandLine.arguments.count {
                         await model.importFiles([URL(fileURLWithPath: CommandLine.arguments[i + 1])]); return

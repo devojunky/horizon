@@ -80,6 +80,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.daniel.horizon
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon   # AppIcon.icon on OS 26+, Assets.xcassets/AppIcon.appiconset before
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor   # Design.accent as the app's accent: on a Mac, what selections, focus rings and sidebar icons take (when the system's accent is Multicolour)
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
         ENABLE_PREVIEWS: YES

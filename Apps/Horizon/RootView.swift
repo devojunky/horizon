@@ -39,7 +39,7 @@ struct IntakeStatus: View {
     var readFailure: String? {
         let failed = documents.filter { $0.status == .failed }
         guard let first = failed.first else { return nil }
-        return failed.count == 1 ? "Could not read \(first.filename): \(first.failure ?? "") Retry it from Documents." : "\(failed.count) documents could not be read. Retry them from Documents."
+        return failed.count == 1 ? "Could not read \(first.displayName): \(first.failure ?? "") Retry it from Documents." : "\(failed.count) documents could not be read. Retry them from Documents."
     }
 
     /// Documents Claude could not read yet, in one line, with the way out: try again, or let the device read one.
@@ -52,7 +52,7 @@ struct IntakeStatus: View {
             Section {
                 VStack(alignment: .leading, spacing: 10) {
                     let count = waitingForClaude.count
-                    Label(count == 1 ? "\(first.filename) is waiting for Claude: \(first.failure ?? "it could not be reached")." : "\(count) documents are waiting for Claude: \(first.failure ?? "it could not be reached").",
+                    Label(count == 1 ? "\(first.displayName) is waiting for Claude: \(first.failure ?? "it could not be reached")." : "\(count) documents are waiting for Claude: \(first.failure ?? "it could not be reached").",
                           systemImage: "cloud").foregroundStyle(.secondary)
                     HStack(spacing: 10) {
                         Button("Try Again") { Task { await model.drainAndSync() } }.buttonStyle(.bordered).controlSize(.small)
@@ -139,7 +139,7 @@ struct RootView: View {
         guard !path.contains(route) else { return }
         path.append(route)
     }
-    private var pending: [Obligation] { live.filter { $0.state == .pendingReview } }
+    private var pending: [Obligation] { live.filter { $0.state == .pendingReview && $0.completedAt == nil } }   // done needs no review
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -284,17 +284,15 @@ struct ReadingSection: View {
     var cancel: () -> Void
     @AppStorage("showReadingDetails") private var remembered = false
     @State private var showDetails = false   // local, so the change animates; the choice is remembered separately
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         Section {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .center, spacing: 4) {
-                    ProgressView().padding(.trailing, 10).accessibilityHidden(true)   // the model is at work even when the bar is not
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Reading \(reading.filename)").font(.body.weight(.medium))
-                        Text(progressLine).font(.footnote).foregroundStyle(.secondary).monospacedDigit()
-                    }
-                    Spacer()
+                    Text("Reading \(reading.name)").font(.body.weight(.medium))
+                        .lineLimit(typeSize.isAccessibilitySize ? 3 : 1).truncationMode(.middle)   // one line; at the accessibility sizes a name cut to a few letters says nothing, so it may run on
+                    Spacer(minLength: 8)
                     Button { withAnimation(.snappy) { showDetails.toggle() }; remembered = showDetails } label: {
                         Image(systemName: "chevron.down").font(.body.weight(.semibold)).rotationEffect(.degrees(showDetails ? 180 : 0))
                             .frame(width: 44, height: 44).contentShape(Rectangle())
@@ -305,6 +303,19 @@ struct ReadingSection: View {
                         .buttonStyle(.borderless).foregroundStyle(.secondary)
                         .accessibilityLabel("Cancel reading")
                 }
+                .dynamicTypeSize(...DynamicTypeSize.accessibility2)   // the two buttons keep to their 44 points
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small).accessibilityHidden(true)   // the model is at work even when the bar is not
+                    // One line, always: the widest wording that fits the row, down to the count alone.
+                    ViewThatFits(in: .horizontal) {
+                        ForEach(progressLines, id: \.self) { Text($0).lineLimit(1) }
+                        Text(progressLines[progressLines.count - 1]).lineLimit(1).minimumScaleFactor(0.6)
+                    }
+                    .font(.footnote).foregroundStyle(.secondary).monospacedDigit()
+                    .accessibilityLabel(progressLines[0])
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, -6)   // the buttons' 44 points leave air above; the line belongs to the name
                 CreepingProgressBar(real: reading.fraction, mark: reading.nextMark)
             }
             .padding(.vertical, 4)
@@ -326,15 +337,13 @@ struct ReadingSection: View {
         .onAppear { showDetails = remembered }
     }
 
-    /// The part, then where the model is in it: with Claude's outline the stage and its count ("What's due · HW 3 ·
-    /// 7 of 18"); without one, the rows so far.
-    private var progressLine: String {
+    /// The part, then where the model is in it, in every wording from the widest down (`ReadingProgress.lines`): with
+    /// Claude's outline the stage and its count ("What's due · 8 of 18 · Quiz 8"); without one, the rows so far.
+    private var progressLines: [String] {
         let total = reading.chunks + reading.images
-        let n = min(max(reading.chunk, 1), total)
+        let n = min(max(reading.chunk, 1), max(total, 1))
         let pickedUp = reading.resumed > 0 && n == reading.resumed + 1   // a read that stopped goes on from its checkpoint
-        let part = total > 1 ? (pickedUp ? "picking up at part \(n) of \(total) · " : "part \(n) of \(total) · ") : ""
-        if let progress = reading.progress { return part + ReadingProgress.caption(progress) }
-        return part + "\(reading.items.count) found so far"
+        return ReadingProgress.lines(reading.progress, part: n, of: total, pickedUp: pickedUp, found: reading.items.count)
     }
 }
 
@@ -356,23 +365,81 @@ private struct CreepingProgressBar: View {
     }
 }
 
+/// One obligation, wherever it is listed: its name, its course and date, the points at stake. With `mark` the row
+/// leads with a ring to press: done is a filled dot with a check and the words crossed off, the way Now crosses off a
+/// block. The check goes to Reminders too (`AppModel.setCompleted`).
 struct ObligationRow: View {
     let obligation: Obligation
     var showCourse = true
+    /// Checks the item off, or back on; nil where a row is not the place for it (the review queue).
+    var mark: ((Bool) -> Void)? = nil
+    @State private var pressed = 0   // the haptic answers the user's press, not a check arriving from Reminders
+
+    private var done: Bool { obligation.completedAt != nil }
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(obligation.title).font(.body.weight(.medium))
-                HStack(spacing: 6) {
-                    if showCourse, let name = obligation.course?.displayName, !name.isEmpty { Text(name).lineLimit(1) }
-                    Text(Design.due(obligation.due, hasTime: obligation.dueHasTime)).monospacedDigit()
+        HStack(alignment: .center, spacing: 4) {
+            if let mark {
+                Button { pressed += 1; mark(!done) } label: {
+                    DoneMark(done: done).frame(width: 32, height: 44, alignment: .leading).contentShape(Rectangle())
                 }
-                .font(.subheadline).foregroundStyle(.secondary)
+                .buttonStyle(.plain)
+                .sensoryFeedback(.selection, trigger: pressed)
+                .accessibilityLabel(done ? "Done" : "Mark done")
             }
-            Spacer()
-            Design.points(obligation.pointsAtStake).font(.title3.weight(.semibold))
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(obligation.title).font(.body.weight(.medium)).strikethrough(done, color: .secondary)
+                    HStack(spacing: 6) {
+                        if showCourse, let name = obligation.course?.displayName, !name.isEmpty { Text(name).lineLimit(1) }
+                        Text(Design.due(obligation.due, hasTime: obligation.dueHasTime)).monospacedDigit()
+                    }
+                    .font(.subheadline).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Design.points(obligation.pointsAtStake).font(.title3.weight(.semibold))
+            }
+            .opacity(done ? 0.45 : 1)
         }
         .padding(.vertical, 2)
+        .animation(.snappy, value: done)
+        .accessibilityElement(children: .contain)
+        .accessibilityValue(done ? "Done" : "")
+    }
+}
+
+/// The mark on an obligation's row: a ring to press, a filled dot with a check once done (Now's done dot, at a row's size).
+struct DoneMark: View {
+    let done: Bool
+
+    var body: some View {
+        ZStack {
+            if done {
+                Circle().fill(.primary).frame(width: 20, height: 20)
+                Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(Design.paper)
+            } else {
+                Circle().strokeBorder(.secondary, lineWidth: 1.5).frame(width: 20, height: 20)
+            }
+        }
+        .transition(.scale.combined(with: .opacity))
+    }
+}
+
+extension View {
+    /// What a row of an obligation offers wherever it is listed: a leading swipe to check it off (or back on), a
+    /// trailing swipe to the bin, and the same in a menu with the editor.
+    func obligationActions(done: Bool, mark: @escaping (Bool) -> Void, edit: @escaping () -> Void, delete: @escaping () -> Void) -> some View {
+        self
+            .swipeActions(edge: .leading) {
+                Button(done ? "Not Done" : "Done", systemImage: done ? "arrow.uturn.backward" : "checkmark") { mark(!done) }.tint(Design.accent)
+            }
+            .swipeActions(edge: .trailing) {
+                Button("Delete", systemImage: "trash", role: .destructive, action: delete)
+            }
+            .contextMenu {
+                Button(done ? "Mark Not Done" : "Mark Done", systemImage: done ? "arrow.uturn.backward" : "checkmark") { mark(!done) }
+                Button("Edit…", systemImage: "pencil", action: edit)
+                Button("Delete", systemImage: "trash", role: .destructive, action: delete)
+            }
     }
 }

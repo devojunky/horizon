@@ -5,6 +5,9 @@ import Foundation
 public enum IngestEvent: Sendable, Equatable {
     /// `resumed`: parts already finished by an earlier read of the document, reused from its checkpoint.
     case started(document: String, textChunks: Int, images: Int, resumed: Int = 0)
+    /// The device model was asked to name the document (`IngestOptions.titleRequest`): its title, or nil when it had
+    /// none worth keeping. Arrives once, early for a document with text, after the first part for a picture.
+    case named(title: String?)
     case chunkStarted(index: Int)
     /// Everything the model has said so far for this chunk. Replaces the previous partial for the same chunk.
     case partial(chunk: Int, obligations: [ProvisionalObligation])

@@ -111,7 +111,7 @@ struct StoreTests {
         schedule.obligations = [ParsedObligation(title: "HW 1", platform: .webAssign, componentName: "Homework", dateAsWritten: "9/10", due: Fixture.day(9, 10), status: .ready, pointsAtStake: nil, sourcePage: 1)]
         try await store.ingest(schedule, documentID: doc.id, calendar: Fixture.calendar)
         let hw1 = try await store.obligations().first { $0.title == "HW 1" }!
-        #expect(hw1.state == .pendingReview && hw1.changeNote?.hasPrefix("schedule.pdf says due Sep 9 → Sep 10") == true && hw1.changeNote?.hasSuffix("earlier from calc.pdf") == true)
+        #expect(hw1.state == .pendingReview && hw1.changeNote?.hasPrefix("schedule says due Sep 9 → Sep 10") == true && hw1.changeNote?.hasSuffix("earlier from calc") == true)   // documents by the app's name for them
     }
 
     @Test func filingALooseDocumentMovesItsItemsUnderTheCourse() async throws {
@@ -473,8 +473,76 @@ struct StoreTests {
         let doc = try await coordinator.enqueue(fileURL: file)
         _ = await coordinator.drain()
         let seen = events.all
-        #expect(seen.count == 3 && seen.allSatisfy { $0.documentID == doc.id && $0.filename == file.lastPathComponent })
+        #expect(seen.count == 3 && seen.allSatisfy { $0.documentID == doc.id && $0.name == DocumentName.tidy(file.lastPathComponent) })
         if case .partial(_, let items) = seen[1].event { #expect(items.first?.title == "HW 1") } else { Issue.record("expected a partial event") }
+    }
+
+    @Test func aDocumentIsNamedAlongTheWayAndTheNameOutlivesAFailedRead() async throws {
+        let store = try Fixture.store()
+        let storage = DocumentStorage.temporary()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("MA-UY_1124_syllabus_\(UUID().uuidString.prefix(6)).txt")
+        try "syllabus".write(to: file, atomically: true, encoding: .utf8)
+        let asked = Requests()
+        // The read names the document, then Claude cannot be reached: the document waits, named.
+        let fails = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac", parse: { _, options in
+            asked.append(options.titleRequest)
+            options.progress(.named(title: "Calculus II Syllabus"))
+            throw IngestError.claudeUnavailable("no connection")
+        })
+        let doc = try await fails.enqueue(fileURL: file)
+        #expect(doc.title == nil && doc.displayName.hasPrefix("MA-UY 1124 syllabus"))   // until it has a title: the file's name, tidied
+        _ = await fails.drain()
+        try await Task.sleep(for: .milliseconds(50))   // the title is kept off the progress callback
+        let waiting = try await store.documents().first!
+        #expect(waiting.status == .awaitingCloudParse && waiting.title == "Calculus II Syllabus" && waiting.displayName == "Calculus II Syllabus")
+        #expect(asked.value.first??.filename == file.lastPathComponent)
+        // The next read is not asked to name it again, and the reading bar is given the title.
+        let events = EventLog()
+        let reads = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac", progress: { events.append($0) }, parse: { _, options in
+            asked.append(options.titleRequest)
+            options.progress(.started(document: "x", textChunks: 1, images: 0, resumed: 0))
+            return Fixture.calculus()
+        })
+        _ = await reads.drain()
+        #expect(asked.value.count == 2 && asked.value[1] == nil)
+        #expect(events.all.first?.name == "Calculus II Syllabus")
+        // A title on file stands: a later naming does not replace it.
+        try await store.setDocumentTitle(id: doc.id, title: "Something Else")
+        #expect(try await store.documents().first?.title == "Calculus II Syllabus")
+    }
+
+    @Test func documentsOnFileAreNamedLaterAndAskedOnlyOnce() async throws {
+        let store = try Fixture.store()
+        let storage = DocumentStorage.temporary()
+        var ids: [UUID] = []
+        for name in ["calc.txt", "scan.txt", "lab.txt"] {
+            let file = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString.prefix(6))-\(name)")
+            try name.write(to: file, atomically: true, encoding: .utf8)
+            let quiet = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac", parse: { _, _ in Fixture.calculus(sha: name) })
+            ids.append(try await quiet.enqueue(fileURL: file, filename: name).id)
+            _ = await quiet.drain()
+        }
+        #expect(try await store.untitledDocuments().count == 3)
+        let calls = Requests()
+        let namer = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac", parse: { _, _ in Fixture.calculus() }, name: { _, request, digest in
+            calls.append(request)
+            #expect(digest?.contains("Calculus II") == true && digest?.contains("HW 1") == true || request.filename != "lab.txt")   // what was read from it, for a picture
+            return request.filename == "scan.txt" ? .nothing : .titled("Calculus II \(request.filename == "calc.txt" ? "Syllabus" : "Lab Schedule")")
+        })
+        await namer.nameUntitled()
+        let named = try await store.documents()
+        #expect(Set(named.map(\.displayName)) == ["Calculus II Syllabus", "Calculus II Lab Schedule", "scan"])
+        #expect(calls.value.compactMap { $0?.course }.allSatisfy { $0 == "Calculus II" })   // the course it is filed under goes with the question
+        await namer.nameUntitled()
+        #expect(calls.value.count == 3)   // the one the model had no name for is not asked again
+        // A model that is not there ends the pass, and the document is asked another time.
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString.prefix(6))-late.txt")
+        try "late".write(to: file, atomically: true, encoding: .utf8)
+        let away = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac", parse: { _, _ in Fixture.calculus(sha: "late") }, name: { _, _, _ in .unavailable })
+        _ = try await away.enqueue(fileURL: file, filename: "late.txt")
+        _ = await away.drain()
+        await away.nameUntitled()
+        #expect(try await store.untitledDocuments().map(\.filename) == ["late.txt"])
     }
 
     @Test func aReadThatStopsGoesOnFromItsCheckpoint() async throws {
@@ -527,6 +595,13 @@ final class EventLog: @unchecked Sendable {
     private let lock = NSLock()
     func append(_ p: DocumentProgress) { lock.withLock { events.append(p) } }
     var all: [DocumentProgress] { lock.withLock { events } }
+}
+
+final class Requests: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [DocumentTitleRequest?] = []
+    var value: [DocumentTitleRequest?] { lock.withLock { stored } }
+    func append(_ request: DocumentTitleRequest?) { lock.withLock { stored.append(request) } }
 }
 
 final class Resumed: @unchecked Sendable {

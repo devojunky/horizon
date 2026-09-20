@@ -21,13 +21,14 @@ struct ObligationEditor: View {
     @State private var componentName = ""
     @State private var platform: Platform = .syllabusOnly
     @State private var notes = ""
+    @State private var done = false
     @State private var baseline: Fields?
     @State private var confirmingDiscard = false
     @State private var confirmingDelete = false
 
     /// Everything the form can change, for the unsaved-changes check.
-    private struct Fields: Equatable { var title: String; var hasDate: Bool; var due: Date; var hasTime: Bool; var courseID: UUID?; var component: String; var platform: Platform; var notes: String }
-    private var fields: Fields { Fields(title: title, hasDate: hasDate, due: due, hasTime: hasTime, courseID: courseID, component: componentName, platform: platform, notes: notes) }
+    private struct Fields: Equatable { var title: String; var hasDate: Bool; var due: Date; var hasTime: Bool; var courseID: UUID?; var component: String; var platform: Platform; var notes: String; var done: Bool }
+    private var fields: Fields { Fields(title: title, hasDate: hasDate, due: due, hasTime: hasTime, courseID: courseID, component: componentName, platform: platform, notes: notes, done: done) }
     private var isDirty: Bool { baseline.map { $0 != fields } ?? !title.isEmpty }
 
     private var course: Course? { courses.first { $0.id == courseID } }
@@ -49,6 +50,13 @@ struct ObligationEditor: View {
                         }
                     }
                 }
+                if case .edit = mode {
+                    Section {
+                        Toggle("Done", isOn: $done)
+                    } footer: {
+                        Text("Checked off in Reminders as well.")
+                    }
+                }
                 Section {
                     Toggle("Has a date", isOn: $hasDate)
                     if hasDate {
@@ -67,7 +75,7 @@ struct ObligationEditor: View {
                 if let item, item.origin == .document {
                     Section("From the document") {
                         if let written = item.dateAsWritten, !written.isEmpty { LabeledContent("Date as written", value: written) }
-                        if let doc = item.sourceDocument { LabeledContent("Source", value: "\(doc.filename), page \((item.sourcePage ?? 0) + 1)") }
+                        if let doc = item.sourceDocument { LabeledContent("Source", value: "\(doc.displayName), page \((item.sourcePage ?? 0) + 1)") }
                         if let note = item.changeNote { LabeledContent("Changed", value: note) }
                     }
                 }
@@ -111,6 +119,7 @@ struct ObligationEditor: View {
         componentName = item.componentName ?? ""
         platform = item.platform
         notes = item.notes ?? ""
+        done = item.completedAt != nil
     }
 
     private func save() {
@@ -127,7 +136,9 @@ struct ObligationEditor: View {
                 if componentName != (item.componentName ?? "") { edits.componentName = .some(componentName.isEmpty ? nil : componentName) }
                 if notes != (item.notes ?? "") { edits.notes = .some(notes.isEmpty ? nil : notes) }
                 if courseID != item.course?.id { edits.courseID = .some(courseID) }
-                await model.confirm(item.id, edits: edits)
+                let checked = done != (item.completedAt != nil)
+                if checked { await model.setCompleted(item.id, done) }
+                if !checked || edits != ObligationEdits() { await model.confirm(item.id, edits: edits) }   // a check alone confirms nothing and edits nothing
             }
             dismiss()
         }

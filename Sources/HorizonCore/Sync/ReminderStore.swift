@@ -51,6 +51,9 @@ public protocol ReminderStore: Sendable {
     func fetchHorizonItems() async throws -> [ReminderItem]?
     func create(_ draft: ReminderDraft) async throws -> ReminderItem
     func update(externalID: String, with draft: ReminderDraft) async throws -> ReminderItem?
+    /// Checks the reminder off, or back on: the one thing about completion Horizon ever writes, and only on the
+    /// user's own check in the app. False when the reminder is not there.
+    func setCompleted(externalID: String, _ completed: Bool, at date: Date?) async throws -> Bool
     func remove(externalID: String) async throws
 }
 
@@ -60,7 +63,7 @@ public enum ReconcileChange: Sendable, Equatable {
     case importUnattributed(ReminderItem)
     /// An obligation whose reminder this device has seen before and is now gone: the user deleted it. Soft-delete, never recreate.
     case deletedInReminders(UUID)
-    /// Completion state differs: EventKit wins.
+    /// Completion state differs: EventKit wins, unless the user's own check in the app is still on its way there.
     case completion(UUID, Date?)
     /// The user changed the title, due date, or notes in Reminders: adopt it and mark the field as overridden.
     case userEdited(UUID, title: String?, due: Date?, hasTime: Bool, notes: String?)
@@ -121,6 +124,17 @@ public final class EventKitReminderStore: ReminderStore, @unchecked Sendable {
         Self.write(draft, to: reminder, keeping: reminder.notes)
         try store.save(reminder, commit: true)
         return Self.item(reminder)
+    }
+
+    public func setCompleted(externalID: String, _ completed: Bool, at date: Date?) async throws -> Bool {
+        guard hasAccess else { throw ReminderStoreError.accessDenied }
+        guard let reminder = store.calendarItems(withExternalIdentifier: externalID).compactMap({ $0 as? EKReminder }).first else { return false }
+        if reminder.isCompleted != completed {
+            reminder.isCompleted = completed                          // sets or clears the completion date
+            if completed, let date { reminder.completionDate = date }  // when it was checked here, not when the sync ran
+            try store.save(reminder, commit: true)
+        }
+        return true
     }
 
     public func remove(externalID: String) async throws {

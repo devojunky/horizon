@@ -73,6 +73,10 @@ public enum HorizonSchemaV1: VersionedSchema {
         /// The user-text part of the notes last written, so a Reminders-side note edit can be told from an app-side one.
         public var projectedNotes: String?
         public var completedAt: Date?
+        /// The user checked the item off (or back on) in the app and Reminders has not been told yet. Reminders owns
+        /// completion, so while this is set the reconciler leaves `completedAt` alone and the projector writes it to
+        /// the reminder; an item with no reminder (in review, undated, access off) keeps its mark here.
+        public var completionPending: Bool = false
         /// Soft delete. Every query filters on `deletedAt == nil`; tombstones purge after 180 days.
         public var deletedAt: Date?
         /// Retired because its course or its document was deleted, not by the user's hand: a document that names it
@@ -96,6 +100,9 @@ public enum HorizonSchemaV1: VersionedSchema {
     public final class SourceDocument {
         public var id: UUID = UUID()
         public var filename: String = ""
+        /// What the document is, in a few words ("Calculus II Syllabus"): the device model's name for it from its first
+        /// lines, checked against them. Nil until it has been named, or where the device model is not there to ask.
+        public var title: String?
         public var sha256: String = ""
         public var kind: String = "pdf"
         public var pageCount: Int = 0
@@ -151,6 +158,9 @@ public enum HorizonMigrationPlan: SchemaMigrationPlan {
 }
 
 public extension SourceDocument {
+    /// What the app calls the document: its title once it has one, else its file's name without the clutter.
+    var displayName: String { DocumentName.display(title: title, filename: filename) }
+
     /// How far a read that stopped got, from its checkpoint: parts finished, of the whole. Nil when nothing is kept.
     var readSoFar: (finished: Int, total: Int)? {
         guard let checkpoint, let kept = try? IngestCheckpoint(data: checkpoint), kept.finishedParts > 0 else { return nil }

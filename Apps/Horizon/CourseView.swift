@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import QuickLook
 import HorizonCore
 import IngestKit
 
@@ -10,8 +11,11 @@ struct CourseView: View {
     @State private var editing: Obligation?
     @State private var editingCourse = false
     @State private var selected: UUID?   // macOS: the highlighted row; Delete removes it, double-click opens it
+    @State private var preview: URL?     // the document being looked at, in Quick Look
     @Environment(\.dismiss) private var dismiss
 
+    /// Every document on file for the course, newest first: what its items, its grade table and its policies came from.
+    private var documents: [SourceDocument] { (course.documents ?? []).filter { $0.deletedAt == nil }.sorted { $0.queuedAt > $1.queuedAt } }
     private var obligations: [Obligation] { (course.obligations ?? []).filter { $0.deletedAt == nil }.sorted { ($0.due ?? .distantFuture) < ($1.due ?? .distantFuture) } }
 
     var body: some View {
@@ -46,24 +50,38 @@ struct CourseView: View {
                 } header: { Kicker("Grade") }
                 .onPaper()
             }
+            if !documents.isEmpty {
+                Section {
+                    ForEach(documents) { doc in
+                        Button { preview = model.previewFile(for: doc) } label: { CourseDocumentRow(document: doc, onDevice: model.hasFile(doc)) }
+                            .buttonStyle(.plain)
+                            .disabled(!model.hasFile(doc))
+                            .contextMenu {
+                                Button("Open", systemImage: "eye") { preview = model.previewFile(for: doc) }.disabled(!model.hasFile(doc))
+                                Button("Delete", systemImage: "trash", role: .destructive) { Task { await model.deleteDocument(doc.id) } }
+                            }
+                            #if os(macOS)
+                            .selectionDisabled()
+                            #endif
+                            .accessibilityHint("Opens the document")
+                    }
+                } header: { Kicker("Documents") }
+                .onPaper()
+            }
             Section {
                 ForEach(obligations) { item in
+                    let mark: (Bool) -> Void = { done in Task { await model.setCompleted(item.id, done) } }
                     #if os(macOS)
-                    ObligationRow(obligation: item, showCourse: false)
+                    ObligationRow(obligation: item, showCourse: false, mark: mark)
                         .tag(item.id)
                         .contentShape(Rectangle())
                         .onTapGesture(count: 2) { editing = item }
-                        .contextMenu {
-                            Button("Edit…") { editing = item }
-                            Button("Delete", role: .destructive) { Task { await model.discard(item.id) } }
-                        }
+                        .obligationActions(done: item.completedAt != nil, mark: mark, edit: { editing = item }, delete: { Task { await model.discard(item.id) } })
                         .accessibilityHint("Double-click to edit")
                     #else
-                    Button { editing = item } label: { ObligationRow(obligation: item, showCourse: false) }
+                    Button { editing = item } label: { ObligationRow(obligation: item, showCourse: false, mark: mark) }
                         .buttonStyle(.plain)
-                        .swipeActions(edge: .trailing) {
-                            Button("Delete", systemImage: "trash", role: .destructive) { Task { await model.discard(item.id) } }
-                        }
+                        .obligationActions(done: item.completedAt != nil, mark: mark, edit: { editing = item }, delete: { Task { await model.discard(item.id) } })
                         .accessibilityHint("Opens the editor")
                     #endif
                 }
@@ -92,9 +110,11 @@ struct CourseView: View {
         }
         #else
         .onDeleteCommand { if let id = selected { Task { await model.discard(id) }; selected = nil } }
+        .focusedSceneValue(\.selectedItem, obligations.first { $0.id == selected }.map { SelectedItem(id: $0.id, done: $0.completedAt != nil) })   // Item ▸ Mark Done
         #endif
         .sheet(item: $editing) { ObligationEditor(mode: .edit($0), courses: courses) }
         .sheet(isPresented: $editingCourse) { CourseEditor(course: course) }
+        .quickLookPreview($preview)
         .onChange(of: course.deletedAt) { _, gone in if gone != nil { dismiss() } }
         .onAppear {
             if MainTabs.debugFlag("--open-item") { editing = obligations.first }
@@ -104,5 +124,42 @@ struct CourseView: View {
 
     private func label(_ kind: PolicyKind) -> String {
         switch kind { case .lateWork: "Late work"; case .makeupExam: "Makeup exams"; case .attendance: "Attendance"; case .dropRule: "Drop rule"; case .extraCredit: "Extra credit"; case .other: "Policy" }
+    }
+}
+
+/// One of a course's documents on its page: what the app calls it, and where it stands (read, with what it gave; or
+/// queued, waiting, failed). Pressing it opens the file itself.
+struct CourseDocumentRow: View {
+    let document: SourceDocument
+    /// The file is on this device; a document read on another is a record only.
+    let onDevice: Bool
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(document.displayName).font(.body.weight(.medium)).lineLimit(2)
+                Text(detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            if onDevice { Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary) }
+        }
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+    }
+
+    private var detail: String {
+        let items = (document.obligations ?? []).filter { $0.deletedAt == nil }.count
+        var parts: [String]
+        switch document.status {
+        case .parsed:
+            parts = ["Read \((document.ingestedAt ?? document.queuedAt).formatted(.dateTime.month(.abbreviated).day()))", items == 1 ? "1 item" : "\(items) items"]
+            if document.pageCount > 1 { parts.append("\(document.pageCount) pages") }
+        case .queued: parts = ["Waiting to be read"]
+        case .awaitingCloudParse: parts = ["Waiting for Claude"]
+        case .failed: parts = ["Could not be read"]
+        case .cancelled: parts = ["Reading cancelled"]
+        }
+        if !onDevice { parts.append("the file is on \(document.deviceName.isEmpty ? "another device" : document.deviceName)") }
+        return parts.joined(separator: " · ")
     }
 }
