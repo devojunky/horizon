@@ -107,7 +107,7 @@ struct NowView: View {
                 if MainTabs.debugFlag("--plan"), !model.planning { Task { await model.planToday() } }   // DEBUG: plans afresh, whatever is on file
                 if MainTabs.debugFlag("--edit-block"), let first = model.plan?.blocks.first { editing = first }
                 if MainTabs.debugFlag("--plan-instructions") { telling = true }
-                if MainTabs.debugFlag("--mark-first-done"), let first = model.plan?.blocks.first { model.markBlock(first.id, done: true) }
+                if MainTabs.debugFlag("--mark-first-done"), let first = model.plan?.blocks.first(where: { !$0.isDone }) { model.markBlock(first.id, done: true) }   // the first still to do, so a second launch marks the next
                 #if os(iOS)
                 if MainTabs.debugFlag("--intent-first-done"), let first = model.plan?.blocks.first {   // the Live Activity's button, without the button
                     Task { do { _ = try await MarkBlockDoneIntent(blockID: first.id).perform() } catch { PlanCommands.log?("intent failed: \(error)") } }
