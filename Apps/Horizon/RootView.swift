@@ -84,6 +84,15 @@ struct IntakeStatus: View {
             }
             .listRowSeparator(.hidden)
             .onPaper()
+        } else if model.remindersListGone {
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("The Horizon list is gone from Reminders, so deadlines stay in Horizon until it is back.", systemImage: "exclamationmark.triangle").foregroundStyle(Design.accent)
+                    Button("Recreate List") { Task { await model.recreateRemindersList() } }.buttonStyle(.bordered).controlSize(.small)
+                }
+            }
+            .listRowSeparator(.hidden)
+            .onPaper()
         } else if let failure = readFailure {
             Section {
                 Button(action: openDocuments) {

@@ -431,6 +431,7 @@ struct HorizonCommands: Commands {
             Button("New Course…") { nav?.addingCourse = true }.keyboardShortcut("n", modifiers: [.command, .shift]).disabled(nav == nil)
             Divider()
             Button("Sync with Reminders") { Task { await model.drainAndSync() } }.keyboardShortcut("r")
+            Button("Recreate Horizon List in Reminders") { Task { await model.recreateRemindersList() } }.disabled(!model.remindersListGone)
             Button("Show Inbox Folder in Finder") { NSWorkspace.shared.activateFileViewerSelecting([WatchedFolder.url]) }
         }
         CommandGroup(after: .sidebar) {

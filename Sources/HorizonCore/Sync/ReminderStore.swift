@@ -21,6 +21,15 @@ public struct ReminderItem: Sendable, Equatable, Identifiable {
     }
 }
 
+/// The Horizon list as fetched: which list it is, and every item in it.
+public struct HorizonList: Sendable, Equatable {
+    /// The list's `calendarIdentifier` on this device. A list deleted and made again (by Recreate, on another device,
+    /// or by hand) is a different list under the same name, and this is how the sync tells the two apart.
+    public var id: String
+    public var items: [ReminderItem]
+    public init(id: String, items: [ReminderItem]) { self.id = id; self.items = items }
+}
+
 /// What the projector writes.
 public struct ReminderDraft: Sendable, Equatable {
     public var title: String
@@ -46,9 +55,12 @@ public struct ReminderDraft: Sendable, Equatable {
 /// The only surface through which Horizon touches Reminders. `EventKitReminderStore` is the real one; tests use a fake.
 public protocol ReminderStore: Sendable {
     func requestAccess() async throws -> Bool
-    /// Every item in the Horizon list, re-fetched on every call: never derive "does a reminder exist" from local state.
-    /// Nil when the list itself does not exist (never created, or deleted by the user), which is not the same as empty.
-    func fetchHorizonItems() async throws -> [ReminderItem]?
+    /// The Horizon list and every item in it, re-fetched on every call: never derive "does a reminder exist" from local
+    /// state. Nil when the list itself does not exist (never created, deleted by the user, or its account signed out),
+    /// which is not the same as empty.
+    func fetchHorizonList() async throws -> HorizonList?
+    /// Makes the Horizon list if there is none: only ever on the user's word (Recreate List), or with the first item.
+    func ensureHorizonList() async throws
     func create(_ draft: ReminderDraft) async throws -> ReminderItem
     func update(externalID: String, with draft: ReminderDraft) async throws -> ReminderItem?
     /// Checks the reminder off, or back on: the one thing about completion Horizon ever writes, and only on the
@@ -99,14 +111,20 @@ public final class EventKitReminderStore: ReminderStore, @unchecked Sendable {
         return list
     }
 
-    public func fetchHorizonItems() async throws -> [ReminderItem]? {
+    public func fetchHorizonList() async throws -> HorizonList? {
         guard hasAccess else { throw ReminderStoreError.accessDenied }
         guard let list = existingList() else { return nil }
-        return await withCheckedContinuation { continuation in
+        let items: [ReminderItem] = await withCheckedContinuation { continuation in
             store.fetchReminders(matching: store.predicateForReminders(in: [list])) { reminders in
                 continuation.resume(returning: (reminders ?? []).map(Self.item))   // convert before crossing the boundary
             }
         }
+        return HorizonList(id: list.calendarIdentifier, items: items)
+    }
+
+    public func ensureHorizonList() async throws {
+        guard hasAccess else { throw ReminderStoreError.accessDenied }
+        _ = try listForWriting()
     }
 
     public func create(_ draft: ReminderDraft) async throws -> ReminderItem {

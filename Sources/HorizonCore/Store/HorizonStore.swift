@@ -537,6 +537,25 @@ public actor HorizonStore {
         try fetchObligations().filter { $0.deletedAt != nil && $0.ekExternalID != nil && $0.origin != .reminders }.map(snapshot)
     }
 
+    /// The reminders of every live item that are not in the Horizon list any more because the list itself went (deleted
+    /// and made again): each item is written afresh by the next sync. The old identifier is forgotten, so its absence can
+    /// never read as a deletion; a projected item goes back to the projector's queue; a checked one carries its check
+    /// to the new reminder. Items in review get theirs when confirmed, as any item does. Returns how many were reset.
+    @discardableResult
+    public func forgetReminders(except present: Set<String>) throws -> Int {
+        var count = 0
+        for item in try fetchObligations() where item.deletedAt == nil {
+            guard let id = item.ekExternalID, !present.contains(id) else { continue }
+            item.ekExternalID = nil
+            item.projectedTitle = nil; item.projectedDue = nil; item.projectedNotes = nil
+            if item.state == .projected { item.state = .readyToProject }
+            if item.completedAt != nil { item.completionPending = true }
+            count += 1
+        }
+        if count > 0 { try modelContext.save() }
+        return count
+    }
+
     public func clearExternalID(id: UUID) throws {
         guard let item = try fetchObligation(id: id) else { return }
         item.ekExternalID = nil

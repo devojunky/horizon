@@ -20,6 +20,9 @@ final class AppModel {
     private let reminders = EventKitReminderStore()
 
     var remindersAuthorized: Bool?
+    /// The Horizon list this device wrote to is not in Reminders (deleted, or its account signed out). Nothing is written
+    /// there until the user asks for it back; Coverage says so and offers Recreate List.
+    var remindersListGone = false
     var busy = false
     private var rerun = false
     var statusLine: String?
@@ -112,7 +115,7 @@ final class AppModel {
     private let calendarSource: any CalendarSource = EventKitCalendarSource()
     private var drainTask: Task<Void, Never>?
     private var cancelledDocument: UUID?
-    private var cancelNotice: String?   // shown until the next document is read
+    private var cancelNotice: String?   // a notice that outlives the syncs after it (a cancel, a duplicate, the list back): shown until the next document is read
     #if os(iOS)
     /// iOS keeps the app running for a while after the user leaves, as long as it asks: every drain asks, so a read
     /// under way goes on in the background. When that time runs out the read is paused, not cancelled: the checkpoint
@@ -351,6 +354,7 @@ final class AppModel {
             let report = try await sync.sync()
             withAnimation {
                 lastError = nil
+                remindersListGone = report.listGone
                 statusLine = report.created + report.updated > 0 ? "\(report.created) added, \(report.updated) updated in Reminders" : cancelNotice
             }
             _ = try? await store.purgeTombstones()
@@ -431,7 +435,27 @@ final class AppModel {
         Self.log("check: \(id) \(done ? "done" : "not done")")   // every check is on the record: it reaches Reminders
         do { try await store.setCompleted(id: id, done) } catch { lastError = error.localizedDescription; return }
         guard remindersAuthorized == true else { return }   // the store keeps the mark; it reaches Reminders once there is access
-        do { _ = try await sync.sync() } catch { Self.log("sync after a check failed: \(error.localizedDescription)") }
+        do { remindersListGone = try await sync.sync().listGone } catch { Self.log("sync after a check failed: \(error.localizedDescription)") }
+    }
+
+    /// The user's Recreate List: the Horizon list is made again and every item that was in it is written to it afresh,
+    /// the checked ones checked. Only ever on the user's word: a list deleted wholesale is otherwise left deleted.
+    func recreateRemindersList() async {
+        Self.log("reminders: recreate the Horizon list")
+        withAnimation { statusLine = "Recreating the Horizon list…" }
+        do {
+            let items = try await sync.restoreList()?.items ?? []
+            let open = items.filter { !$0.isCompleted }.count   // what Reminders counts for the list; the checked ones are back too, checked
+            Self.log("reminders: the Horizon list is back with \(open) to do and \(items.count - open) done")
+            cancelNotice = open == 1 ? "The Horizon list is back with 1 item." : "The Horizon list is back with \(open) items."   // outlives the sync its writes set off
+            withAnimation {
+                lastError = nil
+                remindersListGone = false
+                statusLine = cancelNotice
+            }
+        } catch {
+            withAnimation { lastError = error.localizedDescription; statusLine = nil }
+        }
     }
 
     func discard(_ id: UUID) async {

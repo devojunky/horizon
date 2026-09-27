@@ -10,18 +10,25 @@ public actor ReminderProjector {
     private let calendar: Calendar
 
     public struct Report: Sendable, Equatable {
+        /// `waiting`: rows whose reminder is another device's to write, or that wait for the list to be back.
         public var created = 0, updated = 0, repaired = 0, removed = 0, waiting = 0
         /// Checks made in the app and written to their reminders.
         public var checked = 0
+        /// The Horizon list this device wrote to is not in Reminders (deleted, or its account signed out). Nothing is
+        /// written until the user asks for it back (`SyncCoordinator.restoreList`); the app says so.
+        public var listGone = false
     }
 
     public init(store: HorizonStore, reminders: any ReminderStore, calendar: Calendar = .current) {
         self.store = store; self.reminders = reminders; self.calendar = calendar
     }
 
-    /// Returns the report plus the external IDs of reminders this device now knows about.
-    func project(existing: [ReminderItem], currentDevice: String) async throws -> (Report, Set<String>) {
+    /// Returns the report plus the external IDs of reminders this device now knows about. `listGone`: the list this
+    /// device wrote to has gone, and nothing may be created (the first create would make a new list with only that
+    /// item in it, and the old items' absence from it would then read as the user deleting every one of them).
+    func project(existing: [ReminderItem], currentDevice: String, listGone: Bool = false) async throws -> (Report, Set<String>) {
         var report = Report()
+        report.listGone = listGone
         var known = Set(existing.map(\.externalID))
 
         // Reminders Horizon created for items the user has since discarded in the app.
@@ -44,7 +51,7 @@ public actor ReminderProjector {
                     report.updated += 1
                 }
                 try await store.markProjected(id: obligation.id, externalID: match.externalID, title: draft.title, due: draft.due, notes: obligation.notes)
-            } else if obligation.ekExternalID == nil, obligation.createdOn.isEmpty || obligation.createdOn == currentDevice {
+            } else if !listGone, obligation.ekExternalID == nil, obligation.createdOn.isEmpty || obligation.createdOn == currentDevice {
                 let item = try await reminders.create(draft)
                 known.insert(item.externalID)
                 try await store.markProjected(id: obligation.id, externalID: item.externalID, title: draft.title, due: draft.due, notes: obligation.notes)
@@ -135,6 +142,18 @@ public enum Reconciler {
         return changes
     }
 
+    /// Whether the Horizon list found now is a new list under the old name (deleted and made again: by Recreate List, on
+    /// another device, or by hand) rather than the one this device wrote to. Its identity says so when this device
+    /// recorded it; before it did (a device that has not synced since this was added), a list holding none of the
+    /// reminders this device wrote to it is a new one. A list with the same identity missing some of them is the same
+    /// list with those reminders deleted, and deletion is intent.
+    public static func listWasReplaced(recorded: String?, current: HorizonList, obligations: [ObligationSnapshot], seen: Set<String>) -> Bool {
+        if let recorded { return recorded != current.id }
+        let written = obligations.filter { $0.deletedAt == nil }.compactMap(\.ekExternalID).filter(seen.contains)
+        let present = Set(current.items.map(\.externalID))
+        return !written.isEmpty && !written.contains(where: present.contains)
+    }
+
     /// "Homework 3 · MA-UY 1124" → "Homework 3" when the course suffix is intact.
     static func stripCourse(_ title: String, _ o: ObligationSnapshot) -> String {
         guard let code = o.courseCode, title.hasSuffix(" · \(code)") else { return title }
@@ -147,6 +166,9 @@ public enum Reconciler {
 public protocol SeenReminderIDs: Sendable {
     func load() -> Set<String>
     func save(_ ids: Set<String>)
+    /// The identity of the Horizon list those reminders were seen in (`HorizonList.id`), nil until one was recorded.
+    func loadListID() -> String?
+    func saveListID(_ id: String?)
 }
 
 public struct InMemorySeenIDs: SeenReminderIDs {
@@ -154,20 +176,27 @@ public struct InMemorySeenIDs: SeenReminderIDs {
     public init() {}
     public func load() -> Set<String> { box.get() }
     public func save(_ ids: Set<String>) { box.set(ids) }
+    public func loadListID() -> String? { box.getList() }
+    public func saveListID(_ id: String?) { box.setList(id) }
     final class LockedBox: @unchecked Sendable {
-        private var ids = Set<String>(); private let lock = NSLock()
+        private var ids = Set<String>(); private var list: String?; private let lock = NSLock()
         func get() -> Set<String> { lock.withLock { ids } }
         func set(_ new: Set<String>) { lock.withLock { ids = new } }
+        func getList() -> String? { lock.withLock { list } }
+        func setList(_ new: String?) { lock.withLock { list = new } }
     }
 }
 
 public struct DefaultsSeenIDs: SeenReminderIDs {
     private let suite: String
     private let key = "seenReminderIDs"
+    private let listKey = "horizonListID"
     public init(suite: String = Identifiers.appGroup) { self.suite = suite }
     private var defaults: UserDefaults { UserDefaults(suiteName: suite) ?? .standard }   // UserDefaults is thread-safe but not Sendable
     public func load() -> Set<String> { Set(defaults.stringArray(forKey: key) ?? []) }
     public func save(_ ids: Set<String>) { defaults.set(Array(ids), forKey: key) }
+    public func loadListID() -> String? { defaults.string(forKey: listKey) }
+    public func saveListID(_ id: String?) { defaults.set(id, forKey: listKey) }
 }
 
 /// Foreground / EventKit-change entry point: reconcile, remove discarded, project. One run at a time; a request that
@@ -192,7 +221,24 @@ public actor SyncCoordinator {
             rerunRequested = true
             return try await running.value
         }
-        let task = Task { try await self.run() }
+        return try await exclusively { try await self.run() }
+    }
+
+    /// The user's Recreate List: the Horizon list is made again and every live item whose reminder went with the old
+    /// one is written to it afresh (a checked one checked). It is a sync of its own, one at a time with the others: a
+    /// sync under way finishes against the list as it was, and one asked for meanwhile (the new list's own change
+    /// notification) waits, so nothing else can make a second list or meet the new, empty one while the rows still name
+    /// reminders that are gone. Returns the list as it is afterwards.
+    @discardableResult
+    public func restoreList() async throws -> HorizonList? {
+        while let running = inFlight { _ = try? await running.value }
+        _ = try await exclusively { try await self.restore() }
+        return try await reminders.fetchHorizonList()
+    }
+
+    /// Runs `work` as the one sync in flight; a sync asked for meanwhile waits on it, and runs once more after it.
+    private func exclusively(_ work: @escaping @Sendable () async throws -> ReminderProjector.Report) async throws -> ReminderProjector.Report {
+        let task = Task { try await work() }
         inFlight = task
         defer { inFlight = nil }
         var report = try await task.value
@@ -203,17 +249,37 @@ public actor SyncCoordinator {
         return report
     }
 
+    /// Rows first, then the list: the rows whose reminders went with the old list forget them before any list exists.
+    private func restore() async throws -> ReminderProjector.Report {
+        let current = try await reminders.fetchHorizonList()
+        _ = try await store.forgetReminders(except: Set(current?.items.map(\.externalID) ?? []))
+        try await reminders.ensureHorizonList()
+        return try await run()
+    }
+
     private func run() async throws -> ReminderProjector.Report {
         var seen = seenIDs.load()
-        if let items = try await reminders.fetchHorizonItems() {
+        if let list = try await reminders.fetchHorizonList() {
+            if seenIDs.loadListID() != list.id {
+                // A new list under the old name, or the first one this device records. For a new one, what this device
+                // wrote to the old list is written to it afresh rather than read as the user deleting every item.
+                if Reconciler.listWasReplaced(recorded: seenIDs.loadListID(), current: list, obligations: try await store.obligations(), seen: seen) {
+                    _ = try await store.forgetReminders(except: Set(list.items.map(\.externalID)))
+                }
+                seenIDs.saveListID(list.id)
+            }
             let obligations = try await store.obligations(includeDeleted: true)
-            try await store.applyReconciliation(Reconciler.changes(obligations: obligations, reminders: items, seen: seen))
-            seen.formUnion(items.map(\.externalID))
+            try await store.applyReconciliation(Reconciler.changes(obligations: obligations, reminders: list.items, seen: seen))
+            seen.formUnion(list.items.map(\.externalID))
         }
-        // A missing list is "nothing here yet" (never created, signed out, or deleted wholesale): no deletions, and
-        // nothing is recreated behind the user's back.
-        let existing = try await reminders.fetchHorizonItems() ?? []
-        let (report, known) = try await projector.project(existing: existing, currentDevice: deviceName)
+        // A missing list deletes nothing. One this device wrote to (deleted wholesale, or its account signed out) is not
+        // made again behind the user's back either: nothing is written until the user asks for it back, and the report
+        // says so. A list that never existed is made with the first item, as always.
+        let list = try await reminders.fetchHorizonList()
+        var gone = false
+        if list == nil { gone = try await store.obligations().contains { $0.ekExternalID.map(seen.contains) ?? false } }
+        let (report, known) = try await projector.project(existing: list?.items ?? [], currentDevice: deviceName, listGone: gone)
+        if list == nil, report.created > 0, let made = try await reminders.fetchHorizonList() { seenIDs.saveListID(made.id) }   // the list the first item made
         seen.formUnion(known)
         seenIDs.save(seen)
         return report

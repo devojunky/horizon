@@ -9,14 +9,25 @@ actor FakeReminderStore: ReminderStore {
     private var counter = 0
     /// False until the first create, or after the user deletes the whole list.
     private(set) var listExists = false
+    /// The list's identity: a list made again after a deletion is a new one.
+    private(set) var listID = "list-0"
+    private var lists = 0
     var fetches = 0
 
     func requestAccess() async throws -> Bool { true }
-    func fetchHorizonItems() async throws -> [ReminderItem]? { fetches += 1; return listExists ? items : nil }
+    func fetchHorizonList() async throws -> HorizonList? { fetches += 1; return listExists ? HorizonList(id: listID, items: items) : nil }
+    func ensureHorizonList() async throws { makeList() }
     func remove(externalID: String) async throws { items.removeAll { $0.externalID == externalID } }
 
-    func create(_ draft: ReminderDraft) async throws -> ReminderItem {
+    private func makeList() {
+        guard !listExists else { return }
         listExists = true
+        lists += 1
+        listID = "list-\(lists)"
+    }
+
+    func create(_ draft: ReminderDraft) async throws -> ReminderItem {
+        makeList()
         counter += 1
         let item = ReminderItem(externalID: "ext-\(counter)", title: draft.title, due: draft.due, hasTime: draft.hasTime, notes: draft.notes, url: draft.url)
         items.append(item)
@@ -44,7 +55,7 @@ actor FakeReminderStore: ReminderStore {
         if let title { items[i].title = title }
         if let due { items[i].due = due }
     }
-    func userCreates(title: String, due: Date?) { listExists = true; counter += 1; items.append(ReminderItem(externalID: "ext-\(counter)", title: title, due: due, hasTime: false)) }
+    func userCreates(title: String, due: Date?) { makeList(); counter += 1; items.append(ReminderItem(externalID: "ext-\(counter)", title: title, due: due, hasTime: false)) }
     func userAddsNote(externalID: String, _ text: String) {
         guard let i = items.firstIndex(where: { $0.externalID == externalID }) else { return }
         items[i].notes = (items[i].notes ?? "") + "\n" + text

@@ -77,10 +77,108 @@ struct SyncTests {
         let report = try await sync.sync()
         let live = try await store.obligations()
         #expect(live.count == 5 && live.allSatisfy { $0.deletedAt == nil })   // nothing tombstoned
-        #expect(report.created == 0 && report.waiting == 0)                    // and nothing recreated behind the user's back
+        #expect(report.created == 0 && report.waiting == 0 && report.listGone) // nothing recreated behind the user's back, and the app is told
         // Re-sharing the syllabus later still matches the existing rows instead of duplicating them.
         let again = try await Fixture.ingest(Fixture.calculus(sha: "v2"), into: store)
         #expect(again.created == 0)
+    }
+
+    @Test func aDeletedListHoldsNewItemsAndComesBackWhole() async throws {
+        let reminders = FakeReminderStore()
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let sync = SyncCoordinator.device("A", store: store, reminders: reminders)
+        _ = try await sync.sync()
+        let hw1 = try await store.obligations().first { $0.title == "HW 1" }!
+        try await store.setCompleted(id: hw1.id, true)
+        _ = try await sync.sync()
+        await reminders.userDeletesList()
+        // An item added while the list is gone waits: its create would make a list with only it in it, and the next
+        // sync would then read the other four's absence as four deletions.
+        let course = try await store.courses().first!
+        _ = try await store.addManual(title: "Bring calculator to exam", due: Fixture.day(10, 7), dueHasTime: false, courseID: course.id, componentName: nil, notes: nil, deviceName: "A")
+        let held = try await sync.sync()
+        var exists = await reminders.listExists
+        #expect(held.listGone && held.created == 0 && held.waiting == 1 && !exists)
+        // Recreate List: the list comes back with every item, the checked one checked.
+        let back = try await sync.restoreList()
+        let items = await reminders.items
+        exists = await reminders.listExists
+        #expect(back?.items.count == 5 && back?.items.filter(\.isCompleted).count == 1 && exists && items.count == 5)
+        let hw1Reminder = items.first { $0.title.hasPrefix("HW 1") }
+        #expect(hw1Reminder?.isCompleted == true)
+        var live = try await store.obligations()
+        #expect(live.count == 6 && live.filter { $0.due != nil }.allSatisfy { $0.state == .projected && $0.ekExternalID != nil })
+        #expect(live.first { $0.id == hw1.id }?.completedAt != nil && live.allSatisfy { !$0.completionPending })
+        // And it stays whole: nothing is read as deleted, nothing is written twice.
+        let after = try await sync.sync()
+        live = try await store.obligations()
+        let count = await reminders.items.count
+        #expect(after.created == 0 && !after.listGone && live.count == 6 && count == 5)
+    }
+
+    @Test func aSyncArrivingDuringRecreateMakesNoSecondListAndCountsTrue() async throws {
+        // The new list's own change notification asks for a sync while the restore is writing: it waits its turn.
+        let reminders = FakeReminderStore()
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let sync = SyncCoordinator.device("A", store: store, reminders: reminders)
+        _ = try await sync.sync()
+        await reminders.userDeletesList()
+        _ = try await sync.sync()
+        async let restored = sync.restoreList()
+        async let other = sync.sync()
+        let (back, _) = try await (restored, other)
+        let items = await reminders.items
+        let list = await reminders.listID
+        #expect(back?.items.count == 4 && items.count == 4 && list == "list-2")   // one new list, every item once, and the count says so
+    }
+
+    @Test func aListMadeAgainElsewhereIsFilledNotEmptied() async throws {
+        // Two devices with stores of their own (the Mac and the phone, no CloudKit) and one Reminders account.
+        let reminders = FakeReminderStore()
+        let a = try Fixture.store(), b = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: a, device: "A")
+        _ = try await b.addManual(title: "Renew library card", due: Fixture.day(9, 30), dueHasTime: false, courseID: nil, componentName: nil, notes: nil, deviceName: "B")
+        let syncA = SyncCoordinator.device("A", store: a, reminders: reminders)
+        let seenB = InMemorySeenIDs()
+        let syncB = SyncCoordinator(store: b, reminders: reminders, seen: seenB, deviceName: "B")
+        _ = try await syncA.sync(); _ = try await syncB.sync()
+        var count = await reminders.items.count
+        #expect(count == 5)
+        await reminders.userDeletesList()
+        let goneA = try await syncA.sync(), goneB = try await syncB.sync()
+        #expect(goneA.listGone && goneB.listGone)
+        // Recreated on A. B finds a new list under the old name and writes its own item to it; it deletes nothing.
+        _ = try await syncA.restoreList()
+        let filled = try await syncB.sync()
+        count = await reminders.items.count
+        let bLive = try await b.obligations()
+        #expect(filled.created == 1 && !filled.listGone && count == 5 && bLive.count == 1 && bLive[0].state == .projected)
+        // A device that never recorded the list (it last synced before the list was recorded) tells a new one by
+        // content: a list holding none of the reminders it wrote is a new list.
+        seenB.saveListID(nil)
+        await reminders.userDeletesList()
+        _ = try await syncA.sync(); _ = try await syncB.sync()
+        _ = try await syncA.restoreList()
+        let again = try await syncB.sync()
+        count = await reminders.items.count
+        let bAgain = try await b.obligations()
+        #expect(again.created == 1 && count == 5 && bAgain.count == 1)
+    }
+
+    @Test func deletingEveryReminderByHandIsStillDeletion() async throws {
+        // The same list with every item deleted is the user's intent, item by item, not a list made again.
+        let reminders = FakeReminderStore()
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let sync = SyncCoordinator.device("A", store: store, reminders: reminders)
+        _ = try await sync.sync()
+        for item in await reminders.items { await reminders.userDeletes(externalID: item.externalID) }
+        let report = try await sync.sync()
+        let live = try await store.obligations()
+        let count = await reminders.items.count
+        #expect(report.created == 0 && !report.listGone && count == 0 && live.map(\.title) == ["Final Exam"])   // only the undated final, which never had one
     }
 
     @Test func deletionWhileInReviewStillCounts() async throws {
