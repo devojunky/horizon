@@ -63,8 +63,8 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLName: com.daniel.horizon
             CFBundleURLSchemes: [horizon]
-        BGTaskSchedulerPermittedIdentifiers: [com.daniel.horizon.ingest]
-        UIBackgroundModes: [processing]
+        BGTaskSchedulerPermittedIdentifiers: [com.daniel.horizon.ingest, com.daniel.horizon.activity]
+        UIBackgroundModes: [processing, fetch]   # fetch: the refresh that moves the plan's Live Activity on (or ends it) while the app is not running
         LSSupportsOpeningDocumentsInPlace: true
         UISupportsDocumentBrowser: false
         CFBundleDocumentTypes:

@@ -147,15 +147,17 @@ final class AppModel {
         #if os(iOS)
         activities.adopt()
         PlanCommands.markDone = { [weak self] id in await self?.markBlock(id, done: true) }
+        PlanCommands.skip = { [weak self] id in await self?.skipBlock(id, skipped: true) }
         PlanCommands.log = { Self.log($0) }
         Task { await syncActivity() }
         #endif
     }
 
-    /// The Live Activity follows the plan on file. Called after every change to the plan and every minute while Now is open.
+    /// The Live Activity follows the plan on file. Called after every change to the plan, every minute while Now is open,
+    /// and from the background refresh booked here for the moment it next changes by itself.
     func syncActivity() async {
         #if os(iOS)
-        await activities.sync(plan: plan, day: planDay)
+        ActivityRefresh.schedule(at: await activities.sync(plan: plan, day: planDay))
         #endif
     }
 
@@ -535,15 +537,48 @@ final class AppModel {
         setEdited(p)
     }
 
-    /// A block done (or not, after all), from the Now tab or the Live Activity's button. Not an edit of the plan.
+    /// A block done (or not, after all), from the Now tab or the Live Activity's button (while it is on, or as the answer
+    /// to "finished?"). Not an edit of the plan. Done and set aside exclude each other: marking one clears the other.
     func markBlock(_ id: UUID, done: Bool) {
         Self.log("plan: mark \(id) \(done ? "done" : "not done"); on file \(plan?.blocks.count ?? -1) blocks")
         guard var p = plan, let i = p.blocks.firstIndex(where: { $0.id == id }), p.blocks[i].isDone != done else { return }
         p.blocks[i].completedAt = done ? Date() : nil
+        if done { p.blocks[i].skippedAt = nil }
         withAnimation { plan = p }
         persistPlan()
         Task { await syncActivity() }
     }
+
+    /// A block set aside (or taken back), from the Now tab or the Live Activity: Skip before it ends, Not Yet as the
+    /// answer to "finished?". The plan holds nobody to it; like done, it is not an edit of the plan.
+    func skipBlock(_ id: UUID, skipped: Bool) {
+        Self.log("plan: \(skipped ? "skip" : "unskip") \(id)")
+        guard var p = plan, let i = p.blocks.firstIndex(where: { $0.id == id }), p.blocks[i].isSkipped != skipped else { return }
+        p.blocks[i].skippedAt = skipped ? Date() : nil
+        if skipped { p.blocks[i].completedAt = nil }
+        withAnimation { plan = p }
+        persistPlan()
+        Task { await syncActivity() }
+    }
+
+    /// The block whose end is asking "finished?" now, for the timetable to ask it too.
+    func blockAwaitingAnswer(at now: Date = Date()) -> PlanBlock? { plan?.awaitingAnswer(at: now) }
+
+    #if DEBUG
+    /// `--demo-plan`: a plan around the present moment, to see the Live Activity through each phase without waiting on
+    /// the planner: a work block on that ends two minutes from now (then asks "finished?"), a meal, and work later.
+    func demoPlan(now: Date = Date()) {
+        let at = { (minutes: Double) in now.addingTimeInterval(minutes * 60) }
+        let blocks = [
+            PlanBlock(start: at(-40), end: at(2), title: "Problem Set 4", reason: "Due Thursday; the longest of the week.", kind: .work),
+            PlanBlock(start: at(4), end: at(34), title: "Lunch", reason: "Nothing good gets done hungry.", kind: .meal),
+            PlanBlock(start: at(38), end: at(128), title: "Midterm review", reason: "Worth 20%, in six days.", kind: .work),
+        ]
+        plan = DayPlan(blocks: blocks); planEdited = false; planDay = Calendar.current.startOfDay(for: now); planCandidates = []
+        persistPlan()
+        Task { await syncActivity() }
+    }
+    #endif
 
     private func setEdited(_ p: DayPlan) {
         var p = p

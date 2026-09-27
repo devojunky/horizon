@@ -79,12 +79,40 @@ struct PlannerTests {
         #expect(f.current == nil && f.next?.title == "Lecture" && plan.doneCount == 1)
         f = plan.focus(at: Self.at(13))                                       // the day is over
         #expect(f.current == nil && f.next == nil)
+        plan.blocks[1].skippedAt = Self.at(9, 25)                              // the lecture set aside: the meal is next, and nothing counts it done
+        f = plan.focus(at: Self.at(9, 30))
+        #expect(f.current == nil && f.next?.title == "Eat" && plan.doneCount == 1)
+        #expect(plan.blocks[1].isSkipped && !plan.blocks[1].isOpen && !plan.blocks[1].wasLeftUnfinished)
+        #expect(plan.blocks.map(\.asksWhenOver) == [true, false, false])       // only work is worth the question
         // A plan saved before blocks could be done still loads, undone.
         let old = #"{"blocks":[{"id":"6D2B0C3E-3B0E-4B2A-9A4C-3E9E1E6B3B01","start":0,"end":3600,"title":"Quiz 3","reason":"","kind":"work"}]}"#
         let loaded = try JSONDecoder().decode(DayPlan.self, from: Data(old.utf8))
-        #expect(loaded.blocks[0].isDone == false)
+        #expect(loaded.blocks[0].isDone == false && loaded.blocks[0].isOpen)
         let round = try JSONDecoder().decode(DayPlan.self, from: JSONEncoder().encode(plan))
-        #expect(round.blocks[0].completedAt == Self.at(9, 20))
+        #expect(round.blocks[0].completedAt == Self.at(9, 20) && round.blocks[1].skippedAt == Self.at(9, 25))
+    }
+
+    @Test func aWorkBlockThatEndsAsksFinishedUntilTheQuestionTimesOut() {
+        var plan = DayPlan(blocks: [
+            PlanBlock(start: Self.at(9), end: Self.at(10), title: "Quiz 3", reason: "", kind: .work),
+            PlanBlock(start: Self.at(10), end: Self.at(10, 30), title: "Eat", reason: "", kind: .meal),
+            PlanBlock(start: Self.at(10, 30), end: Self.at(11), title: "HW 4", reason: "", kind: .work),
+        ])
+        #expect(plan.awaitingAnswer(at: Self.at(9, 59)) == nil)                          // still on: nothing to ask yet
+        #expect(plan.awaitingAnswer(at: Self.at(10))?.title == "Quiz 3")                // over: finished?
+        #expect(plan.awaitingAnswer(at: Self.at(10, 14))?.title == "Quiz 3")
+        #expect(plan.awaitingAnswer(at: Self.at(10, 15)) == nil)                         // fifteen minutes unanswered: taken as not finished
+        #expect(plan.blocks[0].isOpen && !plan.blocks[0].isDone)                          // and nothing is recorded for it
+        #expect(plan.awaitingAnswer(at: Self.at(10, 31)) == nil)                         // a meal asks nothing when it ends
+        #expect(DayPlan.answerBy(plan.blocks[0]) == Self.at(10, 15) && DayPlan.answerBy(plan.blocks[1]) == nil)
+        plan.blocks[0].completedAt = Self.at(10, 2)                                     // answered: done
+        #expect(plan.awaitingAnswer(at: Self.at(10, 5)) == nil)
+        plan.blocks[2].skippedAt = Self.at(11, 3)                                        // answered: not finished
+        #expect(plan.awaitingAnswer(at: Self.at(11, 5)) == nil && plan.blocks[2].wasLeftUnfinished)
+        // Two work blocks ending close together: the later one asks, the earlier is taken as not finished.
+        plan.blocks[0].completedAt = nil; plan.blocks[2].skippedAt = nil
+        plan.blocks[1].kind = .work
+        #expect(plan.awaitingAnswer(at: Self.at(10, 31))?.title == "Eat")
     }
 
     @Test func nothingDueAndNothingAskedNeedsNoModel() async {

@@ -66,6 +66,8 @@ struct PlanBlockEditor: View {
                 if let block {
                     Section {
                         Button(block.isDone ? "Mark Not Done" : "Mark Done", systemImage: block.isDone ? "arrow.uturn.backward" : "checkmark") { model.markBlock(block.id, done: !block.isDone); dismiss() }
+                        Button(block.isSkipped ? (block.wasLeftUnfinished ? "Undo Not Finished" : "Undo Skip") : Date() >= block.end ? "Not Finished" : "Skip Block",
+                               systemImage: block.isSkipped ? "arrow.uturn.backward" : "forward.end") { model.skipBlock(block.id, skipped: !block.isSkipped); dismiss() }
                         Button("Delete Block", role: .destructive) { model.deleteBlock(block.id); dismiss() }
                     }
                 }

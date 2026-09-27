@@ -51,9 +51,20 @@ public struct PlanBlock: Sendable, Equatable, Identifiable, Codable {
     public var kind: Kind
     /// When the user marked it done, in the app or from the Live Activity. Nil while it is still to do.
     public var completedAt: Date?
+    /// When the user set it aside: skipped ahead of time or while it was on, or answered "not finished" once it was
+    /// over. The plan organises the day and holds nobody to it, so a block can be left without being called done.
+    public var skippedAt: Date?
     public var isDone: Bool { completedAt != nil }
-    public init(start: Date, end: Date, title: String, reason: String, kind: Kind, completedAt: Date? = nil) {
-        self.start = start; self.end = end; self.title = title; self.reason = reason; self.kind = kind; self.completedAt = completedAt
+    public var isSkipped: Bool { skippedAt != nil }
+    /// Neither done nor set aside: the day still has it.
+    public var isOpen: Bool { completedAt == nil && skippedAt == nil }
+    /// Set aside only once it was over: the answer to "finished?" was no. Before that it was skipped.
+    public var wasLeftUnfinished: Bool { skippedAt.map { $0 >= end } ?? false }
+    /// Whether the end of the block is worth a question (did you finish?): work is; a meal, a rest and a calendar
+    /// event simply end.
+    public var asksWhenOver: Bool { kind == .work }
+    public init(start: Date, end: Date, title: String, reason: String, kind: Kind, completedAt: Date? = nil, skippedAt: Date? = nil) {
+        self.start = start; self.end = end; self.title = title; self.reason = reason; self.kind = kind; self.completedAt = completedAt; self.skippedAt = skippedAt
     }
 }
 
@@ -78,15 +89,33 @@ public struct DayPlan: Sendable, Equatable, Codable, Identifiable {
         note = try c.decodeIfPresent(String.self, forKey: .note)
     }
 
-    /// What the day is at `now`: the block that is on and not done, and the first block after it still to do (the
-    /// first one ahead when nothing is on). Done blocks and blocks already over are neither.
+    /// What the day is at `now`: the block that is on and still open, and the first open block after it (the first one
+    /// ahead when nothing is on). Blocks done, set aside or already over are neither.
     public func focus(at now: Date) -> (current: PlanBlock?, next: PlanBlock?) {
-        let pending = blocks.filter { !$0.isDone && $0.end > now }.sorted { $0.start < $1.start }
+        let pending = blocks.filter { $0.isOpen && $0.end > now }.sorted { $0.start < $1.start }
         let current = pending.first { $0.start <= now }
         let next = pending.first { $0.start > now && $0.id != current?.id }
         return (current, next)
     }
     public var doneCount: Int { blocks.filter(\.isDone).count }
+
+    /// How long the question at the end of a work block ("finished?") stands. Unanswered by then, the block is taken as
+    /// not finished: nothing is recorded (not done is where every block starts), and the question goes.
+    public static let answerWindow: TimeInterval = 15 * 60
+
+    /// When the question at the end of `block` stops standing; nil for a block that asks none.
+    public static func answerBy(_ block: PlanBlock) -> Date? {
+        block.asksWhenOver ? block.end.addingTimeInterval(answerWindow) : nil
+    }
+
+    /// The block whose end is asking "finished?" at `now`: a work block that is over, neither done nor set aside, its
+    /// question not yet timed out. When two ended close together, the later one: the earlier is taken as not finished.
+    public func awaitingAnswer(at now: Date) -> PlanBlock? {
+        blocks.filter { block in
+            guard block.isOpen, block.end <= now, let by = Self.answerBy(block) else { return false }
+            return now < by
+        }.max { $0.end < $1.end }
+    }
 }
 
 @Generable

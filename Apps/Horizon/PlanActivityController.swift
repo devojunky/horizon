@@ -6,8 +6,10 @@ import HorizonCore
 import os
 
 /// Keeps the plan's Live Activity in step with the plan on file: started when there is something ahead, updated when
-/// what is on or next changes (the app does this on every change it makes and every minute while Now is open),
-/// left to the system's countdowns in between, ended when the day's plan is done or the plan goes.
+/// what it shows changes (the app does this on every change it makes, every minute while Now is open, and in a
+/// background refresh at the moment the activity next changes), ended as soon as the day's plan has nothing on, ahead
+/// or asking (HIG: end a Live Activity when its task ends). Between updates the system draws it again at its stale
+/// date, and the views work out from the blocks' own times what that moment shows (`ContentState.phase(at:)`).
 /// `Activity` is not Sendable and its `update` and `end` are async; the activity is only ever touched from here, on
 /// the main actor, so the awaits below hand it over as `nonisolated(unsafe)`.
 @MainActor final class PlanActivityController {
@@ -31,54 +33,65 @@ import os
         }
     }
 
-    func sync(plan: DayPlan?, day: Date?, now: Date = Date()) async {
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else { Self.log("not enabled"); return }
-        guard let plan, let day else { await end(); return }
+    /// Brings the activity in step with `plan` at `now`. Returns the next moment what it shows changes by itself, for
+    /// the background refresh that brings it in step again then; nil when there is none (no activity, or it ended).
+    @discardableResult
+    func sync(plan: DayPlan?, day: Date?, now: Date = Date()) async -> Date? {
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else { Self.log("not enabled"); return nil }
+        guard let plan, let day else { await end(); return nil }
         let state = Self.state(of: plan, at: now)
-        if state.finished {
-            guard let current = activity else { return }
-            if shown?.finished != true {   // the last block done: say so, then go away on its own
-                nonisolated(unsafe) let current = current
-                await current.end(ActivityContent(state: state, staleDate: nil), dismissalPolicy: .after(now.addingTimeInterval(30 * 60)))
-                shown = state
-            }
-            activity = nil
-            return
-        }
-        guard state != shown else { return }
+        guard !state.finished else { await end(); return nil }   // the day's plan is over: nothing on, ahead or asking
+        let change = state.nextChange(after: now)
+        guard state != shown else { return change }
         shown = state   // before the await, so a sync arriving meanwhile (the minute's tick, a second mark) sees it done
-        let content = ActivityContent(state: state, staleDate: state.current?.end ?? state.next?.start)
-        if let running = activity, running.activityState == .active {
+        let content = ActivityContent(state: state, staleDate: change)
+        if let running = activity, running.activityState == .active || running.activityState == .stale {
             nonisolated(unsafe) let running = running
             await running.update(content)
-            Self.log("updated: \(state.current?.title ?? "-") then \(state.next?.title ?? "-"), \(state.done)/\(state.total)")
+            Self.log("updated: \(Self.describe(state, at: now))")
         } else {
             do {
                 activity = try Activity.request(attributes: PlanActivityAttributes(day: day), content: content, pushType: nil)
-                Self.log("started: \(state.current?.title ?? "-") then \(state.next?.title ?? "-")")
+                Self.log("started: \(Self.describe(state, at: now))")
             } catch {
                 Self.log("could not start: \(error)")
                 shown = nil
             }
         }
+        return change
     }
 
+    /// Ends the activity at once, from the Dynamic Island and the Lock Screen alike: the day's plan is over, or gone.
     func end() async {
-        guard let running = activity else { return }
-        nonisolated(unsafe) let live = running
-        await live.end(nil, dismissalPolicy: .immediate)
-        Self.log("ended")
+        let running = activity.map { [$0] } ?? Activity<PlanActivityAttributes>.activities   // one from an earlier launch the app never adopted too
         activity = nil
         shown = nil
+        for live in running where live.activityState != .ended && live.activityState != .dismissed && !ending.contains(live.id) {
+            ending.insert(live.id)   // a sync arriving while this one awaits the end must not end it twice
+            nonisolated(unsafe) let live = live
+            await live.end(nil, dismissalPolicy: .immediate)
+            Self.log("ended")
+        }
     }
+    private var ending: Set<String> = []
 
     static func state(of plan: DayPlan, at now: Date) -> PlanActivityAttributes.ContentState {
         let focus = plan.focus(at: now)
-        return PlanActivityAttributes.ContentState(current: focus.current.map(block), next: focus.next.map(block), done: plan.doneCount, total: plan.blocks.count)
+        return PlanActivityAttributes.ContentState(current: focus.current.map(block), next: focus.next.map(block),
+                                                   asking: plan.awaitingAnswer(at: now).map(block), done: plan.doneCount, total: plan.blocks.count)
     }
 
     private static func block(_ b: PlanBlock) -> PlanActivityAttributes.Block {
-        PlanActivityAttributes.Block(id: b.id, title: b.title, reason: b.reason, kind: b.kind.rawValue, start: b.start, end: b.end)
+        PlanActivityAttributes.Block(id: b.id, title: b.title, reason: b.reason, kind: b.kind.rawValue, start: b.start, end: b.end, answerBy: DayPlan.answerBy(b))
+    }
+
+    private static func describe(_ state: PlanActivityAttributes.ContentState, at now: Date) -> String {
+        switch state.phase(at: now) {
+        case .on(let b): "on \(b.title), then \(state.next?.title ?? "-"), \(state.done)/\(state.total)"
+        case .upNext(let b): "up next \(b.title), \(state.done)/\(state.total)"
+        case .asking(let b): "asking whether \(b.title) is finished, then \(state.current?.title ?? state.next?.title ?? "-")"
+        case .done: "done"
+        }
     }
 }
 #endif

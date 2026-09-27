@@ -33,6 +33,7 @@ struct HorizonApp: App {
         Design.installAppearance()
         #if os(iOS)
         BackgroundIngest.register(model: model)
+        ActivityRefresh.register(model: model)
         #endif
     }
 
@@ -112,6 +113,37 @@ enum BackgroundIngest {
         request.requiresExternalPower = false
         BGTaskScheduler.shared.submitTaskRequest(request) { error in   // submission is asynchronous now; a refusal is worth a log line
             if let error { Logger(subsystem: Identifiers.bundlePrefix, category: "ingest").error("background ingest not scheduled: \(error.localizedDescription, privacy: .public)") }
+        }
+    }
+}
+
+/// Brings the plan's Live Activity in step at the moment it next changes by itself (a block over and asking, a question
+/// timed out, the day's plan over), so that it moves on, or ends, while the app is not running. iOS runs a refresh when
+/// it chooses, never before the date asked: the activity's own views cover that moment (`ContentState.phase(at:)`),
+/// and the refresh covers what comes after it. Each sync of the activity books the next one; a submission replaces the
+/// one before.
+enum ActivityRefresh {
+    @MainActor static func register(model: AppModel) {
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: Identifiers.activityRefreshTask, using: nil) { task in
+            let work = Task { @MainActor in
+                model.expirePlanIfStale()     // a plan from another day goes, and its activity with it
+                await model.syncActivity()
+                task.setTaskCompleted(success: true)
+            }
+            task.expirationHandler = {
+                work.cancel()
+                task.setTaskCompleted(success: false)
+            }
+        }
+    }
+
+    /// Nil: nothing will change by itself, and no refresh is wanted.
+    static func schedule(at date: Date?) {
+        guard let date else { BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Identifiers.activityRefreshTask); return }
+        let request = BGAppRefreshTaskRequest(identifier: Identifiers.activityRefreshTask)
+        request.earliestBeginDate = date.addingTimeInterval(5)
+        BGTaskScheduler.shared.submitTaskRequest(request) { error in
+            if let error { Logger(subsystem: Identifiers.bundlePrefix, category: "activity").error("activity refresh not scheduled: \(error.localizedDescription, privacy: .public)") }
         }
     }
 }
