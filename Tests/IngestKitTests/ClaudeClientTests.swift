@@ -186,10 +186,12 @@ struct ClaudeClientTests {
     }
 
     @Test func thePlanDecodes() throws {
-        let text = #"{"blocks": [{"start": "09:00", "end": "09:50", "title": "Quiz 3", "reason": "Due tonight.", "kind": "work"}, {"start": "10:00", "end": "10:4"#
-        #expect(PlanJSON.provisional(text).blocks.map(\.title) == ["Quiz 3"])
+        let text = #"{"blocks": [{"start": "09:00", "end": "09:50", "title": "Quiz 3", "reason": "Go over the practice set.", "kind": "study"}, {"start": "10:00", "end": "10:4"#
+        #expect(PlanJSON.provisional(text).blocks.map(\.title) == ["Quiz 3"] && PlanJSON.provisional(text).blocks.first?.kind == "study")
         #expect(PlanJSON.provisional("{\"blo").blocks.isEmpty)
         #expect(try PlanJSON.decode(#"{"blocks": []}"#).blocks.isEmpty)
+        let calendar = try CalendarJSON.decode(#"{"events": [{"title": "Calc lecture", "use": "fixed", "course": "any"}, {"title": "Math study session", "use": "coursework", "course": "Calculus II"}]}"#)
+        #expect(calendar.events.map(\.use) == ["fixed", "coursework"] && calendar.events.last?.title == "Math study session" && calendar.events.last?.course == "Calculus II")
     }
 
     @Test func theSchemasAreValidJSONInTheOrderWritten() throws {
@@ -203,6 +205,9 @@ struct ClaudeClientTests {
         let extraction = try JSONSerialization.jsonObject(with: Data(s.utf8)) as! [String: Any]
         #expect((extraction["required"] as? [String]) == ["outline", "gradeComponents", "obligations", "policies", "noClassDates"])   // the course is optional, a chunk may not name it
         #expect(s.range(of: "\"outline\"")!.lowerBound < s.range(of: "\"course\"")!.lowerBound)   // the outline is written before anything else
+        let calendar = ClaudeSchemas.calendar
+        #expect(calendar.range(of: "\"title\"")!.lowerBound < calendar.range(of: "\"use\"")!.lowerBound)   // the event said back before its label
+        #expect((try JSONSerialization.jsonObject(with: Data(calendar.utf8)) as? [String: Any])?["additionalProperties"] as? Bool == false)
     }
 }
 

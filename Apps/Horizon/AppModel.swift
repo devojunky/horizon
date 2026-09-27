@@ -566,13 +566,14 @@ final class AppModel {
 
     #if DEBUG
     /// `--demo-plan`: a plan around the present moment, to see the Live Activity through each phase without waiting on
-    /// the planner: a work block on that ends two minutes from now (then asks "finished?"), a meal, and work later.
+    /// the planner: a work block on that ends two minutes from now (then asks "finished?"), a meal, and study later, in a
+    /// study session from the calendar.
     func demoPlan(now: Date = Date()) {
         let at = { (minutes: Double) in now.addingTimeInterval(minutes * 60) }
         let blocks = [
             PlanBlock(start: at(-40), end: at(2), title: "Problem Set 4", reason: "Due Thursday; the longest of the week.", kind: .work),
             PlanBlock(start: at(4), end: at(34), title: "Lunch", reason: "Nothing good gets done hungry.", kind: .meal),
-            PlanBlock(start: at(38), end: at(128), title: "Midterm review", reason: "Worth 20%, in six days.", kind: .work),
+            PlanBlock(start: at(38), end: at(128), title: "Study for Midterm 1", reason: "Worth 20%, in six days: work through the practice exam.", kind: .study, within: "Lock in at library"),
         ]
         plan = DayPlan(blocks: blocks); planEdited = false; planDay = Calendar.current.startOfDay(for: now); planCandidates = []
         persistPlan()

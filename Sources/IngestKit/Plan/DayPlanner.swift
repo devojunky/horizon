@@ -1,9 +1,11 @@
 import Foundation
 import FoundationModels
 
-// SPEC §6.3 "Now": one button, a disposable plan for today. Fixed events from the calendar are hard stops; the free gaps
-// are filled with the work that matters most first, with a reason on every block. The model proposes; the planner
-// keeps it inside the gaps and falls back to a deterministic plan when the model is unavailable or unusable.
+// SPEC §6.3 "Now": one button, a disposable plan for today. The calendar's events are hard stops, except those the model
+// reads as time the student set aside to study (a study session, library time), which it may fill with work of their
+// kind without crossing their edges; the free time is filled with what matters most first, with a reason on every
+// block. The model proposes; the planner keeps it inside the free time and the study events, and falls back to a
+// deterministic plan when the model is unavailable or unusable.
 
 public struct PlanBusy: Sendable, Equatable, Codable {
     public var title: String
@@ -15,11 +17,14 @@ public struct PlanBusy: Sendable, Equatable, Codable {
 public struct PlanObligation: Sendable, Equatable, Codable {
     public var title: String
     public var course: String?
+    /// The grade breakdown row it counts toward ("Exams", "Homework"), when the document says: a hint to the model about
+    /// what kind of item it is (one to hand in, or one that happens at a set time and is studied for).
+    public var component: String?
     public var due: Date
     public var points: Double?
     public var notes: String?
-    public init(title: String, course: String? = nil, due: Date, points: Double? = nil, notes: String? = nil) {
-        self.title = title; self.course = course; self.due = due; self.points = points; self.notes = notes
+    public init(title: String, course: String? = nil, component: String? = nil, due: Date, points: Double? = nil, notes: String? = nil) {
+        self.title = title; self.course = course; self.component = component; self.due = due; self.points = points; self.notes = notes
     }
 }
 
@@ -42,13 +47,18 @@ public struct PlanInput: Sendable {
 }
 
 public struct PlanBlock: Sendable, Equatable, Identifiable, Codable {
-    public enum Kind: String, Sendable, Codable, CaseIterable { case work, meal, rest, fixed }
+    /// `work` is something to hand in; `study` is preparing for something that happens at a set time (a test, an exam),
+    /// which cannot be finished ahead; `fixed` is a calendar event.
+    public enum Kind: String, Sendable, Codable, CaseIterable { case work, study, meal, rest, fixed }
     public var id = UUID()
     public var start: Date
     public var end: Date
     public var title: String
     public var reason: String
     public var kind: Kind
+    /// The calendar event this block sits in: time the student set aside to study ("Math study session"), which the
+    /// planner filled with work of its kind. Nil for a block in free time.
+    public var within: String?
     /// When the user marked it done, in the app or from the Live Activity. Nil while it is still to do.
     public var completedAt: Date?
     /// When the user set it aside: skipped ahead of time or while it was on, or answered "not finished" once it was
@@ -60,11 +70,12 @@ public struct PlanBlock: Sendable, Equatable, Identifiable, Codable {
     public var isOpen: Bool { completedAt == nil && skippedAt == nil }
     /// Set aside only once it was over: the answer to "finished?" was no. Before that it was skipped.
     public var wasLeftUnfinished: Bool { skippedAt.map { $0 >= end } ?? false }
-    /// Whether the end of the block is worth a question (did you finish?): work is; a meal, a rest and a calendar
-    /// event simply end.
-    public var asksWhenOver: Bool { kind == .work }
-    public init(start: Date, end: Date, title: String, reason: String, kind: Kind, completedAt: Date? = nil, skippedAt: Date? = nil) {
-        self.start = start; self.end = end; self.title = title; self.reason = reason; self.kind = kind; self.completedAt = completedAt; self.skippedAt = skippedAt
+    /// Whether the end of the block is worth a question (did you finish?): work and study are; a meal, a rest and a
+    /// calendar event simply end.
+    public var asksWhenOver: Bool { kind == .work || kind == .study }
+    public init(start: Date, end: Date, title: String, reason: String, kind: Kind, within: String? = nil, completedAt: Date? = nil, skippedAt: Date? = nil) {
+        self.start = start; self.end = end; self.title = title; self.reason = reason; self.kind = kind; self.within = within
+        self.completedAt = completedAt; self.skippedAt = skippedAt
     }
 }
 
@@ -120,8 +131,33 @@ public struct DayPlan: Sendable, Equatable, Codable, Identifiable {
 
 @Generable
 struct PlanDraft {
-    @Guide(description: "Ordered blocks for the free gaps only, 25 to 90 minutes each", .maximumCount(10))
+    @Guide(description: "Ordered blocks for the free gaps and the coursework time only, 25 to 90 minutes each", .maximumCount(14))
     var blocks: [PlanDraftBlock]
+}
+
+/// The calendar read before the plan: which events are time the student set aside for coursework. A step of its own, so
+/// that a small model gets it right: one label per event, with the event's title said back to keep them aligned.
+@Generable
+struct CalendarReading {
+    @Guide(description: "One entry per calendar event, in the order given")
+    var events: [CalendarEventUse]
+}
+
+@Generable
+struct CalendarEventUse {
+    @Guide(description: "The event's title as given")
+    var title: String
+    @Guide(.anyOf(["coursework", "fixed"]))
+    var use: String
+    @Guide(description: "For coursework time, the course it is for, as named in the list, or any; for a fixed event, any")
+    var course: String
+}
+
+/// What the calendar step read: the events that are coursework time (their numbers, from 1), and the course each is
+/// for when it is for one (a math study session is for Calculus II; library time is for any course).
+struct CourseworkTime: Sendable, Equatable {
+    var open: Set<Int> = []
+    var courses: [Int: String] = [:]
 }
 
 @Generable
@@ -130,42 +166,120 @@ struct PlanDraftBlock {
     var start: String
     @Guide(description: "End time, 24-hour HH:mm")
     var end: String
-    @Guide(description: "The obligation's title as given, or what the block is for")
+    @Guide(description: "The obligation's title as given, or what the block is for; never an event's name")
     var title: String
     @Guide(description: "One sentence: why this, why now")
     var reason: String
-    @Guide(.anyOf(["work", "meal", "rest"]))
+    @Guide(.anyOf(["work", "study", "meal", "rest"]))
     var kind: String
 }
 
 public actor DayPlanner {
     public static let instructions = """
-    You plan one student's day. Fixed events are hard stops: never place anything over them. Fill the free gaps, in order, \
-    with the work that matters most first: the nearest deadlines, weighted by points at stake. Blocks are 25 to 90 minutes; \
-    leave short rests between long stretches. If the day has no meal yet, the first block after 11:30 or after 17:30 is a meal. \
-    Every block has a one-sentence reason that names the deadline or the need. Use titles exactly as given. \
-    The student's own instructions, when given, outrank the habits above: follow them, except that fixed events stay hard stops.
+    You plan one student's day. Fixed events are hard stops: never place anything over them. Coursework time on the \
+    calendar is time the student set aside for their courses: fill it with obligations of the kind it is for (a math \
+    study session gets math), never starting before it or ending after it. Fill the free gaps and the coursework time, \
+    in order, with the obligations that matter most first: the nearest dates, weighted by points at stake. Blocks are 25 \
+    to 90 minutes; leave short rests between long stretches. If the day has no meal yet, the first block after 11:30 or \
+    after 17:30 is a meal. Use the obligations' titles exactly as given; never title a block with an event's name. \
+    A test, exam, midterm, in-class quiz or presentation happens at a set time and cannot be finished ahead: a block for \
+    one has kind study, for preparing, and its reason says what to review or practise, never that it is due. Blocks for \
+    anything handed in or done have kind work, wherever they sit. Every block has a one-sentence reason that names the \
+    date or the need. \
+    The student's own instructions, when given, outrank the habits above: follow them, except that fixed events stay \
+    hard stops and coursework time keeps its hours.
+    """
+
+    /// The calendar step's instructions: study time is the student's own time for coursework; everything else stays put.
+    public static let calendarInstructions = """
+    You read one student's calendar for today. For each event, in order, give its use and its course. \
+    Use coursework for time the student set aside to work on their courses, alone or with classmates: a study session, \
+    a study group, homework time, time at the library, "lock in". Use fixed for everything else: a class, lecture, lab, \
+    section, office hours, exam, meeting, appointment, shift, meal, workout, or plans with people. \
+    Course: when the event names a subject (a math study session, chem review), the course of that subject, named as \
+    in the list; otherwise any (time at the library or "lock in" is for any course, and so is every fixed event).
     """
 
     private let log: @Sendable (String) -> Void
     private let transport: ClaudeTransport
     public init(log: @escaping @Sendable (String) -> Void = { _ in }, transport: ClaudeTransport = .live) { self.log = log; self.transport = transport }
 
-    /// Free time between the fixed events, inside the day, from now on, at least 25 minutes long.
+    /// Free time around every calendar event, inside the day, from now on, at least 25 minutes long: what the model is
+    /// told is free, and all the plan by the numbers may use.
     public static func gaps(in input: PlanInput) -> [DateInterval] {
+        guard let day = dayWindow(input) else { return [] }
+        return subtract([day], input.busy.map { DateInterval(start: $0.start, end: max($0.start, $0.end)) }).filter { $0.duration >= 25 * 60 }
+    }
+
+    /// The part of the day the plan may use by habit: from `dayStart` (or now) to `dayEnd`.
+    static func dayWindow(_ input: PlanInput) -> DateInterval? {
         let calendar = input.calendar
         let day = calendar.startOfDay(for: input.date)
         guard let open = calendar.date(bySettingHour: input.dayStart, minute: 0, second: 0, of: day),
-              let close = calendar.date(bySettingHour: input.dayEnd, minute: 0, second: 0, of: day) else { return [] }
-        var cursor = max(open, input.now)
-        var gaps: [DateInterval] = []
-        for event in input.busy.sorted(by: { $0.start < $1.start }) where event.end > cursor {
-            if event.start > cursor { gaps.append(DateInterval(start: cursor, end: min(event.start, close))) }
-            cursor = max(cursor, event.end)
-            if cursor >= close { break }
+              let close = calendar.date(bySettingHour: input.dayEnd, minute: 0, second: 0, of: day) else { return nil }
+        let start = max(open, input.now)
+        return start < close ? DateInterval(start: start, end: close) : nil
+    }
+
+    /// The calendar's events still to come today, in time order: what the calendar step labels, and the numbering (from
+    /// 1) that study events are known by.
+    public static func events(in input: PlanInput) -> [PlanBusy] {
+        input.busy.filter { $0.end > input.now && $0.end > $0.start }.sorted { $0.start < $1.start }
+    }
+
+    /// Where blocks may go once the model has said which events are study time (`open`, their numbers): the day's free
+    /// time with only the other events as hard stops, and each study event whole (the student chose its hours, even
+    /// outside the planner's usual day), cut at every study event's edges so that no block crosses one. A window inside
+    /// a study event carries its number.
+    struct Window: Equatable { var interval: DateInterval; var event: Int? }
+
+    static func windows(in input: PlanInput, open: Set<Int>) -> [Window] {
+        let events = Self.events(in: input)
+        let study = events.indices.filter { open.contains($0 + 1) }
+        let hard = events.indices.filter { !study.contains($0) }.map { DateInterval(start: events[$0].start, end: events[$0].end) }
+        var base = dayWindow(input).map { [$0] } ?? []
+        for i in study where events[i].end > input.now { base.append(DateInterval(start: max(events[i].start, input.now), end: events[i].end)) }
+        let free = subtract(union(base), hard)
+        let edges = Set(study.flatMap { [events[$0].start, events[$0].end] })
+        var windows: [Window] = []
+        for piece in free {
+            var start = piece.start
+            for edge in edges.filter({ $0 > piece.start && $0 < piece.end }).sorted() + [piece.end] {
+                let middle = start.addingTimeInterval(edge.timeIntervalSince(start) / 2)
+                let event = study.first { events[$0].start <= middle && middle < events[$0].end }
+                windows.append(Window(interval: DateInterval(start: start, end: edge), event: event.map { $0 + 1 }))
+                start = edge
+            }
         }
-        if cursor < close { gaps.append(DateInterval(start: cursor, end: close)) }
-        return gaps.filter { $0.duration >= 25 * 60 }
+        return windows.filter { $0.interval.duration >= 15 * 60 }
+    }
+
+    /// Overlapping or touching intervals joined, in order.
+    static func union(_ intervals: [DateInterval]) -> [DateInterval] {
+        var joined: [DateInterval] = []
+        for interval in intervals.sorted(by: { $0.start < $1.start }) {
+            if let last = joined.last, interval.start <= last.end {
+                joined[joined.count - 1] = DateInterval(start: last.start, end: max(last.end, interval.end))
+            } else {
+                joined.append(interval)
+            }
+        }
+        return joined
+    }
+
+    /// What is left of `intervals` once `holes` are taken out.
+    static func subtract(_ intervals: [DateInterval], _ holes: [DateInterval]) -> [DateInterval] {
+        var pieces = union(intervals)
+        for hole in union(holes) {
+            pieces = pieces.flatMap { piece -> [DateInterval] in
+                guard hole.start < piece.end, hole.end > piece.start else { return [piece] }
+                var rest: [DateInterval] = []
+                if hole.start > piece.start { rest.append(DateInterval(start: piece.start, end: hole.start)) }
+                if hole.end < piece.end { rest.append(DateInterval(start: hole.end, end: piece.end)) }
+                return rest
+            }
+        }
+        return pieces
     }
 
     /// Obligations worth planning for: due from today on, nearest first, heavier first on the same day.
@@ -185,16 +299,21 @@ public actor DayPlanner {
                      progress: @escaping @Sendable ([PlanBlock]) -> Void = { _ in }) async -> DayPlan {
         let gaps = Self.gaps(in: input)
         let ranked = Array(Self.ranked(input).prefix(12))
-        guard !gaps.isEmpty else { return DayPlan(blocks: Self.fixedOnly(input), route: nil, usage: nil, note: "No free time left today.") }
+        let events = Self.events(in: input)
+        let noTime = DayPlan(blocks: Self.fixedOnly(input), route: nil, usage: nil, note: "No free time left today.")
+        guard !gaps.isEmpty || !events.isEmpty else { return noTime }   // an event left may be time to study: the model says
         guard !ranked.isEmpty || input.instructions != nil else {   // nothing due and nothing asked: the calendar is the plan
             return DayPlan(blocks: Self.fixedOnly(input), route: nil, usage: nil, note: "Nothing is due in the coming weeks, so there is nothing to plan.")
         }
-        let prompt = Self.prompt(for: input, gaps: gaps, ranked: ranked)
+        let coursework = events.isEmpty ? CourseworkTime() : await readCalendar(events, input: input, ranked: ranked, route: route, claude: claude)
+        let open = coursework.open
+        guard !gaps.isEmpty || !open.isEmpty else { return noTime }
+        let prompt = Self.prompt(for: input, gaps: gaps, open: open, courses: coursework.courses, ranked: ranked)
         let started = ContinuousClock.now
-        let report = Reporter { draft in progress(Self.provisional(draft, gaps: gaps, input: input, ranked: ranked)) }
+        let report = Reporter { draft in progress(Self.provisional(draft, input: input, ranked: ranked, open: open, courses: coursework.courses)) }
         do {
             let (draft, usage, used) = try await respond(prompt, route: route, claude: claude, report: report)
-            let blocks = Self.validate(draft, gaps: gaps, input: input, ranked: ranked)
+            let blocks = Self.validate(draft, input: input, ranked: ranked, open: open, courses: coursework.courses)
             let record = UsageRecord(step: "plan", chunk: 0, route: used, inputTokens: usage.input, cachedTokens: usage.cached,
                                      outputTokens: usage.output, reasoningTokens: usage.reasoning,
                                      durationMs: Int((ContinuousClock.now - started) / .milliseconds(1)))
@@ -203,7 +322,7 @@ public actor DayPlanner {
                 let unread = input.instructions == nil ? "" : " Your instructions were not followed."
                 return DayPlan(blocks: Self.fallback(input, gaps: gaps, ranked: ranked), route: nil, usage: record, note: "The model's plan did not fit the day; this one is by the numbers." + unread)
             }
-            return DayPlan(blocks: Self.merge(blocks, fixed: Self.fixedOnly(input)), route: used, usage: record, note: nil)
+            return DayPlan(blocks: Self.merge(blocks, fixed: Self.fixedBlocks(input, open: open, planned: blocks)), route: used, usage: record, note: nil)
         } catch {
             log("plan: model unavailable (\(error.localizedDescription)); planning by the numbers")
             let unread = input.instructions == nil ? "" : " Your instructions need the model."
@@ -214,10 +333,10 @@ public actor DayPlanner {
     /// The plan so far, for a timetable that grows: the complete blocks validated as the whole draft will be (validation
     /// walks the draft in order, so a prefix of the draft validates to a prefix of the result), and the calendar's
     /// events up to the last of them, so the rail only ever extends downward. A retried reply starts over.
-    static func provisional(_ draft: PlanDraft, gaps: [DateInterval], input: PlanInput, ranked: [PlanObligation]) -> [PlanBlock] {
-        let blocks = validate(draft, gaps: gaps, input: input, ranked: ranked)
+    static func provisional(_ draft: PlanDraft, input: PlanInput, ranked: [PlanObligation], open: Set<Int> = [], courses: [Int: String] = [:]) -> [PlanBlock] {
+        let blocks = validate(draft, input: input, ranked: ranked, open: open, courses: courses)
         guard let last = blocks.last else { return [] }
-        return merge(blocks, fixed: fixedOnly(input).filter { $0.start < last.end })
+        return merge(blocks, fixed: fixedBlocks(input, open: open, planned: blocks).filter { $0.start < last.end })
     }
 
     /// Tells the caller about a draft only when a block has completed since the last time.
@@ -254,8 +373,10 @@ public actor DayPlanner {
         if useClaude, let claude, !claude.apiKey.isEmpty {
             do {
                 let client = ClaudeClient(configuration: claude, transport: transport, log: log)
-                let request = ClaudeClient.Request(system: Self.instructions, user: prompt, schema: ClaudeSchemas.plan, maxOutputTokens: 1500)
+                // Low effort, and room above it: at 1500 tokens a plan with study time was spent thinking before a word of it was written.
+                let request = ClaudeClient.Request(system: Self.instructions, user: prompt, schema: ClaudeSchemas.plan, maxOutputTokens: 8000, effort: "low")
                 let completion = try await client.stream(request) { text in report.report(PlanJSON.provisional(text)) }
+                if completion.stopReason != "end_turn" { log("plan: Claude stopped with \(completion.stopReason ?? "nothing") after \(completion.outputTokens) tokens; the text ends \(String(completion.text.suffix(120)))") }
                 let draft = try PlanJSON.decode(completion.text)
                 return (draft, Tokens(input: completion.inputTokens, cached: completion.cachedTokens, output: completion.outputTokens), .claude)
             } catch is CancellationError {
@@ -269,7 +390,7 @@ public actor DayPlanner {
         } else if useClaude {
             throw IngestError.claudeUnavailable("no API key")
         }
-        let options = GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 900)
+        let options = GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 1300)   // 14 blocks: a day with coursework time in the evening is still reached
         let session = LanguageModelSession(model: device, instructions: Instructions(Self.instructions))
         let stream = session.streamResponse(to: Prompt(prompt), generating: PlanDraft.self, options: options)
         for try await snapshot in stream { report.report(Self.complete(snapshot.content)) }
@@ -286,41 +407,131 @@ public actor DayPlanner {
         return PlanDraft(blocks: blocks)
     }
 
+    /// The events that are coursework time, and the course each is for, as the model reads the calendar; none when it
+    /// cannot be asked, and every event then stays a hard stop. Same route as the plan: Claude when asked for (the
+    /// device if Claude fails), else the device.
+    func readCalendar(_ events: [PlanBusy], input: PlanInput, ranked: [PlanObligation], route: IngestOptions.RoutePolicy, claude: ClaudeConfiguration?) async -> CourseworkTime {
+        let courses = Self.courses(of: ranked)
+        let prompt = Self.calendarPrompt(events, courses: courses, calendar: input.calendar)
+        let started = ContinuousClock.now
+        var reading: CalendarReading?
+        var used = ModelRoute.onDevice
+        var tokens = Tokens()
+        let device = SystemLanguageModel.default
+        let deviceReady: Bool = { if case .available = device.availability { return true }; return false }()
+        if (route == .claude || !deviceReady), let claude, !claude.apiKey.isEmpty {
+            do {
+                let client = ClaudeClient(configuration: claude, transport: transport, log: log)
+                let completion = try await client.stream(ClaudeClient.Request(system: Self.calendarInstructions, user: prompt, schema: ClaudeSchemas.calendar, maxOutputTokens: 4000, effort: "low")) { _ in }
+                reading = try CalendarJSON.decode(completion.text)
+                used = .claude
+                tokens = Tokens(input: completion.inputTokens, cached: completion.cachedTokens, output: completion.outputTokens)
+            } catch {
+                log("plan: the calendar could not be read with Claude (\(Extractor.explainClaude(error)))")
+            }
+        }
+        if reading == nil, deviceReady {
+            do {
+                let session = LanguageModelSession(model: device, instructions: Instructions(Self.calendarInstructions))
+                let response = try await session.respond(to: Prompt(prompt), generating: CalendarReading.self, options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 400))
+                reading = response.content
+                used = .onDevice
+                tokens = Self.tokens(response.usage)
+            } catch {
+                log("plan: the calendar could not be read on the device (\(error.localizedDescription)); every event is a hard stop")
+            }
+        }
+        guard let reading else { return CourseworkTime() }
+        let time = Self.coursework(in: reading, events: events, courses: courses)
+        let record = UsageRecord(step: "calendar", chunk: 0, route: used, inputTokens: tokens.input, cachedTokens: tokens.cached, outputTokens: tokens.output,
+                                 reasoningTokens: tokens.reasoning, durationMs: Int((ContinuousClock.now - started) / .milliseconds(1)))
+        log("plan: calendar read, coursework time \(time.open.sorted().map { "\(events[$0 - 1].title) (\(time.courses[$0] ?? "any course"))" }), in \(record.inputTokens) out \(record.outputTokens) \(record.durationMs)ms")
+        return time
+    }
+
+    /// The model's labels, matched to the events: by title said back (a small model can drop or repeat one), else by
+    /// place; a course named as in the list is kept, anything else (any, a course nobody has) means any course.
+    static func coursework(in reading: CalendarReading, events: [PlanBusy], courses: [String]) -> CourseworkTime {
+        var time = CourseworkTime()
+        for (i, entry) in reading.events.enumerated() where entry.use == "coursework" {
+            let key = Normalize.key(entry.title)
+            let number: Int
+            if let match = events.indices.first(where: { Normalize.key(events[$0].title) == key && !time.open.contains($0 + 1) }) { number = match + 1 }
+            else if reading.events.count == events.count, !time.open.contains(i + 1) { number = i + 1 }
+            else { continue }
+            time.open.insert(number)
+            if let course = courses.first(where: { Normalize.key($0) == Normalize.key(entry.course) }) { time.courses[number] = course }
+        }
+        return time
+    }
+
+    /// The student's courses with something coming up, in the order their obligations come.
+    static func courses(of ranked: [PlanObligation]) -> [String] {
+        var seen = Set<String>()
+        return ranked.compactMap(\.course).filter { seen.insert(Normalize.key($0)).inserted }
+    }
+
+    static func calendarPrompt(_ events: [PlanBusy], courses: [String] = [], calendar: Calendar) -> String {
+        func clock(_ d: Date) -> String { let c = calendar.dateComponents([.hour, .minute], from: d); return String(format: "%02d:%02d", c.hour ?? 0, c.minute ?? 0) }
+        let list = courses.isEmpty ? [] : ["The student's courses: " + courses.joined(separator: "; ") + "."]
+        return (list + ["Calendar events today:"] + events.map { "- \(clock($0.start))–\(clock($0.end)) \($0.title)" }).joined(separator: "\n")
+    }
+
     private static func tokens(_ usage: LanguageModelSession.Usage) -> Tokens {
         Tokens(input: usage.input.totalTokenCount, cached: usage.input.cachedTokenCount, output: usage.output.totalTokenCount, reasoning: usage.output.reasoningTokenCount)
     }
 
-    static func prompt(for input: PlanInput, gaps: [DateInterval], ranked: [PlanObligation]) -> String {
+    /// The day as the model reads it: the fixed events, the study time the calendar sets aside (read in the step before),
+    /// the free gaps around all of them, and the obligations with their dates in plain words ("in 3 days", not "due in 3
+    /// days": a test is not due, and the model decides which is which) and the grade row each counts toward.
+    static func prompt(for input: PlanInput, gaps: [DateInterval], open: Set<Int> = [], courses: [Int: String] = [:], ranked: [PlanObligation]) -> String {
         let calendar = input.calendar
         func clock(_ d: Date) -> String { let c = calendar.dateComponents([.hour, .minute], from: d); return String(format: "%02d:%02d", c.hour ?? 0, c.minute ?? 0) }
         var lines = ["Today is \(input.date.formatted(.dateTime.weekday(.wide).month(.wide).day())). It is \(clock(input.now)) now."]
-        if input.busy.isEmpty { lines.append("Fixed events: none.") } else {
+        let events = Self.events(in: input)
+        let fixed = events.indices.filter { !open.contains($0 + 1) }, study = events.indices.filter { open.contains($0 + 1) }
+        if fixed.isEmpty { lines.append("Fixed events: none.") } else {
             lines.append("Fixed events (hard stops):")
-            for e in input.busy.sorted(by: { $0.start < $1.start }) { lines.append("- \(clock(e.start))–\(clock(e.end)) \(e.title)") }
+            for i in fixed { lines.append("- \(clock(events[i].start))–\(clock(events[i].end)) \(events[i].title)") }
         }
-        lines.append("Free gaps to fill:")
+        if !study.isEmpty {   // each with the obligations that may go in it, so that no model has to work out what "math" covers
+            lines.append("Coursework time on the calendar (fill it with the obligations named for it, within its hours):")
+            for i in study {
+                let hours = "\(clock(max(events[i].start, input.now)))–\(clock(events[i].end)) \(events[i].title)"
+                if let course = courses[i + 1] {
+                    let items = ranked.filter { $0.course == course }.map(\.title)
+                    lines.append("- \(hours): for \(course)\(items.isEmpty ? "" : " (" + items.joined(separator: ", ") + ")")")
+                } else {
+                    lines.append("- \(hours): for any obligation")
+                }
+            }
+        }
+        lines.append(gaps.isEmpty ? "Free gaps to fill: none." : "Free gaps to fill:")
         for g in gaps { lines.append("- \(clock(g.start))–\(clock(g.end))") }
-        if ranked.isEmpty { lines.append("Obligations: none due soon.") } else {
-            lines.append("Obligations, nearest deadline first:")
+        if ranked.isEmpty { lines.append("Obligations: none coming up.") } else {
+            lines.append("Obligations, with the day each is due or happens, nearest first:")
             for o in ranked {
                 let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: input.date), to: calendar.startOfDay(for: o.due)).day ?? 0
-                let when = days == 0 ? "due today" : days == 1 ? "due tomorrow" : "due in \(days) days"
-                let worth = o.points.map { " · worth \($0.formatted(.number.precision(.fractionLength(0...1))))% of the grade" } ?? ""
-                lines.append("- \(o.title)\(o.course.map { " (\($0))" } ?? "") · \(when)\(worth)")
+                let when = days == 0 ? "today" : days == 1 ? "tomorrow" : "in \(days) days, \(o.due.formatted(.dateTime.weekday(.wide)))"
+                let about = [o.course, o.component.map { "counts toward \($0)" }].compactMap { $0 }.joined(separator: ", ")
+                let worth = o.points.map { " · \($0.formatted(.number.precision(.fractionLength(0...1))))% of the grade" } ?? ""
+                lines.append("- \(o.title)\(about.isEmpty ? "" : " (\(about))") · \(when)\(worth)")
             }
         }
         if let instructions = input.instructions {   // capped: the on-device context is 4096 tokens and the schema and obligations need most of it
             lines.append("The student's own instructions:")
             lines.append(String(instructions.prefix(1500)))
         }
-        lines.append("Plan the free gaps.")
+        lines.append(study.isEmpty ? "Plan the free gaps." : "Plan the free gaps and the coursework time.")
         return lines.joined(separator: "\n")
     }
 
     // MARK: Deterministic side
 
-    /// Blocks that lie inside the free gaps, in order, without overlaps; times the model wrote outside the gaps are clipped.
-    static func validate(_ draft: PlanDraft, gaps: [DateInterval], input: PlanInput, ranked: [PlanObligation]) -> [PlanBlock] {
+    /// Blocks that lie inside the free time or a study event the model named, in order, without overlaps; times the model
+    /// wrote past a window's edges are clipped to the window the block starts in, so no block crosses a hard stop or the
+    /// edge of a study event. A block in a study event says so (`within`).
+    static func validate(_ draft: PlanDraft, input: PlanInput, ranked: [PlanObligation], open: Set<Int> = [], courses: [Int: String] = [:]) -> [PlanBlock] {
         let calendar = input.calendar
         let day = calendar.startOfDay(for: input.date)
         func time(_ text: String) -> Date? {
@@ -328,38 +539,133 @@ public actor DayPlanner {
             guard parts.count == 2, let h = Int(parts[0]), let m = Int(parts[1]), (0...23).contains(h), (0...59).contains(m) else { return nil }
             return calendar.date(bySettingHour: h, minute: m, second: 0, of: day)
         }
+        let events = Self.events(in: input)
+        let windows = Self.windows(in: input, open: open)
         var blocks: [PlanBlock] = []
         var cursor = Date.distantPast
-        var perTitle: [String: Int] = [:]
+        var perItem: [String: Int] = [:]
         for b in draft.blocks {
             guard var start = time(b.start), var end = time(b.end), end > start else { continue }
-            guard let gap = gaps.first(where: { $0.end > start && $0.start < end }) else { continue }   // must touch a gap
-            start = max(start, gap.start, cursor); end = min(end, gap.end)
+            let from = max(start, cursor)
+            // The window the block starts in (or the first after that it reaches): a block that runs past a study event's
+            // end stops there, one begun before it starts after its end is dropped with the rest of the overrun.
+            guard let window = windows.first(where: { $0.interval.end > from && $0.interval.start < end }) else { continue }   // must touch free time or a study event
+            start = max(from, window.interval.start); end = min(end, window.interval.end)
             guard end.timeIntervalSince(start) >= 15 * 60 else { continue }
-            let kind: PlanBlock.Kind = switch b.kind { case "meal": .meal; case "rest": .rest; default: .work }
+            let kind: PlanBlock.Kind = switch b.kind { case "meal": .meal; case "rest": .rest; case "study": .study; default: .work }
             if kind == .rest { end = min(end, start.addingTimeInterval(20 * 60)) }   // a rest is a breather, not a block
+            if kind == .meal, events.contains(where: { Self.isMeal($0.title) && $0.end <= start.addingTimeInterval(60) && start.timeIntervalSince($0.end) < 3 * 3600 }) { continue }   // lunch with a friend was the meal
             // "HW 1 (Calculus II)" is the obligation "HW 1"; the longest obligation title the draft's title contains wins.
-            let draftKey = " " + Normalize.key(b.title) + " "
-            let matched = ranked.filter { draftKey.contains(" " + Normalize.key($0.title) + " ") }.max { $0.title.count < $1.title.count }
-            var title = matched?.title ?? Normalize.collapseWhitespace(b.title)
+            var own = Normalize.collapseWhitespace(b.title)
+            var matched: PlanObligation?
+            // A block titled with an event's name ("Math study session", or the prompt's whole line for it, "Math study
+            // session: for Calculus II (HW 4, Test 1)") is for the obligation its reason names ("Test 1 is Thursday:
+            // practise…"); failing that, the nearest one that fits the coursework time it sits in (its course, the block's
+            // kind, not yet planned twice); failing that, it is the event's time, named plainly.
+            let ownKey = Normalize.key(own)
+            let echoed = events.first { ownKey == Normalize.key($0.title) || ownKey.hasPrefix(Normalize.key($0.title) + " for ") }
+            if let echoed, kind == .work || kind == .study {
+                let course = window.event.flatMap { courses[$0] }
+                let fits = ranked.filter { (course == nil || $0.course == course) && perItem[Normalize.key($0.title), default: 0] < 2 }
+                if let named = Self.item(mentionedIn: b.reason, ranked: fits) ?? fits.first(where: { Self.looksHeld($0) == (kind == .study) }) ?? fits.first {
+                    matched = named; own = named.title
+                } else {
+                    own = echoed.title
+                }
+            } else {
+                matched = Self.item(in: own, ranked: ranked)
+            }
+            var title = matched?.title ?? own
+            // Coursework time for one course holds that course's obligations only: the calendar step said what it is for.
+            if let number = window.event, let course = courses[number], let matched, matched.course != course { continue }
+            var reason = Normalize.collapseWhitespace(b.reason)
+            if kind == .study, let matched {   // studied for, not done
+                title = Self.studyTitle(own, for: matched)
+                if Self.saysDue(reason) { reason = Self.studyReason(for: matched, input: input) }   // never "due": the facts, and what the time is for
+            }
             guard !title.isEmpty else { continue }
             title = title.prefix(1).uppercased() + title.dropFirst()
-            if kind == .work {   // a day is not one item over and over: at most two blocks on the same thing
-                let key = Normalize.key(title)
-                guard perTitle[key, default: 0] < 2 else { continue }
-                perTitle[key, default: 0] += 1
+            if kind == .work || kind == .study {   // a day is not one item over and over: at most two blocks on the same thing
+                let key = Normalize.key(matched?.title ?? title)
+                guard perItem[key, default: 0] < 2 else { continue }
+                perItem[key, default: 0] += 1
             }
-            blocks.append(PlanBlock(start: start, end: end, title: title, reason: Normalize.collapseWhitespace(b.reason), kind: kind))
+            let within = window.event.map { events[$0 - 1].title }
+            blocks.append(PlanBlock(start: start, end: end, title: title, reason: reason, kind: kind, within: within))
             cursor = end
         }
         return blocks
     }
 
-    /// The fixed events of the day, as blocks, so the plan reads as one sequence.
-    static func fixedOnly(_ input: PlanInput) -> [PlanBlock] {
-        input.busy.filter { $0.end > input.now }.sorted { $0.start < $1.start }
-            .map { PlanBlock(start: $0.start, end: $0.end, title: $0.title, reason: "On your calendar.", kind: .fixed) }
+    /// Whether a calendar event is a meal ("Lunch with Sam"): the plan then needs no meal of its own right after it.
+    static func isMeal(_ title: String) -> Bool {
+        !Set(Normalize.key(title).split(separator: " ").map(String.init)).isDisjoint(with: ["breakfast", "brunch", "lunch", "dinner", "supper", "meal"])
     }
+
+    /// The obligation a title is: the longest obligation title it contains, word for word.
+    static func item(in title: String, ranked: [PlanObligation]) -> PlanObligation? {
+        let key = " " + Normalize.key(title) + " "
+        return ranked.filter { key.contains(" " + Normalize.key($0.title) + " ") }.max { $0.title.count < $1.title.count }
+    }
+
+    /// The obligation a sentence names first ("Finish HW4 problems…" names "HW 4": letters and digits run together are
+    /// read apart), or nil when it names none.
+    static func item(mentionedIn text: String, ranked: [PlanObligation]) -> PlanObligation? {
+        func spaced(_ s: String) -> String {   // "hw4" → "hw 4", so a title printed either way matches
+            var out = ""
+            for ch in Normalize.key(s) {
+                if let last = out.last, last != " ", ch != " ", last.isNumber != ch.isNumber { out.append(" ") }
+                out.append(ch)
+            }
+            return " " + out + " "
+        }
+        let sentence = spaced(text)
+        return ranked.compactMap { item -> (PlanObligation, String.Index)? in
+            guard let range = sentence.range(of: spaced(item.title)) else { return nil }
+            return (item, range.lowerBound)
+        }.min { $0.1 < $1.1 }?.0
+    }
+
+    /// A block for studying: "Study for Test 1", or the model's own short framing when it is one ("Review for Test 1",
+    /// "Practise Test 1"). Whatever else it wrote around the item (its course, its grade row, an event's name) goes.
+    static func studyTitle(_ written: String, for item: PlanObligation) -> String {
+        var own = written
+        if let paren = own.range(of: " (", options: .backwards), own.hasSuffix(")") { own = String(own[..<paren.lowerBound]) }   // "(Calculus II, counts toward Exams)"
+        let words = Normalize.key(own).split(separator: " ").map(String.init)
+        let itemWords = Normalize.key(item.title).split(separator: " ").map(String.init)
+        guard words.count > itemWords.count, Array(words.suffix(itemWords.count)) == itemWords else { return "Study for \(item.title)" }
+        let framing = words.dropLast(itemWords.count)
+        let verbs: Set<String> = ["study", "review", "prepare", "prep", "practice", "practise", "rehearse", "revise"]
+        guard let first = framing.first, verbs.contains(first), framing.count <= 2, framing.dropFirst().allSatisfy({ $0 == "for" }) else { return "Study for \(item.title)" }
+        return first.prefix(1).uppercased() + first.dropFirst() + (framing.count == 2 ? " for " : " ") + item.title
+    }
+
+    /// Whether a sentence speaks of a deadline or of finishing: wrong for something that is studied for.
+    static func saysDue(_ reason: String) -> Bool {
+        let words = Set(Normalize.key(reason).split(separator: " ").map(String.init))
+        return !words.isDisjoint(with: ["due", "finish", "finished", "submit", "submitted", "complete", "completed", "deadline", "hand"])
+    }
+
+    /// The reason for a study block when the model's spoke of a deadline: when it happens and what it is worth.
+    static func studyReason(for item: PlanObligation, input: PlanInput) -> String {
+        let calendar = input.calendar
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: input.date), to: calendar.startOfDay(for: item.due)).day ?? 0
+        let when = days <= 0 ? "Today" : days == 1 ? "Tomorrow" : "In \(days) days (\(item.due.formatted(.dateTime.weekday(.wide))))"
+        let worth = item.points.map { ", worth \($0.formatted(.number.precision(.fractionLength(0...1))))% of the grade" } ?? ""
+        return "\(when)\(worth): time to review for it."
+    }
+
+    /// The calendar's events as blocks, so the plan reads as one sequence: every hard stop, and each study event the plan
+    /// left empty. A study event the plan filled is shown by the blocks in it, each naming it; its hours are the same.
+    static func fixedBlocks(_ input: PlanInput, open: Set<Int>, planned: [PlanBlock]) -> [PlanBlock] {
+        events(in: input).enumerated().compactMap { i, e in
+            if open.contains(i + 1), planned.contains(where: { $0.start < e.end && $0.end > e.start }) { return nil }
+            return PlanBlock(start: e.start, end: e.end, title: e.title, reason: "On your calendar.", kind: .fixed)
+        }
+    }
+
+    /// Every event of the day still to come, as blocks: the plan when there is nothing to fill.
+    static func fixedOnly(_ input: PlanInput) -> [PlanBlock] { fixedBlocks(input, open: [], planned: []) }
 
     static func merge(_ blocks: [PlanBlock], fixed: [PlanBlock]) -> [PlanBlock] { (blocks + fixed).sorted { $0.start < $1.start } }
 
@@ -381,13 +687,25 @@ public actor DayPlanner {
                 guard let next = queue.first else { break }
                 let end = min(cursor.addingTimeInterval(50 * 60), gap.end)
                 let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: input.date), to: calendar.startOfDay(for: next.due)).day ?? 0
-                let when = days == 0 ? "Due today" : days == 1 ? "Due tomorrow" : "Due in \(days) days"
                 let worth = next.points.map { ", worth \($0.formatted(.number.precision(.fractionLength(0...1))))% of the grade" } ?? ""
-                blocks.append(PlanBlock(start: cursor, end: end, title: next.title, reason: "\(when)\(worth).", kind: .work))
+                if Self.looksHeld(next) {   // studied for, never "due"
+                    let when = days == 0 ? "Today" : days == 1 ? "Tomorrow" : "In \(days) days"
+                    blocks.append(PlanBlock(start: cursor, end: end, title: "Study for \(next.title)", reason: "\(when)\(worth).", kind: .study))
+                } else {
+                    let when = days == 0 ? "Due today" : days == 1 ? "Due tomorrow" : "Due in \(days) days"
+                    blocks.append(PlanBlock(start: cursor, end: end, title: next.title, reason: "\(when)\(worth).", kind: .work))
+                }
                 queue.removeFirst()
                 cursor = end.addingTimeInterval(10 * 60)
             }
         }
         return merge(blocks, fixed: fixedOnly(input))
+    }
+
+    /// The plan by the numbers' guess at an item that happens at a set time and is studied for rather than done: its title
+    /// or grade row names a test. With a model, the model decides; this is only for the plan made without one.
+    static func looksHeld(_ item: PlanObligation) -> Bool {
+        let words = Set(Normalize.key([item.title, item.component ?? ""].joined(separator: " ")).split(separator: " ").map(String.init))
+        return !words.isDisjoint(with: ["exam", "exams", "test", "tests", "midterm", "midterms"])   // not "quiz": many are online, and due
     }
 }

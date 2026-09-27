@@ -76,9 +76,14 @@ public actor ClaudeClient {
         public var images: [Data]
         /// A JSON Schema object, as text, its properties in the order the model should write them.
         public var schema: String
+        /// The output budget, which the model's own reasoning spends from too: the Claude 5 models think adaptively
+        /// unless told otherwise, and a reply cut off while it was still thinking has no text at all.
         public var maxOutputTokens: Int
-        public init(system: String, user: String, images: [Data] = [], schema: String, maxOutputTokens: Int) {
-            self.system = system; self.user = user; self.images = images; self.schema = schema; self.maxOutputTokens = maxOutputTokens
+        /// How hard the model works (`output_config.effort`): "medium" for reading; "low" for the small tasks (the day
+        /// plan, the calendar read before it), where more reasoning bought nothing but a wait and a spent budget.
+        public var effort: String
+        public init(system: String, user: String, images: [Data] = [], schema: String, maxOutputTokens: Int, effort: String = "medium") {
+            self.system = system; self.user = user; self.images = images; self.schema = schema; self.maxOutputTokens = maxOutputTokens; self.effort = effort
         }
     }
 
@@ -219,7 +224,7 @@ public actor ClaudeClient {
         let blocks = request.images.map { "{\"type\": \"image\", \"source\": {\"type\": \"base64\", \"media_type\": \"image/jpeg\", \"data\": \"\($0.base64EncodedString())\"}}" }
             + ["{\"type\": \"text\", \"text\": \(ClaudeSchemas.quote(request.user))}"]
         var outputConfig = "\"format\": {\"type\": \"json_schema\", \"schema\": \(request.schema)}"
-        if configuration.model.acceptsEffort { outputConfig += ", \"effort\": \"medium\"" }
+        if configuration.model.acceptsEffort { outputConfig += ", \"effort\": \(ClaudeSchemas.quote(request.effort))" }
         let body = """
         {"model": \(ClaudeSchemas.quote(configuration.model.rawValue)), "max_tokens": \(request.maxOutputTokens), "stream": true, \
         "system": \(ClaudeSchemas.quote(request.system)), \

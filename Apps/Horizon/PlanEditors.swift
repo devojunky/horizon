@@ -46,6 +46,7 @@ struct PlanBlockEditor: View {
                     }
                     Picker("Kind", selection: $kind) {
                         Text("Work").tag(PlanBlock.Kind.work)
+                        Text("Study").tag(PlanBlock.Kind.study)
                         Text("Meal").tag(PlanBlock.Kind.meal)
                         Text("Rest").tag(PlanBlock.Kind.rest)
                         if block?.kind == .fixed { Text("Calendar").tag(PlanBlock.Kind.fixed) }

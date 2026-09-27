@@ -70,14 +70,23 @@ enum ClaudeSchemas {
         ("facts", extractionObject),
     ], required: ["transcript", "facts"], description: "A picture of a course document, transcribed, and the facts stated in it."))
 
+    /// The calendar read before the plan: each event's use, in order, its title said back.
+    static let calendar: String = render(.object([
+        ("events", .array(.object([
+            ("title", .string("The event's title as given")),
+            ("use", .enumeration(["coursework", "fixed"])),
+            ("course", .string("For coursework time, the course it is for, as named in the list, or any; for a fixed event, any")),
+        ], required: ["title", "use", "course"]), "One entry per calendar event, in the order given")),
+    ], required: ["events"]))
+
     static let plan: String = render(.object([
         ("blocks", .array(.object([
             ("start", .string("Start time, 24-hour HH:mm")),
             ("end", .string("End time, 24-hour HH:mm")),
-            ("title", .string("The obligation's title as given, or what the block is for")),
+            ("title", .string("The obligation's title as given, or what the block is for; never an event's name")),
             ("reason", .string("One sentence: why this, why now")),
-            ("kind", .enumeration(["work", "meal", "rest"])),
-        ], required: ["start", "end", "title", "reason", "kind"]), "Ordered blocks for the free gaps only, 25 to 90 minutes each; at most 10")),
+            ("kind", .enumeration(["work", "study", "meal", "rest"])),
+        ], required: ["start", "end", "title", "reason", "kind"]), "Ordered blocks for the free gaps and the coursework time only, 25 to 90 minutes each; at most 14")),
     ], required: ["blocks"]))
 
     // MARK: An ordered schema, rendered as it is written

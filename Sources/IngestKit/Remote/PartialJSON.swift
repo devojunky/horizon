@@ -260,3 +260,14 @@ enum PlanJSON {
         return PlanDraftBlock(start: start, end: end, title: title, reason: b["reason"] as? String ?? "", kind: b["kind"] as? String ?? "work")
     }
 }
+
+/// The calendar step's reply: each event's use, in order.
+enum CalendarJSON {
+    static func decode(_ text: String) throws -> CalendarReading {
+        guard let object = PartialJSON.parse(text) as? [String: Any] else { throw ClaudeError.malformed("the calendar reading is not a JSON object") }
+        return CalendarReading(events: (object["events"] as? [[String: Any]] ?? []).compactMap { e in
+            guard let title = e["title"] as? String, let use = e["use"] as? String else { return nil }
+            return CalendarEventUse(title: title, use: use, course: e["course"] as? String ?? "any")
+        })
+    }
+}

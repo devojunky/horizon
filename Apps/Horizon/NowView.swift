@@ -303,13 +303,20 @@ struct BlockRow: View {
                 else if asking { Kicker("Finished?", accent: true) }
                 HStack(spacing: 8) {
                     Text(block.title)
-                        .font(.body.weight(block.kind == .work ? .semibold : .regular))
+                        .font(.body.weight(block.kind == .work || block.kind == .study ? .semibold : .regular))
                         .foregroundStyle(block.kind == .fixed ? .secondary : .primary)
                         .strikethrough(block.isDone, color: .secondary)
-                    if block.kind != .work, block.title.caseInsensitiveCompare(Self.kindName(block.kind)) != .orderedSame {   // "Rest" needs no "Rest" chip
+                    if block.kind != .work, block.kind != .study, block.title.caseInsensitiveCompare(Self.kindName(block.kind)) != .orderedSame {   // "Rest" needs no "Rest" chip, "Study for Test 1" no "Study" one
                         Text(Self.kindName(block.kind)).font(.caption2).foregroundStyle(.secondary)
                             .padding(.horizontal, 6).padding(.vertical, 2).background(Design.rule, in: Capsule())
                     }
+                }
+                if let within = block.within {   // time the calendar set aside to study, which the planner filled: the event keeps its name
+                    HStack(spacing: 4) {
+                        Image(systemName: "calendar").imageScale(.small)
+                        Text(within)
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
                 }
                 if !block.reason.isEmpty { Text(block.reason).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             }
@@ -322,7 +329,7 @@ struct BlockRow: View {
         .animation(.snappy, value: block.isDone)
         .contentShape(Rectangle())
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(Self.clock(block.start)) to \(Self.clock(block.end)), \(block.title)\(block.isDone ? ", done" : block.isSkipped ? (block.wasLeftUnfinished ? ", not finished" : ", skipped") : asking ? ", finished?" : phase == .current ? ", now" : "")")
+        .accessibilityLabel("\(Self.clock(block.start)) to \(Self.clock(block.end)), \(block.title)\(block.within.map { ", in \($0)" } ?? "")\(block.isDone ? ", done" : block.isSkipped ? (block.wasLeftUnfinished ? ", not finished" : ", skipped") : asking ? ", finished?" : phase == .current ? ", now" : "")")
         .onAppear {
             guard arriving, !reduceMotion else { return }
             headDrawn = false; landed = false; wordsIn = false
@@ -360,7 +367,7 @@ struct BlockRow: View {
             }
         case .past, .ahead:
             switch block.kind {
-            case .work: Circle().fill(.primary).frame(width: size, height: size)
+            case .work, .study: Circle().fill(.primary).frame(width: size, height: size)
             case .fixed: Circle().fill(.secondary).frame(width: size, height: size)
             case .meal, .rest: Circle().stroke(.primary, lineWidth: 1.5).frame(width: size - 1.5, height: size - 1.5).background(Design.paper, in: Circle())
             }
@@ -373,6 +380,6 @@ struct BlockRow: View {
     }
 
     static func kindName(_ kind: PlanBlock.Kind) -> String {
-        switch kind { case .work: "Work"; case .meal: "Meal"; case .rest: "Rest"; case .fixed: "Calendar" }
+        switch kind { case .work: "Work"; case .study: "Study"; case .meal: "Meal"; case .rest: "Rest"; case .fixed: "Calendar" }
     }
 }

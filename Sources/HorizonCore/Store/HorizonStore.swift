@@ -606,7 +606,7 @@ public actor HorizonStore {
         guard let end = calendar.date(byAdding: .day, value: days, to: start) else { return [] }
         return try fetchObligations()
             .filter { $0.deletedAt == nil && $0.completedAt == nil && ($0.due.map { $0 >= start && $0 < end } ?? false) }
-            .map { PlanObligation(title: $0.title, course: $0.course?.displayName, due: $0.due!, points: $0.pointsAtStake, notes: $0.notes) }
+            .map { PlanObligation(title: $0.title, course: $0.course?.displayName, component: $0.componentName, due: $0.due!, points: $0.pointsAtStake, notes: $0.notes) }
     }
 
     /// Hand edits to a course; each edited field becomes an override a later document leaves alone.

@@ -37,7 +37,8 @@ struct PlannerTests {
             PlanDraftBlock(start: "14:00", end: "14:50", title: "Quiz 3 (Calculus II)", reason: "More of the same.", kind: "work"),   // second block on Quiz 3: kept, snapped
             PlanDraftBlock(start: "15:00", end: "15:50", title: "quiz 3", reason: "A third.", kind: "work"),                          // third: dropped
         ])
-        let blocks = DayPlanner.validate(draft, gaps: gaps, input: input, ranked: DayPlanner.ranked(input))
+        let blocks = DayPlanner.validate(draft, input: input, ranked: DayPlanner.ranked(input))
+        #expect(gaps.count == 2)
         #expect(blocks.map(\.title) == ["Quiz 3", "Eat", "Problem set", "Quiz 3"])   // the obligation's own spelling comes back
         #expect(blocks.map { Self.calendar.component(.hour, from: $0.start) } == [9, 12, 13, 14])
         #expect(blocks[1].kind == .meal && blocks[2].start == blocks[1].end)
@@ -46,22 +47,22 @@ struct PlannerTests {
     @Test func theProvisionalPlanIsAPrefixOfTheFinalOne() {
         let busy = [PlanBusy(title: "Lecture", start: Self.at(10), end: Self.at(12)), PlanBusy(title: "Lab", start: Self.at(15), end: Self.at(16))]
         let input = Self.input(now: Self.at(9), busy: busy, obligations: [PlanObligation(title: "Quiz 3", due: Self.at(23), points: 6), PlanObligation(title: "HW 4", due: Self.at(23).addingTimeInterval(86400), points: 2)])
-        let gaps = DayPlanner.gaps(in: input), ranked = DayPlanner.ranked(input)
+        let ranked = DayPlanner.ranked(input)
         let whole = PlanDraft(blocks: [
             PlanDraftBlock(start: "09:00", end: "09:50", title: "Quiz 3", reason: "Due tonight.", kind: "work"),
             PlanDraftBlock(start: "12:00", end: "12:40", title: "Eat", reason: "Lunch.", kind: "meal"),
             PlanDraftBlock(start: "13:00", end: "13:50", title: "HW 4", reason: "Due tomorrow.", kind: "work"),
             PlanDraftBlock(start: "16:00", end: "16:50", title: "Quiz 3", reason: "Once more.", kind: "work"),
         ])
-        let final = DayPlanner.merge(DayPlanner.validate(whole, gaps: gaps, input: input, ranked: ranked), fixed: DayPlanner.fixedOnly(input))
+        let final = DayPlanner.merge(DayPlanner.validate(whole, input: input, ranked: ranked), fixed: DayPlanner.fixedOnly(input))
         #expect(final.map(\.title) == ["Quiz 3", "Lecture", "Eat", "HW 4", "Lab", "Quiz 3"])
         for n in 0...whole.blocks.count {   // every prefix of the draft is a prefix of the final timetable, calendar events included
-            let sofar = DayPlanner.provisional(PlanDraft(blocks: Array(whole.blocks.prefix(n))), gaps: gaps, input: input, ranked: ranked)
+            let sofar = DayPlanner.provisional(PlanDraft(blocks: Array(whole.blocks.prefix(n))), input: input, ranked: ranked)
             #expect(sofar.map(\.title) == Array(final.map(\.title).prefix(sofar.count)), "prefix \(n)")
             #expect(sofar.map(\.start) == Array(final.map(\.start).prefix(sofar.count)), "prefix \(n)")
         }
-        #expect(DayPlanner.provisional(PlanDraft(blocks: [whole.blocks[0]]), gaps: gaps, input: input, ranked: ranked).map(\.title) == ["Quiz 3"])       // the lecture waits until a block passes it
-        #expect(DayPlanner.provisional(PlanDraft(blocks: Array(whole.blocks.prefix(2))), gaps: gaps, input: input, ranked: ranked).map(\.title) == ["Quiz 3", "Lecture", "Eat"])
+        #expect(DayPlanner.provisional(PlanDraft(blocks: [whole.blocks[0]]), input: input, ranked: ranked).map(\.title) == ["Quiz 3"])       // the lecture waits until a block passes it
+        #expect(DayPlanner.provisional(PlanDraft(blocks: Array(whole.blocks.prefix(2))), input: input, ranked: ranked).map(\.title) == ["Quiz 3", "Lecture", "Eat"])
     }
 
     @Test func thePlanKnowsWhatIsOnAndWhatIsNext() throws {
@@ -134,6 +135,149 @@ struct PlannerTests {
         #expect(prompt.contains("The student's own instructions:\nNo work after 9 pm.\nPlan the free gaps."))
         let long = PlanInput(date: input.date, now: input.now, busy: [], obligations: input.obligations, calendar: input.calendar, instructions: String(repeating: "x", count: 2000))
         #expect(DayPlanner.prompt(for: long, gaps: [], ranked: []).count < 1800)      // capped for the on-device context
+    }
+
+    @Test func theModelSeesStudyTimeApartAndPlainDates() {
+        let busy = [PlanBusy(title: "Math study session", start: Self.at(14), end: Self.at(16)), PlanBusy(title: "Calc lecture", start: Self.at(10), end: Self.at(11, 50)),
+                    PlanBusy(title: "Breakfast", start: Self.at(7), end: Self.at(8))]   // over before now: not shown, not numbered
+        let items = [PlanObligation(title: "Test 1", course: "Calculus II", component: "Exams", due: Self.at(23).addingTimeInterval(3 * 86400), points: 20),
+                     PlanObligation(title: "HW 4", course: "Calculus II", due: Self.at(23), points: 1.5)]
+        let input = Self.input(now: Self.at(9), busy: busy, obligations: items)
+        #expect(DayPlanner.events(in: input).map(\.title) == ["Calc lecture", "Math study session"])
+        // The calendar step sees every event; the plan step sees them sorted by what the calendar step said.
+        #expect(DayPlanner.calendarPrompt(DayPlanner.events(in: input), courses: DayPlanner.courses(of: DayPlanner.ranked(input)), calendar: Self.calendar)
+                == "The student's courses: Calculus II.\nCalendar events today:\n- 10:00–11:50 Calc lecture\n- 14:00–16:00 Math study session")
+        let prompt = DayPlanner.prompt(for: input, gaps: DayPlanner.gaps(in: input), open: [2], courses: [2: "Calculus II"], ranked: DayPlanner.ranked(input))
+        #expect(prompt.contains("Fixed events (hard stops):\n- 10:00–11:50 Calc lecture\nCoursework time on the calendar (fill it with the obligations named for it, within its hours):\n- 14:00–16:00 Math study session: for Calculus II (HW 4, Test 1)\nFree gaps to fill:"))
+        #expect(DayPlanner.prompt(for: input, gaps: DayPlanner.gaps(in: input), open: [2], ranked: DayPlanner.ranked(input)).contains("- 14:00–16:00 Math study session: for any obligation"))
+        #expect(prompt.contains("- HW 4 (Calculus II) · today · 1.5% of the grade"))
+        #expect(prompt.contains("- Test 1 (Calculus II, counts toward Exams) · in 3 days, Thursday · 20% of the grade"))
+        #expect(!prompt.contains("due in") && !prompt.contains("Breakfast") && prompt.hasSuffix("Plan the free gaps and the coursework time."))   // a test is not "due"; the model decides what each is
+        let plain = DayPlanner.prompt(for: input, gaps: DayPlanner.gaps(in: input), ranked: DayPlanner.ranked(input))
+        #expect(plain.contains("Fixed events (hard stops):\n- 10:00–11:50 Calc lecture\n- 14:00–16:00 Math study session\nFree gaps") && plain.hasSuffix("Plan the free gaps."))
+    }
+
+    @Test func theCalendarsLabelsAreMatchedByTitleSaidBack() {
+        let events = [PlanBusy(title: "Calc lecture", start: Self.at(10), end: Self.at(11)), PlanBusy(title: "Math study session", start: Self.at(14), end: Self.at(16)),
+                      PlanBusy(title: "Lock in at library", start: Self.at(19), end: Self.at(21))]
+        let aligned = CalendarReading(events: [CalendarEventUse(title: "Calc lecture", use: "fixed", course: "any"), CalendarEventUse(title: "Math study session", use: "coursework", course: "any"), CalendarEventUse(title: "Lock in at library", use: "coursework", course: "any")])
+        #expect(DayPlanner.coursework(in: aligned, events: events, courses: []).open == [2, 3])
+        // A small model that drops an entry: the titles said back still find the right events.
+        let dropped = CalendarReading(events: [CalendarEventUse(title: "lock in at library", use: "coursework", course: "any")])
+        #expect(DayPlanner.coursework(in: dropped, events: events, courses: []).open == [3])
+        // A title garbled with the count intact falls back on its place; with the count off, it is left a hard stop.
+        #expect(DayPlanner.coursework(in: CalendarReading(events: [CalendarEventUse(title: "Calc", use: "fixed", course: "any"), CalendarEventUse(title: "Math study", use: "coursework", course: "any"), CalendarEventUse(title: "Library", use: "fixed", course: "any")]), events: events, courses: []).open == [2])
+        #expect(DayPlanner.coursework(in: CalendarReading(events: [CalendarEventUse(title: "Math study", use: "coursework", course: "any")]), events: events, courses: []).open.isEmpty)
+        // The course it is for is kept when it is one of the student's; anything else is any course.
+        let withCourses = CalendarReading(events: [CalendarEventUse(title: "Calc lecture", use: "fixed", course: "any"), CalendarEventUse(title: "Math study session", use: "coursework", course: "calculus ii"),
+                                                   CalendarEventUse(title: "Lock in at library", use: "coursework", course: "Astrophysics")])
+        #expect(DayPlanner.coursework(in: withCourses, events: events, courses: ["Calculus II", "Writing"]).courses == [2: "Calculus II"])
+    }
+
+    @Test func aStudyEventIsFilledWithinItsHoursAndTheRestStayHardStops() {
+        let busy = [PlanBusy(title: "Calc lecture", start: Self.at(10), end: Self.at(11, 50)), PlanBusy(title: "Math study session", start: Self.at(14), end: Self.at(16)),
+                    PlanBusy(title: "Lock in at library", start: Self.at(20), end: Self.at(23))]
+        let items = [PlanObligation(title: "HW 4", course: "Calculus II", due: Self.at(23), points: 1.5), PlanObligation(title: "Quiz 3", course: "Calculus II", due: Self.at(23).addingTimeInterval(86400), points: 6),
+                     PlanObligation(title: "Essay draft", course: "Writing", due: Self.at(23).addingTimeInterval(2 * 86400), points: 10)]
+        let input = Self.input(now: Self.at(9), busy: busy, obligations: items)
+        let ranked = DayPlanner.ranked(input)
+        let draft = PlanDraft(blocks: [
+            PlanDraftBlock(start: "10:30", end: "11:00", title: "Reading", reason: "Over the lecture.", kind: "work"),        // the lecture is a hard stop: dropped
+            PlanDraftBlock(start: "14:00", end: "14:50", title: "HW 4", reason: "Due tonight.", kind: "work"),               // in the study session
+            PlanDraftBlock(start: "15:40", end: "16:30", title: "Quiz 3", reason: "Tomorrow.", kind: "study"),                // past the session's end: stops at 16:00
+            PlanDraftBlock(start: "21:00", end: "22:30", title: "Essay draft", reason: "Two days out.", kind: "work"),         // the library, after the usual day: the student chose it
+        ])
+        let blocks = DayPlanner.validate(draft, input: input, ranked: ranked, open: [2, 3])
+        #expect(blocks.map(\.title) == ["HW 4", "Study for Quiz 3", "Essay draft"])
+        // The math session is for Calculus II: the essay would not go in it; the library, for any course, takes it.
+        let essayInSession = PlanDraft(blocks: [PlanDraftBlock(start: "14:00", end: "14:50", title: "Essay draft", reason: "Two days out.", kind: "work")])
+        #expect(DayPlanner.validate(essayInSession, input: input, ranked: ranked, open: [2, 3], courses: [2: "Calculus II"]).isEmpty)
+        #expect(DayPlanner.validate(draft, input: input, ranked: ranked, open: [2, 3], courses: [2: "Calculus II"]).map(\.title) == ["HW 4", "Study for Quiz 3", "Essay draft"])
+        #expect(blocks.map(\.within) == ["Math study session", "Math study session", "Lock in at library"])
+        #expect(blocks[1].end == Self.at(16) && blocks[2].end == Self.at(22, 30) && blocks[1].kind == .study)
+        // The timetable: the lecture stays; the two study events are shown by the blocks in them.
+        let fixed = DayPlanner.fixedBlocks(input, open: [2, 3], planned: blocks)
+        #expect(fixed.map(\.title) == ["Calc lecture"])
+        // Not named as study time, the session is a hard stop like any other event, and nothing goes in it.
+        let unnamed = DayPlanner.validate(draft, input: input, ranked: ranked)
+        #expect(unnamed.isEmpty || unnamed.allSatisfy { $0.within == nil && ($0.end <= Self.at(14) || $0.start >= Self.at(16)) })
+        #expect(!unnamed.contains { $0.title == "HW 4" })
+        // Named but left empty, it stays on the timetable as it is.
+        #expect(DayPlanner.fixedBlocks(input, open: [2], planned: []).map(\.title) == ["Calc lecture", "Math study session", "Lock in at library"])
+    }
+
+    @Test func aStudyEventIsCutAtTheHardStopsInsideIt() {
+        let busy = [PlanBusy(title: "Library", start: Self.at(13), end: Self.at(17)), PlanBusy(title: "Advisor meeting", start: Self.at(15), end: Self.at(15, 30))]
+        let windows = DayPlanner.windows(in: Self.input(now: Self.at(9), busy: busy), open: [1])
+        let inLibrary = windows.filter { $0.event == 1 }.map { "\(Self.calendar.component(.hour, from: $0.interval.start)):\(Self.calendar.component(.minute, from: $0.interval.start))" }
+        #expect(inLibrary == ["13:0", "15:30"])                                   // the meeting is still a hard stop inside the library time
+        #expect(windows.first?.event == nil && windows.first?.interval.start == Self.at(9))   // the free morning is not the library's
+    }
+
+    @Test func aTestIsStudiedForNotFinished() {
+        let items = [PlanObligation(title: "Test 1", course: "Calculus II", component: "Exams", due: Self.at(23).addingTimeInterval(3 * 86400), points: 20)]
+        let input = Self.input(now: Self.at(9), obligations: items)
+        let ranked = DayPlanner.ranked(input)
+        let draft = PlanDraft(blocks: [
+            PlanDraftBlock(start: "09:00", end: "09:50", title: "Test 1", reason: "Go over the practice problems.", kind: "study"),                 // bare: framed
+            PlanDraftBlock(start: "10:00", end: "10:50", title: "Review for Test 1 (Calculus II)", reason: "Chapters 3 and 4.", kind: "study"),       // the model's framing stands
+            PlanDraftBlock(start: "11:00", end: "11:50", title: "Test 1", reason: "Once more.", kind: "study"),                                        // a third on the same test: dropped
+        ])
+        let blocks = DayPlanner.validate(draft, input: input, ranked: ranked)
+        #expect(blocks.map(\.title) == ["Study for Test 1", "Review for Test 1"] && blocks.allSatisfy { $0.kind == .study && $0.asksWhenOver })
+        // What a model writes around the item goes; a short framing of its own stays.
+        let item = items[0]
+        #expect(DayPlanner.studyTitle("Test 1 (Calculus II, counts toward Exams)", for: item) == "Study for Test 1")
+        #expect(DayPlanner.studyTitle("Math study session: Test 1", for: item) == "Study for Test 1")
+        #expect(DayPlanner.studyTitle("Math study session: for Calculus II (HW 4, Test 1)", for: item) == "Study for Test 1")
+        #expect(DayPlanner.studyTitle("review for test 1", for: item) == "Review for Test 1" && DayPlanner.studyTitle("Practise Test 1", for: item) == "Practise Test 1")
+        // A reason that speaks of a deadline is replaced by the facts: a test is not due.
+        let due = DayPlanner.validate(PlanDraft(blocks: [PlanDraftBlock(start: "09:00", end: "09:50", title: "Test 1", reason: "Nearest obligation due in 3 days.", kind: "study")]), input: input, ranked: ranked)
+        #expect(due.first?.reason == "In 3 days (Thursday), worth 20% of the grade: time to review for it.")
+        #expect(DayPlanner.validate(PlanDraft(blocks: [PlanDraftBlock(start: "09:00", end: "09:50", title: "Test 1", reason: "Go over chapter 3.", kind: "study")]), input: input, ranked: ranked).first?.reason == "Go over chapter 3.")
+        // Without a model, the plan by the numbers guesses from the title or the grade row, and never says "due".
+        let fallback = DayPlanner.fallback(input, gaps: DayPlanner.gaps(in: input), ranked: ranked)
+        #expect(fallback.first?.title == "Study for Test 1" && fallback.first?.kind == .study && fallback.first?.reason == "In 3 days, worth 20% of the grade.")
+        #expect(DayPlanner.looksHeld(PlanObligation(title: "Midterm 2", due: Self.at(23))) && !DayPlanner.looksHeld(PlanObligation(title: "Lab report", component: "Labs", due: Self.at(23))))
+        #expect(!DayPlanner.looksHeld(PlanObligation(title: "Quiz 3", due: Self.at(23))))   // a quiz may be online and due: without a model, it stays work
+    }
+
+    @Test func aBlockTitledWithTheEventsNameTakesTheItemItsReasonNames() {
+        let busy = [PlanBusy(title: "Math study session", start: Self.at(14), end: Self.at(17))]
+        let items = [PlanObligation(title: "HW 4", course: "Calculus II", due: Self.at(23), points: 1.5), PlanObligation(title: "Test 1", course: "Calculus II", component: "Exams", due: Self.at(23).addingTimeInterval(3 * 86400), points: 20)]
+        let input = Self.input(now: Self.at(9), busy: busy, obligations: items)
+        let draft = PlanDraft(blocks: [
+            PlanDraftBlock(start: "14:00", end: "15:00", title: "Math study session", reason: "Test 1 is Thursday, worth 20%: practise the integration problems.", kind: "study"),
+            PlanDraftBlock(start: "15:00", end: "15:50", title: "Math study session", reason: "Finish HW4 problems before tomorrow's deadline.", kind: "work"),
+            PlanDraftBlock(start: "16:00", end: "16:50", title: "Math study session", reason: "More time for math.", kind: "work"),   // names nothing
+        ])
+        let blocks = DayPlanner.validate(draft, input: input, ranked: DayPlanner.ranked(input), open: [1])
+        #expect(blocks.map(\.title) == ["Study for Test 1", "HW 4", "HW 4"])   // the third names nothing: the nearest work that fits the session
+        // The prompt's whole line said back is an echo too; with nothing left that fits, it is the event's time, named plainly.
+        let line = PlanDraft(blocks: [PlanDraftBlock(start: "14:00", end: "14:50", title: "Math study session: for Calculus II (HW 4, Test 1)", reason: "Flexible time.", kind: "work")])
+        #expect(DayPlanner.validate(line, input: input, ranked: DayPlanner.ranked(input), open: [1], courses: [1: "Calculus II"]).first?.title == "HW 4")
+        #expect(DayPlanner.validate(line, input: input, ranked: [], open: [1]).first?.title == "Math study session")
+        #expect(DayPlanner.item(mentionedIn: "Start HW 10 tonight.", ranked: [PlanObligation(title: "HW 1", due: Self.at(23)), PlanObligation(title: "HW 10", due: Self.at(23))])?.title == "HW 10")   // not HW 1
+    }
+
+    @Test func aMealOnTheCalendarIsTheMeal() {
+        let busy = [PlanBusy(title: "Lunch with Sam", start: Self.at(12), end: Self.at(13))]
+        let input = Self.input(now: Self.at(9), busy: busy, obligations: [PlanObligation(title: "HW 4", due: Self.at(23))])
+        let draft = PlanDraft(blocks: [
+            PlanDraftBlock(start: "13:00", end: "13:40", title: "Lunch", reason: "No meal yet.", kind: "meal"),       // right after lunch with Sam: dropped
+            PlanDraftBlock(start: "18:00", end: "18:40", title: "Dinner", reason: "Evening meal.", kind: "meal"),     // hours later: kept
+        ])
+        #expect(DayPlanner.validate(draft, input: input, ranked: DayPlanner.ranked(input)).map(\.title) == ["Dinner"])
+        #expect(DayPlanner.isMeal("Lunch with Sam") && !DayPlanner.isMeal("Lunchtime seminar"))
+    }
+
+    @Test func aDayFullOfEventsStillAsksTheModelAboutThem() async {
+        // No free time at all, but one event may be study time: only the model can say, so the plan is not cut short.
+        let busy = [PlanBusy(title: "Lock in at library", start: Self.at(8), end: Self.at(22))]
+        let input = Self.input(now: Self.at(9), busy: busy, obligations: [PlanObligation(title: "Quiz 3", due: Self.at(23), points: 6)])
+        #expect(DayPlanner.gaps(in: input).isEmpty && DayPlanner.events(in: input).count == 1)
+        let windows = DayPlanner.windows(in: input, open: [1])
+        #expect(windows.count == 1 && windows[0].event == 1 && windows[0].interval == DateInterval(start: Self.at(9), end: Self.at(22)))   // from now to the library's end
     }
 
     @Test func aPlanSavedWithoutAnIdStillLoads() throws {
