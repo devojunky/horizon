@@ -217,7 +217,9 @@ private struct PlanList: View {
             if let note { Text(note).font(.footnote).foregroundStyle(.secondary).textCase(nil) }
             if done > 0, !streaming { Kicker(done == blocks.count ? "All done" : "\(done) of \(blocks.count) done") }
         }
-        .frame(maxWidth: 820, alignment: .leading)   // the timetable's own measure
+        #if os(macOS)
+        .frame(maxWidth: 820, alignment: .leading)   // the timetable's own measure (its rows keep it too)
+        #endif
         .padding(.bottom, 4)
     }
 

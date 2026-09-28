@@ -500,7 +500,11 @@ final class AppModel {
             Task { @MainActor in self.showDraft(blocks) }   // the timetable grows as the model writes
         }
         if let close = hours.closes(on: day, calendar: calendar), now >= close, !result.blocks.contains(where: { $0.kind != .fixed }) {
+            #if os(macOS)
+            result.note = "The day ended at \(PlanHours.label(hours.end)). To keep going tonight, choose a later time beside the plan."   // Tonight Until sits in the column beside it
+            #else
             result.note = "The day ended at \(PlanHours.label(hours.end)). To keep going tonight, choose a later time below."   // Tonight Until sits under the empty timetable
+            #endif
         }
         if calendarOff { result.note = ([result.note, "Calendar access is off, so nothing on it counted as fixed."].compactMap { $0 }).joined(separator: " ") }
         let streamed = !planDraft.isEmpty

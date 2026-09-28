@@ -70,6 +70,7 @@ struct MacHorizonPage: View {
         .background(Design.paper)
         .animation(.default, value: chosen)
         .navigationTitle("Horizon")
+        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)   // the page's head meets the toolbar, not the table: without this the table's pinned header makes the toolbar a hard band
         .toolbar {
             if data.choices.count > 1 {   // one course is its own filter
                 ToolbarSpacer(.fixed, placement: .primaryAction)   // the page's own control, apart from the window's
@@ -127,7 +128,9 @@ struct ItemRow: Identifiable {
     let id: UUID
     let title: String
     let course: String
+    /// When it is due; an item with no date sorts after every dated one.
     let due: Date
+    let hasDue: Bool
     let dueHasTime: Bool
     let component: String
     /// Share of the grade at stake; -1 when unknown, so it sorts under every known weight.
@@ -141,6 +144,7 @@ struct ItemRow: Identifiable {
         title = o.title
         course = o.course?.displayName ?? ""
         due = o.due ?? .distantFuture
+        hasDue = o.due != nil
         dueHasTime = o.dueHasTime
         component = o.componentName ?? ""
         weight = o.pointsAtStake ?? -1
@@ -182,7 +186,7 @@ struct ItemTable: View {
                 TableColumn("Course", value: \.course) { row in Text(row.course).foregroundStyle(.secondary).lineLimit(1) }
                     .width(min: 100, ideal: 170)
             }
-            TableColumn("Due", value: \.due) { row in Text(Design.due(row.due, hasTime: row.dueHasTime)).monospacedDigit().lineLimit(1) }
+            TableColumn("Due", value: \.due) { row in Text(Design.due(row.hasDue ? row.due : nil, hasTime: row.dueHasTime)).monospacedDigit().lineLimit(1).foregroundStyle(row.hasDue ? .primary : .secondary) }
                 .width(min: 150, ideal: 200)
             TableColumn("Counts Toward", value: \.component) { row in Text(row.component.isEmpty ? "—" : row.component).foregroundStyle(row.component.isEmpty ? .tertiary : .secondary).lineLimit(1) }
                 .width(min: 90, ideal: 150)
@@ -211,9 +215,15 @@ struct ItemTable: View {
         } primaryAction: { ids in
             if let first = ids.first, ids.count == 1 { edit(first) }
         }
-        .onDeleteCommand { delete(selection) }
-        .focusedSceneValue(\.selectedItem, selection.count == 1 ? rows.first { selection.contains($0.id) }.map { SelectedItem(id: $0.id, done: $0.done) } : nil)   // Item ▸ Mark Done
+        .onDeleteCommand { delete(visibleSelection) }
+        .onChange(of: rows.map(\.id)) { _, ids in selection.formIntersection(ids) }   // a row that left the table (a filter, Show Done, another period) leaves the selection too, so nothing unseen is acted on
+        .focusedSceneValue(\.selectedItem, visibleSelection.count == 1 ? rows.first { visibleSelection.contains($0.id) }.map { row in
+            SelectedItem(id: row.id, done: row.done, mark: { mark(row.id, $0) })   // Item ▸ Mark Done, the way a click on the ring does it
+        } : nil)
     }
+
+    /// The selection, of the rows that are here.
+    private var visibleSelection: Set<UUID> { selection.intersection(rows.map(\.id)) }
 }
 
 /// What the chart is showing, set above it: a kicker, the deck (the day or the run of days under the pointer, else
@@ -305,6 +315,10 @@ private struct TermChart: View {
     let marked: Set<Date>
     let calendar: Calendar
     @FocusState private var focused: Bool
+    /// Where the choice was begun and where its moving end is, as days along the chart: Shift and an arrow move the
+    /// moving end, so a run stretches or shrinks either way from where it began.
+    @State private var anchor: Int?
+    @State private var cursor: Int?
 
     fileprivate struct Geometry {
         static let labelWidth: CGFloat = 176, monthTier: CGFloat = 22, weekTier: CGFloat = 18, row: CGFloat = 38, foot: CGFloat = 22
@@ -342,16 +356,21 @@ private struct TermChart: View {
                     .onChanged { value in
                         guard value.startLocation.x >= g.plotX, value.startLocation.y >= g.bandsTop, abs(value.translation.width) >= 4,
                               let a = g.day(at: value.startLocation.x), let b = g.day(at: value.location.x) else { return }
-                        chosen = DateInterval(start: data.periods[min(a, b)].start, end: data.periods[max(a, b)].end)   // a drag chooses the run of days it covers
+                        pointer.day = nil   // the header reads the choice while it is being made
+                        choose(from: a, to: b)   // a drag chooses the run of days it covers
                     }
                     .onEnded { value in
                         focused = true
                         guard abs(value.translation.width) < 4, value.startLocation.x >= g.plotX, let a = g.day(at: value.startLocation.x) else { return }
+                        pointer.day = nil   // the header reads what was just chosen; the next move of the pointer reads again
                         let day = data.periods[a]
-                        if value.startLocation.y < g.bandsTop {   // a click on the axis: the week
-                            chosen = calendar.dateInterval(of: .weekOfYear, for: day.start)
+                        if value.startLocation.y < g.bandsTop, let week = calendar.dateInterval(of: .weekOfYear, for: day.start),   // a click on the axis: the week
+                           let first = data.periods.firstIndex(where: { $0.end > week.start }), let last = data.periods.lastIndex(where: { $0.start < week.end }) {
+                            choose(from: first, to: last)
+                        } else if chosen == day {
+                            chosen = nil; anchor = nil; cursor = nil   // the same day again lets it go
                         } else {
-                            chosen = chosen == day ? nil : day   // the same day again lets it go
+                            choose(from: a, to: a)
                         }
                     })
         }
@@ -363,7 +382,7 @@ private struct TermChart: View {
             step(press.key == .leftArrow ? -1 : 1, stretch: press.modifiers.contains(.shift))
             return .handled
         }
-        .onKeyPress(.escape) { guard chosen != nil else { return .ignored }; chosen = nil; return .handled }
+        .onKeyPress(.escape) { guard chosen != nil else { return .ignored }; chosen = nil; anchor = nil; cursor = nil; return .handled }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("The term, day by day")
         .accessibilityChildren {   // VoiceOver's path through the term: each week with something in it, and choosing it as its action
@@ -386,23 +405,33 @@ private struct TermChart: View {
         return seen.values.sorted { $0.start < $1.start }
     }
 
-    /// The arrow keys: the chosen day moves a day (Shift stretches the choice instead); with nothing chosen, today is.
+    /// The days from one to another, whichever way round, as the choice; `from` is where it was begun.
+    private func choose(from start: Int, to end: Int) {
+        let days = data.periods
+        chosen = DateInterval(start: days[min(start, end)].start, end: days[max(start, end)].end)
+        anchor = start; cursor = end
+    }
+
+    /// The arrow keys: the chosen day moves a day, and Shift stretches the choice from where it was begun (either
+    /// way); with nothing chosen, today is.
     private func step(_ by: Int, stretch: Bool) {
         let days = data.periods
         guard !days.isEmpty else { return }
+        pointer.day = nil   // the header reads the choice as the keys move it
         let today = calendar.startOfDay(for: Date())
-        guard let chosen else {
-            chosen = days.first { $0.start == today } ?? days[0]
+        guard let chosen, let first = days.firstIndex(where: { $0.end > chosen.start }), let last = days.lastIndex(where: { $0.start < chosen.end }) else {
+            let at = days.firstIndex { $0.start == today } ?? 0
+            choose(from: at, to: at)
             return
         }
-        let first = days.firstIndex { $0.start == chosen.start } ?? 0
-        let last = days.lastIndex { $0.start < chosen.end } ?? first
+        // The begun end and the moving one, unless the choice was made some other way (then from its start to its end).
+        var from = first, to = last
+        if let anchor, let cursor, min(anchor, cursor) == first, max(anchor, cursor) == last { from = anchor; to = cursor }
         if stretch {
-            let end = min(max(last + by, first), days.count - 1)
-            self.chosen = DateInterval(start: days[first].start, end: days[end].end)
+            choose(from: from, to: min(max(to + by, 0), days.count - 1))
         } else {
-            let at = min(max((by < 0 ? first : last) + by, 0), days.count - 1)
-            self.chosen = days[at]
+            let at = min(max((by < 0 ? min(from, to) : max(from, to)) + by, 0), days.count - 1)
+            choose(from: at, to: at)
         }
     }
 

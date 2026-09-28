@@ -18,7 +18,10 @@ struct MacReviewPage: View {
     @State private var preview: URL?
 
     private var pending: [Obligation] { obligations.filter { $0.deletedAt == nil && $0.state == .pendingReview && $0.completedAt == nil } }   // done needs no review
+    /// The selected items that are still waiting: an item that left (confirmed in its editor, read again) is no
+    /// longer acted on, whatever the table's selection still holds.
     private var chosen: [Obligation] { pending.filter { selection.contains($0.id) } }
+    private var chosenIDs: Set<UUID> { Set(chosen.map(\.id)) }
     /// The one selected item's document, when its file is on this Mac.
     private var chosenDocument: SourceDocument? {
         guard chosen.count == 1, let doc = chosen.first?.sourceDocument, model.hasFile(doc) else { return nil }
@@ -45,7 +48,7 @@ struct MacReviewPage: View {
                         table(rows)
                     }
                     .frame(minWidth: 400, maxWidth: .infinity)
-                    ReviewDetail(items: chosen, confirm: { confirm(selection) }, edit: { editing = chosen.first }, discard: { discard(selection) },
+                    ReviewDetail(items: chosen, confirm: { confirm(chosenIDs) }, edit: { editing = chosen.first }, discard: { discard(chosenIDs) },
                                  open: { doc in preview = model.previewFile(for: doc) })
                         .frame(width: 340)
                 }
@@ -56,21 +59,30 @@ struct MacReviewPage: View {
         .toolbar {
             ToolbarSpacer(.fixed, placement: .primaryAction)   // the page's own, apart from the window's Add Document and Sync
             ToolbarItemGroup(placement: .primaryAction) {   // each is in the Item menu too
-                Button { confirm(selection) } label: { Label("Confirm", systemImage: "checkmark") }
-                    .help("Confirm the selection as it was read (⌘↩)").disabled(selection.isEmpty)
+                Button { confirm(chosenIDs) } label: { Label("Confirm", systemImage: "checkmark") }
+                    .help("Confirm the selection as it was read (⌘↩)").disabled(chosen.isEmpty)
                 Button { editing = chosen.first } label: { Label("Edit", systemImage: "pencil") }
                     .help("Fix the selected item").disabled(chosen.count != 1)
                 Button { if let chosenDocument { preview = model.previewFile(for: chosenDocument) } } label: { Label("Open Document", systemImage: "doc.text.magnifyingglass") }
                     .help("Open the document the item was read from").disabled(chosenDocument == nil)
-                Button { discard(selection) } label: { Label("Discard", systemImage: "trash") }
-                    .help("Discard the selection: it was never an item").disabled(selection.isEmpty)
+                Button { discard(chosenIDs) } label: { Label("Discard", systemImage: "trash") }
+                    .help("Discard the selection: it was never an item").disabled(chosen.isEmpty)
             }
         }
-        .focusedSceneValue(\.reviewActions, selection.isEmpty ? nil : ReviewActions(count: selection.count, confirm: { confirm(selection) }, discard: { discard(selection) }))
+        .focusedSceneValue(\.reviewActions, chosen.isEmpty ? nil : ReviewActions(count: chosen.count, confirm: { confirm(chosenIDs) }, discard: { discard(chosenIDs) }))
         .sheet(item: $editing) { ObligationEditor(mode: .review($0), courses: courses) }
         .quickLookPreview($preview)
         .onAppear {   // the first item is up for review at once, its page beside it
             if selection.isEmpty, let first = rows.first { selection = [first.id] }
+        }
+        .onChange(of: rows.map(\.id)) { old, new in   // an item left the queue (its editor confirmed it, a read changed it): the one in its place comes up
+            let kept = selection.intersection(new)
+            guard kept.count < selection.count else { return }
+            if kept.isEmpty, let gone = old.firstIndex(where: { selection.contains($0) }), !new.isEmpty {
+                selection = [new[min(gone, new.count - 1)]]
+            } else {
+                selection = kept
+            }
         }
     }
 
@@ -107,7 +119,7 @@ struct MacReviewPage: View {
         } primaryAction: { ids in
             if ids.count == 1, let id = ids.first { editing = pending.first { $0.id == id } }
         }
-        .onDeleteCommand { discard(selection) }
+        .onDeleteCommand { discard(chosenIDs) }
     }
 
     private func confirm(_ ids: Set<UUID>) {
@@ -186,11 +198,9 @@ private struct ReviewDetail: View {
         .padding(.top, 24)
         if let doc = item.sourceDocument {
             RailSection("Read from") {
-                Text([doc.displayName, item.sourcePage.map { "page \($0 + 1)" }].compactMap { $0 }.joined(separator: ", ")).font(.subheadline)   // pages are kept from 0
-                SourcePage(document: doc, page: item.sourcePage, mark: item.dateAsWritten)
+                SourcePage(document: doc, from: item.sourcePage, words: [item.dateAsWritten, item.title].compactMap { $0 }.filter { !$0.isEmpty })
                     .onTapGesture { if model.hasFile(doc) { open(doc) } }
                     .help("Open the document")
-                    .padding(.top, 4)
             }
             .padding(.top, 24)
         }
@@ -211,24 +221,38 @@ private struct ReviewDetail: View {
     }
 }
 
-/// The page an item was read from: a PDF's page drawn small, with the words its date was read from marked in the
-/// accent where the page has them; a picture as it is. Nothing for a document with no pages to draw (Word, text).
+/// The page an item was read from, named and drawn small: for a PDF, the page where its date is written, found by
+/// its words (the part a read began with is all `sourcePage` knows, and Claude reads a whole PDF as one part), those
+/// words marked in the accent; a picture as it is. When the words are nowhere in a PDF (a scan with no text), the
+/// page the part began with is drawn under the document's name alone, without claiming a page number. Nothing is
+/// drawn for a document with no pages (Word, text), or one whose file is on another device. The file is opened and
+/// searched off the main thread.
 private struct SourcePage: View {
     let document: SourceDocument
-    let page: Int?
-    let mark: String?
+    /// Where the part it was read from began, from 0.
+    let from: Int?
+    /// What to look for on the pages, most telling first: the date's wording, then the item's name.
+    let words: [String]
     @Environment(AppModel.self) private var model
-    @State private var image: NSImage?
-    @State private var marks: [CGRect] = []   // where the words are, in fractions of the page, from its top left
+    @State private var found: Found?
+
+    struct Found: @unchecked Sendable {   // an image made off the main thread, handed over once and never changed
+        var image: NSImage
+        /// The page shown, from 0, when the words were found there.
+        var page: Int?
+        /// Where the words are on it, in fractions of the page from its top left.
+        var marks: [CGRect]
+    }
 
     var body: some View {
-        VStack(spacing: 0) {   // a container that is there before the page is: a task on an empty group never runs
-            if let image {
-                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
+        VStack(alignment: .leading, spacing: 8) {   // a container that is there before the page is: a task on an empty group never runs
+            Text([document.displayName, found?.page.map { "page \($0 + 1)" }].compactMap { $0 }.joined(separator: ", ")).font(.subheadline)
+            if let found {
+                Image(nsImage: found.image).resizable().aspectRatio(contentMode: .fit)
                     .overlay {
                         GeometryReader { g in
-                            ForEach(marks.indices, id: \.self) { i in
-                                let r = marks[i]
+                            ForEach(found.marks.indices, id: \.self) { i in
+                                let r = found.marks[i]
                                 RoundedRectangle(cornerRadius: 2).fill(Design.accent.opacity(0.4))
                                     .frame(width: r.width * g.size.width + 4, height: r.height * g.size.height + 2)
                                     .position(x: r.midX * g.size.width, y: r.midY * g.size.height)
@@ -237,31 +261,43 @@ private struct SourcePage: View {
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                     .shadow(color: .black.opacity(0.18), radius: 8, y: 2)   // a sheet laid on the paper
-                    .accessibilityLabel("The page the item was read from")
+                    .accessibilityLabel(found.page.map { "Page \($0 + 1) of the document" } ?? "The document")
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 1, alignment: .leading)
-        .task(id: "\(document.sha256)-\(page ?? 0)-\(mark ?? "")") { load() }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .task(id: "\(document.sha256)-\(from ?? 0)-\(words.joined(separator: "|"))") {
+            found = nil
+            let url = model.storage.url(sha256: document.sha256, extension: document.kind)
+            let isPDF = document.kind.lowercased() == "pdf", from = from ?? 0, words = words
+            found = await Task.detached(priority: .userInitiated) { Self.load(url, isPDF: isPDF, from: from, words: words) }.value
+        }
     }
 
-    private func load() {
-        image = nil; marks = []
-        let url = model.storage.url(sha256: document.sha256, extension: document.kind)
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        if document.kind.lowercased() == "pdf", let pdf = PDFDocument(url: url), pdf.pageCount > 0,
-           let p = pdf.page(at: min(max(page ?? 0, 0), pdf.pageCount - 1)) {   // pages are kept from 0
-            let bounds = p.bounds(for: .mediaBox)
-            image = p.thumbnail(of: CGSize(width: 680, height: 680 * bounds.height / max(bounds.width, 1)), for: .mediaBox)
-            if let mark, !mark.isEmpty {
-                marks = pdf.findString(mark, withOptions: [.caseInsensitive]).filter { $0.pages.contains(p) }.map { selection in
-                    let r = selection.bounds(for: p)
-                    return CGRect(x: (r.minX - bounds.minX) / bounds.width, y: 1 - (r.maxY - bounds.minY) / bounds.height,
-                                  width: r.width / bounds.width, height: r.height / bounds.height)
-                }
-            }
-        } else if let picture = NSImage(contentsOf: url) {   // a screenshot, a photo
-            image = picture
+    nonisolated private static func load(_ url: URL, isPDF: Bool, from: Int, words: [String]) -> Found? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        guard isPDF else { return NSImage(contentsOf: url).map { Found(image: $0, page: nil, marks: []) } }   // a screenshot, a photo
+        guard let pdf = PDFDocument(url: url), pdf.pageCount > 0 else { return nil }
+        // The first of the words the document has, on the first page at or after where the part began (else anywhere).
+        var hit: (page: PDFPage, selections: [PDFSelection])?
+        for word in words {
+            let selections = pdf.findString(word, withOptions: [.caseInsensitive])
+            guard !selections.isEmpty else { continue }
+            let pages = selections.compactMap(\.pages.first)
+            let chosen = pages.first { pdf.index(for: $0) >= from } ?? pages[0]
+            hit = (chosen, selections.filter { $0.pages.contains(chosen) })
+            break
         }
+        let page = hit?.page ?? pdf.page(at: min(max(from, 0), pdf.pageCount - 1))
+        guard let page else { return nil }
+        let bounds = page.bounds(for: .mediaBox)
+        let image = page.thumbnail(of: CGSize(width: 680, height: 680 * bounds.height / max(bounds.width, 1)), for: .mediaBox)
+        // Marks only on an upright page: a rotated one draws turned, and its words' bounds would not line up.
+        let marks = page.rotation != 0 ? [] : (hit?.selections ?? []).map { selection -> CGRect in
+            let r = selection.bounds(for: page)
+            return CGRect(x: (r.minX - bounds.minX) / bounds.width, y: 1 - (r.maxY - bounds.minY) / bounds.height,
+                          width: r.width / bounds.width, height: r.height / bounds.height)
+        }
+        return Found(image: image, page: hit.map { _ in pdf.index(for: page) }, marks: marks)
     }
 }
 
@@ -272,7 +308,7 @@ struct ReviewActions {
     var discard: () -> Void
 }
 
-/// An item waiting for review, as a table row.
+/// An item waiting for review, as a table row: what it sorts by.
 struct ReviewRow: Identifiable {
     let id: UUID
     let title: String
@@ -280,15 +316,8 @@ struct ReviewRow: Identifiable {
     let due: Date
     let hasDue: Bool
     let dueHasTime: Bool
-    let readAs: String
-    /// What the guards found, or what a later read changed.
-    let why: String
-    let changed: Bool
-    let confidence: Double
     /// Share of the grade at stake; -1 when unknown.
     let weight: Double
-    /// The document and page it was read from.
-    let source: String
 
     @MainActor init(_ o: Obligation) {
         id = o.id
@@ -297,13 +326,7 @@ struct ReviewRow: Identifiable {
         due = o.due ?? .distantFuture
         hasDue = o.due != nil
         dueHasTime = o.dueHasTime
-        readAs = o.dateAsWritten ?? ""
-        changed = o.changeNote != nil
-        let flags = o.reviewFlags
-        why = o.changeNote ?? (flags.isEmpty ? "Low confidence" : (flags.joined(separator: ", ").prefix(1).uppercased() + flags.joined(separator: ", ").dropFirst()))
-        confidence = o.confidence
         weight = o.pointsAtStake ?? -1
-        source = [o.sourceDocument?.displayName, o.sourcePage.map { "p. \($0 + 1)" }].compactMap { $0 }.joined(separator: " · ")
     }
 }
 #endif

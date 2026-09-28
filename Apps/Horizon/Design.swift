@@ -119,28 +119,18 @@ extension View {
     }
 }
 
-/// A section of a page with a kicker over it. On iOS the kicker is the section's header; on a Mac it is the section's
-/// first row, since a plain list there pins a header on a band of window grey with a rule under it, off the paper.
+/// A section of a page with its kicker as the header (the iOS course page). A Mac's plain list would pin such a
+/// header on a band of window grey, off the paper: a Mac page sets its kickers as rows or in its own columns.
 struct PageSection<Content: View>: View {
     let kicker: String
-    var accent = false
-    /// Air above the kicker on a Mac, where it parts this section from the one before.
-    var spacing: CGFloat = 28
     @ViewBuilder var content: Content
 
-    init(_ kicker: String, accent: Bool = false, spacing: CGFloat = 28, @ViewBuilder content: () -> Content) {
-        self.kicker = kicker; self.accent = accent; self.spacing = spacing; self.content = content()
+    init(_ kicker: String, @ViewBuilder content: () -> Content) {
+        self.kicker = kicker; self.content = content()
     }
 
     var body: some View {
-        #if os(macOS)
-        Section {
-            Kicker(kicker, accent: accent).pageRow(top: spacing, bottom: 4).selectionDisabled().accessibilityAddTraits(.isHeader)
-            content
-        }
-        #else
-        Section { content } header: { Kicker(kicker, accent: accent) }
-        #endif
+        Section { content } header: { Kicker(kicker) }
     }
 }
 

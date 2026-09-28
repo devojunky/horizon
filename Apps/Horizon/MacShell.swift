@@ -38,10 +38,13 @@ import AppKit
     var confirmingReplan = false
 }
 
-/// The item highlighted on a course's page, for the menu bar's Item commands.
+/// The item selected in a table of items, for the menu bar's Item commands.
 struct SelectedItem: Equatable {
     var id: UUID
     var done: Bool
+    /// Checks it off, or back on, the way its page does (a row just checked lingers where it was for a moment).
+    var mark: (Bool) -> Void
+    static func == (a: SelectedItem, b: SelectedItem) -> Bool { a.id == b.id && a.done == b.done }
 }
 
 extension FocusedValues {
@@ -140,8 +143,8 @@ struct MacRootView: View {
     }
 }
 
-/// The areas of the app, what waits in two of them as badges, and the courses, in Coverage's order (the user's own,
-/// by dragging here or there). A course's row opens its page; its menu edits or deletes it, and so does the Delete key.
+/// The areas of the app, what waits in two of them as badges, and the courses in the user's own order (dragged here),
+/// else by name. A course's row opens its page; its menu edits or deletes it, and so does the Delete key.
 private struct Sidebar: View {
     @Bindable var nav: MacNavigation
     @Environment(AppModel.self) private var model
@@ -153,7 +156,18 @@ private struct Sidebar: View {
 
     private var toReview: Int { obligations.filter { $0.state == .pendingReview && $0.completedAt == nil }.count }   // done needs no review
     private var binned: Int { binnedCourses.count + deletedDocuments.filter(\.isBinned).count }
-    private var ordered: [CourseCoverage] { Coverage.stories(courses: courses, obligations: obligations, documents: documents) }
+    /// The user's own order, then by name: a sidebar row stays where it is (Coverage puts the most suspicious
+    /// first, which moves as items are checked off; a place to go to must not).
+    private var ordered: [Course] {
+        courses.sorted { a, b in
+            switch (a.sortOrder, b.sortOrder) {
+            case (let x?, let y?): x < y
+            case (.some, nil): true
+            case (nil, .some): false
+            case (nil, nil): a.displayName.localizedStandardCompare(b.displayName) == .orderedAscending
+            }
+        }
+    }
 
     var body: some View {
         List(selection: Binding(get: { Optional(nav.destination) }, set: { if let chosen = $0 { nav.destination = chosen } })) {
@@ -169,16 +183,16 @@ private struct Sidebar: View {
             }
             if !ordered.isEmpty {
                 Section("Courses") {   // last, the way a Mac lists what grows (Music's playlists, Reminders' lists)
-                    ForEach(ordered) { story in
-                        Label { Text(story.displayName) } icon: { SidebarIcon(symbol: "book.closed") }
-                            .tag(MacNavigation.Destination.course(story.course.id))
+                    ForEach(ordered) { course in
+                        Label { Text(course.displayName) } icon: { SidebarIcon(symbol: "book.closed") }
+                            .tag(MacNavigation.Destination.course(course.id))
                             .contextMenu {
-                                Button("Edit Course…") { nav.editingCourse = story.course.id }
-                                Button("Delete Course", role: .destructive) { Task { await model.deleteCourse(story.course.id) } }
+                                Button("Edit Course…") { nav.editingCourse = course.id }
+                                Button("Delete Course", role: .destructive) { Task { await model.deleteCourse(course.id) } }
                             }
                     }
                     .onMove { from, to in
-                        var order = ordered.map(\.course.id)
+                        var order = ordered.map(\.id)
                         order.move(fromOffsets: from, toOffset: to)
                         Task { await model.reorderCourses(order) }
                     }
@@ -484,7 +498,7 @@ struct HorizonCommands: Commands {
                 .keyboardShortcut(.delete, modifiers: .command).disabled(nav?.course == nil)
         }
         CommandMenu("Item") {   // the item selected in a table (a course's items, Horizon's), and those selected in Review
-            Button(item?.done == true ? "Mark Not Done" : "Mark Done") { if let item { Task { await model.setCompleted(item.id, !item.done) } } }
+            Button(item?.done == true ? "Mark Not Done" : "Mark Done") { if let item { item.mark(!item.done) } }
                 .keyboardShortcut("d", modifiers: [.command, .shift]).disabled(item == nil)
             Divider()
             Button(review.map { $0.count == 1 ? "Confirm" : "Confirm \($0.count) Items" } ?? "Confirm") { review?.confirm() }

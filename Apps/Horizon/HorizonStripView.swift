@@ -440,7 +440,6 @@ struct HorizonStripView: View {
         .accessibilityHidden(true)
     }
 
-    /// Over the list: what it is a list of, and, for a chosen bar, the way back to what is coming up.
     /// Under the strip: the chosen period's items, else what is coming up.
     @ViewBuilder private func comingUp(_ listed: [Obligation], data: StripData) -> some View {
         ForEach(listed) { obligation in
@@ -450,11 +449,11 @@ struct HorizonStripView: View {
                 .obligationActions(done: obligation.completedAt != nil, mark: { mark(obligation.id, $0) }, edit: { editing = obligation },
                                    delete: { Task { await model.discard(obligation.id) } })
                 .accessibilityHint("Opens the editor")
-                .macRow(top: 4, bottom: 4)
         }
-        if listed.isEmpty { Text(chosen == nil ? "Nothing coming up." : "Nothing due.").foregroundStyle(.secondary).id("nothing").macRow() }
+        if listed.isEmpty { Text(chosen == nil ? "Nothing coming up." : "Nothing due.").foregroundStyle(.secondary).id("nothing") }
     }
 
+    /// Over the list: what it is a list of, and, for a chosen bar, the way back to what is coming up.
     private func listHeader(_ data: StripData) -> some View {
         HStack(alignment: .firstTextBaseline) {
             if let chosen {
