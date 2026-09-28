@@ -28,20 +28,67 @@ public struct PlanObligation: Sendable, Equatable, Codable {
     }
 }
 
+/// The part of a day the planner fills: from `start` to `end`, in hours after the midnight that begins the day. An end
+/// past 24 is that night, after midnight (26 is 2 AM): a late night belongs to the day it began, and so does its plan.
+public struct PlanHours: Sendable, Equatable, Codable {
+    public var start: Int
+    public var end: Int
+    public init(start: Int = 8, end: Int = 22) {
+        self.start = min(max(start, Self.starts.lowerBound), Self.starts.upperBound)
+        self.end = min(max(end, Self.ends.lowerBound), Self.ends.upperBound)
+    }
+    /// What the student may choose, in whole hours: a start from 5 AM to noon, an end from 6 PM to 4 AM.
+    public static let starts = 5...12
+    public static let ends = 18...28
+
+    /// `hour` of `day` as a moment: hours after the midnight that begins the day, past 24 for the night after.
+    public static func moment(_ hour: Int, on day: Date, calendar: Calendar) -> Date? {
+        let midnight = calendar.startOfDay(for: day)
+        guard let base = hour >= 24 ? calendar.date(byAdding: .day, value: 1, to: midnight) : midnight else { return nil }
+        return calendar.date(bySettingHour: hour % 24, minute: 0, second: 0, of: base)
+    }
+    public func opens(on day: Date, calendar: Calendar) -> Date? { Self.moment(start, on: day, calendar: calendar) }
+    public func closes(on day: Date, calendar: Calendar) -> Date? { Self.moment(end, on: day, calendar: calendar) }
+
+    /// The hour before which a moment belongs to the night before: the latest end a night can have (4 AM).
+    public static let nightEnds = ends.upperBound - 24
+
+    /// The day a moment belongs to: its own date, except the small hours (before 4 AM), which are the night before's.
+    public static func day(of moment: Date, calendar: Calendar) -> Date {
+        let midnight = calendar.startOfDay(for: moment)
+        guard calendar.component(.hour, from: moment) < nightEnds, let before = calendar.date(byAdding: .day, value: -1, to: midnight) else { return midnight }
+        return before
+    }
+
+    /// A block's hours on `day`'s plan, from times of day: the small hours are the night after (the next date), the rest
+    /// the day's own; an end at or before its start is the next day's when that is within six hours (a block across
+    /// midnight). Nil for one that still ends before it starts.
+    public static func span(from start: (hour: Int, minute: Int), to end: (hour: Int, minute: Int), on day: Date, calendar: Calendar) -> DateInterval? {
+        let midnight = calendar.startOfDay(for: day)
+        func place(_ t: (hour: Int, minute: Int)) -> Date? {
+            let base = t.hour < nightEnds ? calendar.date(byAdding: .day, value: 1, to: midnight) : midnight
+            return base.flatMap { calendar.date(bySettingHour: t.hour, minute: t.minute, second: 0, of: $0) }
+        }
+        guard let from = place(start), var to = place(end) else { return nil }
+        if to <= from, let next = calendar.date(byAdding: .day, value: 1, to: to), next.timeIntervalSince(from) <= 6 * 3600 { to = next }
+        return to > from ? DateInterval(start: from, end: to) : nil
+    }
+}
+
 public struct PlanInput: Sendable {
+    /// The day the plan is for. After midnight, in a night that runs past it, still the day the night began.
     public var date: Date
     public var now: Date
     public var busy: [PlanBusy]
     public var obligations: [PlanObligation]
     public var calendar: Calendar
-    /// The day the plan may use, as hours.
-    public var dayStart = 8
-    public var dayEnd = 22
+    /// The part of the day the plan may use: the student's usual hours, or tonight's end.
+    public var hours: PlanHours
     /// The student's own instructions, in their words: standing rules or today's. They outrank the planner's habits
     /// but not the fixed events, and they need the model (the plan by the numbers cannot read them).
     public var instructions: String?
-    public init(date: Date, now: Date, busy: [PlanBusy], obligations: [PlanObligation], calendar: Calendar = .current, instructions: String? = nil) {
-        self.date = date; self.now = now; self.busy = busy; self.obligations = obligations; self.calendar = calendar
+    public init(date: Date, now: Date, busy: [PlanBusy], obligations: [PlanObligation], calendar: Calendar = .current, hours: PlanHours = PlanHours(), instructions: String? = nil) {
+        self.date = date; self.now = now; self.busy = busy; self.obligations = obligations; self.calendar = calendar; self.hours = hours
         self.instructions = instructions.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 }
     }
 }
@@ -109,6 +156,13 @@ public struct DayPlan: Sendable, Equatable, Codable, Identifiable {
         return (current, next)
     }
     public var doneCount: Int { blocks.filter(\.isDone).count }
+
+    /// Until when the plan for `day` is kept: through its night (to the latest end a night can have, 4 AM), and while a
+    /// block of it is still on or asking. Then it goes, and the next plan starts from nothing.
+    public func kept(for day: Date, calendar: Calendar) -> Date {
+        let night = PlanHours.moment(PlanHours.ends.upperBound, on: day, calendar: calendar) ?? day.addingTimeInterval(28 * 3600)
+        return ([night] + blocks.map { $0.end.addingTimeInterval(Self.answerWindow) }).max() ?? night
+    }
 
     /// How long the question at the end of a work block ("finished?") stands. Unanswered by then, the block is taken as
     /// not finished: nothing is recorded (not done is where every block starts), and the question goes.
@@ -211,12 +265,10 @@ public actor DayPlanner {
         return subtract([day], input.busy.map { DateInterval(start: $0.start, end: max($0.start, $0.end)) }).filter { $0.duration >= 25 * 60 }
     }
 
-    /// The part of the day the plan may use by habit: from `dayStart` (or now) to `dayEnd`.
+    /// The part of the day the plan may use by habit: from the day's start (or now) to its end, past midnight when the
+    /// student works late.
     static func dayWindow(_ input: PlanInput) -> DateInterval? {
-        let calendar = input.calendar
-        let day = calendar.startOfDay(for: input.date)
-        guard let open = calendar.date(bySettingHour: input.dayStart, minute: 0, second: 0, of: day),
-              let close = calendar.date(bySettingHour: input.dayEnd, minute: 0, second: 0, of: day) else { return nil }
+        guard let open = input.hours.opens(on: input.date, calendar: input.calendar), let close = input.hours.closes(on: input.date, calendar: input.calendar) else { return nil }
         let start = max(open, input.now)
         return start < close ? DateInterval(start: start, end: close) : nil
     }
@@ -229,8 +281,8 @@ public actor DayPlanner {
 
     /// Where blocks may go once the model has said which events are study time (`open`, their numbers): the day's free
     /// time with only the other events as hard stops, and each study event whole (the student chose its hours, even
-    /// outside the planner's usual day), cut at every study event's edges so that no block crosses one. A window inside
-    /// a study event carries its number.
+    /// outside the day's), cut at every study event's edges so that no block crosses one. A window inside a study event
+    /// carries its number.
     struct Window: Equatable { var interval: DateInterval; var event: Int? }
 
     static func windows(in input: PlanInput, open: Set<Int>) -> [Window] {
@@ -487,7 +539,11 @@ public actor DayPlanner {
     static func prompt(for input: PlanInput, gaps: [DateInterval], open: Set<Int> = [], courses: [Int: String] = [:], ranked: [PlanObligation]) -> String {
         let calendar = input.calendar
         func clock(_ d: Date) -> String { let c = calendar.dateComponents([.hour, .minute], from: d); return String(format: "%02d:%02d", c.hour ?? 0, c.minute ?? 0) }
-        var lines = ["Today is \(input.date.formatted(.dateTime.weekday(.wide).month(.wide).day())). It is \(clock(input.now)) now."]
+        let afterMidnight = !calendar.isDate(input.now, inSameDayAs: input.date)
+        var lines = ["Today is \(input.date.formatted(.dateTime.weekday(.wide).month(.wide).day())). It is \(clock(input.now)) now\(afterMidnight ? ", after midnight" : "")."]
+        if input.hours.end > 24, let close = input.hours.closes(on: input.date, calendar: calendar) {   // so that 00:30 reads as later tonight, not this morning
+            lines.append("The student is working late: the day runs past midnight, until \(clock(close)).")
+        }
         let events = Self.events(in: input)
         let fixed = events.indices.filter { !open.contains($0 + 1) }, study = events.indices.filter { open.contains($0 + 1) }
         if fixed.isEmpty { lines.append("Fixed events: none.") } else {
@@ -533,11 +589,11 @@ public actor DayPlanner {
     /// edge of a study event. A block in a study event says so (`within`).
     static func validate(_ draft: PlanDraft, input: PlanInput, ranked: [PlanObligation], open: Set<Int> = [], courses: [Int: String] = [:]) -> [PlanBlock] {
         let calendar = input.calendar
-        let day = calendar.startOfDay(for: input.date)
-        func time(_ text: String) -> Date? {
+        /// "HH:mm" as hours and minutes; the day it falls on is `PlanHours.span`'s to say ("00:30" is tonight, after midnight).
+        func time(_ text: String) -> (hour: Int, minute: Int)? {
             let parts = text.trimmingCharacters(in: .whitespaces).split(separator: ":")
             guard parts.count == 2, let h = Int(parts[0]), let m = Int(parts[1]), (0...23).contains(h), (0...59).contains(m) else { return nil }
-            return calendar.date(bySettingHour: h, minute: m, second: 0, of: day)
+            return (h, m)
         }
         let events = Self.events(in: input)
         let windows = Self.windows(in: input, open: open)
@@ -545,7 +601,8 @@ public actor DayPlanner {
         var cursor = Date.distantPast
         var perItem: [String: Int] = [:]
         for b in draft.blocks {
-            guard var start = time(b.start), var end = time(b.end), end > start else { continue }
+            guard let opening = time(b.start), let closing = time(b.end), let span = PlanHours.span(from: opening, to: closing, on: input.date, calendar: calendar) else { continue }
+            var start = span.start, end = span.end
             let from = max(start, cursor)
             // The window the block starts in (or the first after that it reaches): a block that runs past a study event's
             // end stops there, one begun before it starts after its end is dropped with the rest of the overrun.

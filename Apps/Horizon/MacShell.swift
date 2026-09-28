@@ -87,10 +87,11 @@ struct MacRootView: View {
         .sheet(isPresented: $nav.addingBlock) { PlanBlockEditor(block: nil) }
         .sheet(isPresented: $nav.tellingPlanner) { PlannerNotesEditor() }
         .confirmationDialog("Replace the plan you edited?", isPresented: $nav.confirmingReplan, titleVisibility: .visible) {
-            Button("Plan Again", role: .destructive) { Task { await model.planToday() } }
+            Button("Plan Again", role: .destructive) { model.planAgain() }
         } message: {
             Text("Your changes to today's blocks are lost.")
         }
+        .onChange(of: nav.confirmingReplan) { _, asking in if !asking { model.pendingTonightEnd = nil } }   // not planned again: tonight's end stays as it was
         .onAppear {
             if MainTabs.debugFlag("--tab-horizon") { nav.page = .horizon }
             if MainTabs.debugFlag("--tab-now") { nav.page = .now }
@@ -459,6 +460,11 @@ struct HorizonCommands: Commands {
             .keyboardShortcut("p", modifiers: [.command, .shift]).disabled(model.planning)
             Button("Tell the Planner…") { nav?.tellingPlanner = true }.keyboardShortcut("t", modifiers: [.command, .option]).disabled(nav == nil)
             Button("Add Block…") { nav?.addingBlock = true }.disabled(nav == nil)
+            Divider()
+            Picker("Tonight Until", selection: Binding(get: { model.tonightEnd }, set: { if model.chooseTonightEnd($0) { nav?.confirmingReplan = true } })) {
+                ForEach(PlanHours.ends, id: \.self) { Text(PlanHours.choice($0, usual: model.usualPlanHours.end)).tag($0) }
+            }
+            .disabled(model.planning)
         }
         #if DEBUG
         CommandMenu("Debug") {

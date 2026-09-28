@@ -18,6 +18,68 @@ struct PlannerTests {
         #expect(DayPlanner.gaps(in: Self.input(now: Self.at(22, 30))).isEmpty)
     }
 
+    static func tomorrow(_ h: Int, _ m: Int = 0) -> Date { calendar.date(from: DateComponents(year: 2026, month: 9, day: 22, hour: h, minute: m))! }
+    static let essay = PlanObligation(title: "Essay", due: tomorrow(23, 59), points: 10)
+
+    @Test func aLateNightRunsPastMidnight() {
+        // Tonight until 2 AM: the free time runs past midnight, and the model's "00:30" is tonight, not this morning.
+        var input = Self.input(now: Self.at(21, 30), obligations: [Self.essay])
+        input.hours = PlanHours(end: 26)
+        #expect(DayPlanner.gaps(in: input) == [DateInterval(start: Self.at(21, 30), end: Self.tomorrow(2))])
+        let draft = PlanDraft(blocks: [
+            PlanDraftBlock(start: "21:30", end: "22:20", title: "Essay", reason: "Tomorrow.", kind: "work"),
+            PlanDraftBlock(start: "23:30", end: "00:20", title: "Essay", reason: "Across midnight.", kind: "work"),
+            PlanDraftBlock(start: "00:30", end: "00:50", title: "Break", reason: "A breather.", kind: "rest"),
+            PlanDraftBlock(start: "01:00", end: "02:30", title: "Reading", reason: "Past the end: clipped.", kind: "work"),
+            PlanDraftBlock(start: "03:00", end: "02:00", title: "Nonsense", reason: "", kind: "work"),   // ends before it starts, even across midnight
+        ])
+        let blocks = DayPlanner.validate(draft, input: input, ranked: DayPlanner.ranked(input))
+        #expect(blocks.map(\.start) == [Self.at(21, 30), Self.at(23, 30), Self.tomorrow(0, 30), Self.tomorrow(1)])
+        #expect(blocks.map(\.end) == [Self.at(22, 20), Self.tomorrow(0, 20), Self.tomorrow(0, 50), Self.tomorrow(2)])
+        #expect(DayPlanner.prompt(for: input, gaps: DayPlanner.gaps(in: input), ranked: DayPlanner.ranked(input)).contains("the day runs past midnight, until 02:00"))
+        // The usual hours stop at 10.
+        #expect(DayPlanner.gaps(in: Self.input(now: Self.at(21, 30))) == [DateInterval(start: Self.at(21, 30), end: Self.at(22))])
+        // Hours outside what can be chosen are brought inside.
+        #expect(PlanHours(start: 3, end: 30) == PlanHours(start: 5, end: 28))
+    }
+
+    @Test func theSmallHoursBelongToTheNightBefore() {
+        let cal = Self.calendar
+        // Up to 4 AM, a moment is the night before's; from 4, its own day's.
+        #expect(PlanHours.day(of: Self.tomorrow(1, 30), calendar: cal) == Self.at(0) && PlanHours.day(of: Self.tomorrow(4), calendar: cal) == Self.tomorrow(0))
+        // A block's hours: the small hours are tonight's, an end before its start crosses midnight only within six hours.
+        #expect(PlanHours.span(from: (23, 30), to: (0, 20), on: Self.at(0), calendar: cal) == DateInterval(start: Self.at(23, 30), end: Self.tomorrow(0, 20)))
+        #expect(PlanHours.span(from: (3, 0), to: (4, 0), on: Self.at(0), calendar: cal) == DateInterval(start: Self.tomorrow(3), end: Self.tomorrow(4)))
+        #expect(PlanHours.span(from: (14, 0), to: (13, 0), on: Self.at(0), calendar: cal) == nil)
+        // A plan is kept through its night, and while a block of it still runs or asks.
+        let plan = DayPlan(blocks: [PlanBlock(start: Self.at(21), end: Self.at(22), title: "Essay", reason: "", kind: .work)])
+        #expect(plan.kept(for: Self.at(0), calendar: cal) == Self.tomorrow(4))
+        let late = DayPlan(blocks: [PlanBlock(start: Self.tomorrow(3, 30), end: Self.tomorrow(4, 30), title: "Essay", reason: "", kind: .work)])
+        #expect(late.kept(for: Self.at(0), calendar: cal) == Self.tomorrow(4, 45))
+    }
+
+    @Test func afterMidnightTheNightIsStillTheDayItBegan() {
+        // 00:30 on the 22nd, in the night of the 21st, which runs until 2 AM: the essay due on the 22nd is tomorrow's.
+        var input = Self.input(now: Self.tomorrow(0, 30), obligations: [Self.essay])
+        input.hours = PlanHours(end: 26)
+        #expect(DayPlanner.gaps(in: input) == [DateInterval(start: Self.tomorrow(0, 30), end: Self.tomorrow(2))])
+        let prompt = DayPlanner.prompt(for: input, gaps: DayPlanner.gaps(in: input), ranked: DayPlanner.ranked(input))
+        #expect(prompt.contains("It is 00:30 now, after midnight.") && prompt.contains("- 00:30–02:00") && prompt.contains("Essay · tomorrow"))
+        let blocks = DayPlanner.validate(PlanDraft(blocks: [PlanDraftBlock(start: "00:30", end: "01:20", title: "Essay", reason: "Tomorrow.", kind: "work")]),
+                                         input: input, ranked: DayPlanner.ranked(input))
+        #expect(blocks.map(\.start) == [Self.tomorrow(0, 30)] && blocks.map(\.end) == [Self.tomorrow(1, 20)])
+    }
+
+    @Test func aStudyEventThatRunsPastMidnightIsFilledPastIt() {
+        // The usual hours end at 10, but the student booked the library until 1 AM: its hours are theirs, midnight included.
+        let library = PlanBusy(title: "Lock in at library", start: Self.at(21), end: Self.tomorrow(1))
+        let input = Self.input(now: Self.at(20), busy: [library], obligations: [Self.essay])
+        let draft = PlanDraft(blocks: [PlanDraftBlock(start: "21:00", end: "22:30", title: "Essay", reason: "Tomorrow.", kind: "work"),
+                                       PlanDraftBlock(start: "23:45", end: "00:40", title: "Essay", reason: "Finish the draft.", kind: "work")])
+        let blocks = DayPlanner.validate(draft, input: input, ranked: DayPlanner.ranked(input), open: [1])
+        #expect(blocks.map(\.end) == [Self.at(22, 30), Self.tomorrow(0, 40)] && blocks.allSatisfy { $0.within == "Lock in at library" })
+    }
+
     @Test func rankingIsNearestDeadlineThenWeight() {
         let items = [PlanObligation(title: "HW 4", due: Self.at(23), points: 1.5), PlanObligation(title: "Exam 1", due: Self.at(23).addingTimeInterval(86400), points: 25),
                      PlanObligation(title: "Quiz 3", due: Self.at(23), points: 6), PlanObligation(title: "Old", due: Self.at(0).addingTimeInterval(-86400), points: 30)]

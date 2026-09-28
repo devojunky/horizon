@@ -38,8 +38,8 @@ struct NowView: View {
                         PlanList(blocks: model.planning ? model.planDraft : plan?.blocks ?? [], note: model.planning ? nil : plan?.note,
                                  now: context.date, asking: model.planning ? nil : plan?.awaitingAnswer(at: context.date)?.id,
                                  streaming: model.planning, revealed: model.planning || model.planStreamed || revealed == plan?.id,
-                                 reduceMotion: reduceMotion, edit: { editing = $0 }, delete: { model.deleteBlock($0) },
-                                 mark: { model.markBlock($0, done: $1) }, skip: { model.skipBlock($0, skipped: $1) })
+                                 reduceMotion: reduceMotion, until: model.tonightEnd, usualEnd: model.usualPlanHours.end, edit: { editing = $0 }, delete: { model.deleteBlock($0) },
+                                 mark: { model.markBlock($0, done: $1) }, skip: { model.skipBlock($0, skipped: $1) }, chooseEnd: chooseEnd)
                             .onChange(of: context.date) { _, _ in Task { await model.syncActivity() } }   // the minute turns: the activity may have a new block on
                     }
                     .onAppear { if let plan { reveal(plan.id) } }
@@ -52,6 +52,10 @@ struct NowView: View {
                             Button("Tell the Planner…") { telling = true }
                         }
                         .padding(.horizontal, 20)
+                        TonightUntil(end: model.tonightEnd, usual: model.usualPlanHours.end, choose: chooseEnd)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 20)
                         if !model.planInstructions.isEmpty {
                             VStack(alignment: .leading, spacing: 8) {
                                 Hairline()
@@ -96,10 +100,11 @@ struct NowView: View {
                 #endif
             }
             .confirmationDialog("Replace the plan you edited?", isPresented: $confirmingReplan, titleVisibility: .visible) {
-                Button("Plan Again", role: .destructive) { Task { await model.planToday() } }
+                Button("Plan Again", role: .destructive) { model.planAgain() }
             } message: {
                 Text("Your changes to today's blocks are lost.")
             }
+            .onChange(of: confirmingReplan) { _, asking in if !asking { model.pendingTonightEnd = nil } }   // not planned again: tonight's end stays as it was
             .sheet(item: $editing) { PlanBlockEditor(block: $0) }
             .sheet(isPresented: $adding) { PlanBlockEditor(block: nil) }
             .sheet(isPresented: $telling) { PlannerNotesEditor() }
@@ -122,6 +127,11 @@ struct NowView: View {
                 #endif
             }
         }
+    }
+
+    /// Tonight's end chosen: the plan on file is made again up to it, after asking when it was edited by hand.
+    private func chooseEnd(_ end: Int) {
+        if model.chooseTonightEnd(end) { confirmingReplan = true }
     }
 
     /// A plan that came all at once (by the numbers, or loaded) reveals its rows one after another; one that streamed
@@ -150,10 +160,14 @@ private struct PlanList: View {
     let streaming: Bool
     let revealed: Bool
     let reduceMotion: Bool
+    /// Tonight's end, and the usual one, for the line at the foot of the timetable.
+    let until: Int
+    let usualEnd: Int
     var edit: (PlanBlock) -> Void
     var delete: (UUID) -> Void
     var mark: (UUID, Bool) -> Void
     var skip: (UUID, Bool) -> Void
+    var chooseEnd: (Int) -> Void
 
     private var done: Int { blocks.filter(\.isDone).count }
 
@@ -212,13 +226,19 @@ private struct PlanList: View {
                         .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
                         .listRowSeparator(.hidden)
                         .accessibilityLabel("Planning the rest")
-                    } else if blocks.isEmpty {
-                        Text("Nothing planned. Add a block, or plan again.").foregroundStyle(.secondary).listRowSeparator(.hidden)
+                    } else {
+                        if blocks.isEmpty { Text("Nothing planned. Add a block, or plan again.").foregroundStyle(.secondary).listRowSeparator(.hidden) }
+                        // Where the plan stops, the choice of where it stops tonight.
+                        TonightUntil(end: until, usual: usualEnd, choose: chooseEnd)
+                            .padding(.leading, blocks.isEmpty ? 0 : 92 + 34)   // under the words, past the time column and the rail
+                            .padding(.vertical, 14)
+                            .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+                            .listRowSeparator(.hidden)
                     }
                 } header: {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Kicker(now.formatted(.dateTime.weekday(.wide).month(.wide).day()))
+                            Kicker(PlanHours.day(of: now, calendar: .current).formatted(.dateTime.weekday(.wide).month(.wide).day()))   // after midnight, the night's own day
                             Spacer()
                             Kicker(now.formatted(date: .omitted, time: .shortened))
                         }
@@ -382,4 +402,40 @@ struct BlockRow: View {
     static func kindName(_ kind: PlanBlock.Kind) -> String {
         switch kind { case .work: "Work"; case .study: "Study"; case .meal: "Meal"; case .rest: "Rest"; case .fixed: "Calendar" }
     }
+}
+
+/// Where the plan stops tonight: "Tonight until 10 PM", the time a pop-up button of the ends one may choose, 6 PM to 4 AM.
+/// A change is for this night only (Health's one-time sleep change, not its schedule); the usual hours are in Tell the
+/// Planner, and the menu marks the usual end so the difference shows.
+struct TonightUntil: View {
+    let end: Int
+    let usual: Int
+    var choose: (Int) -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {   // the pop-up button brings its own inset
+            Text("Tonight until").foregroundStyle(.secondary).accessibilityHidden(true)   // the pop-up says it
+            // The system's pop-up button on both platforms: the time alone on the button, the usual end marked in the list.
+            Picker(selection: Binding(get: { end }, set: choose)) {
+                ForEach(PlanHours.ends, id: \.self) { hour in Text(PlanHours.choice(hour, usual: usual)).tag(hour) }
+            } label: {
+                Text("Tonight until")
+            } currentValueLabel: {
+                Text(PlanHours.label(end)).font(.subheadline)   // the menu picker sets its value in body type otherwise, a size above the words beside it
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .fixedSize()
+        }
+        .font(.subheadline)
+    }
+}
+
+extension PlanHours {
+    /// An hour of the day, past 24 for the night after, as the clock says it: "10 PM", "2 AM".
+    static func label(_ hour: Int) -> String {
+        (moment(hour, on: .now, calendar: .current) ?? .now).formatted(.dateTime.hour())
+    }
+    /// An end in a list of them: the usual one says so.
+    static func choice(_ hour: Int, usual: Int) -> String { hour == usual ? "\(label(hour)) (Usual)" : label(hour) }
 }

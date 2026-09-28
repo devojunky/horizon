@@ -46,23 +46,29 @@ struct PlanEvals {
         #expect(time.courses[3] == "Calculus II" && time.courses[5] == nil, "the math session is for Calculus II, the library for any course")
     }
 
-    @Test func studyEventsAndTests() async throws {
+    /// The plan on the route the environment asks for (Claude unless HORIZON_ON_DEVICE), printed; nil without a key.
+    static func plan(_ input: PlanInput, title: String) async -> DayPlan? {
         let env = ProcessInfo.processInfo.environment
-        let input = PlanInput(date: Self.at(0), now: Self.at(9), busy: Self.events, obligations: Self.items, calendar: Self.calendar)
         let planner = DayPlanner(log: { print("  \($0)") })
         let plan: DayPlan
         if env["HORIZON_ON_DEVICE"] != nil {
             plan = await planner.plan(input, route: .onDevice)
         } else {
-            guard let key = ClaudeKey.find() else { Issue.record("no Claude key: set ANTHROPIC_API_KEY or write claude_api_key.secret, or set HORIZON_ON_DEVICE=1"); return }
+            guard let key = ClaudeKey.find() else { Issue.record("no Claude key: set ANTHROPIC_API_KEY or write claude_api_key.secret, or set HORIZON_ON_DEVICE=1"); return nil }
             let model = env["HORIZON_CLAUDE_MODEL"].flatMap { name in ClaudeModelChoice.allCases.first { "\($0)" == name } } ?? .default
             plan = await planner.plan(input, route: .claude, claude: ClaudeConfiguration(apiKey: key, model: model))
         }
-        let clock = Date.FormatStyle().hour(.twoDigits(amPM: .omitted)).minute()
-        print("\n# Plan eval — route \(plan.route.map { "\($0)" } ?? "by the numbers")\(plan.note.map { ", note: \($0)" } ?? "")")
+        let clock = Date.FormatStyle().month(.abbreviated).day().hour(.twoDigits(amPM: .abbreviated)).minute()
+        print("\n# \(title) — route \(plan.route.map { "\($0)" } ?? "by the numbers")\(plan.note.map { ", note: \($0)" } ?? "")")
         for b in plan.blocks {
             print("  \(b.start.formatted(clock))–\(b.end.formatted(clock))  \(b.kind.rawValue.padding(toLength: 5, withPad: " ", startingAt: 0))  \(b.title)\(b.within.map { "  [in \($0)]" } ?? "")  — \(b.reason)")
         }
+        return plan
+    }
+
+    @Test func studyEventsAndTests() async throws {
+        let input = PlanInput(date: Self.at(0), now: Self.at(9), busy: Self.events, obligations: Self.items, calendar: Self.calendar)
+        guard let plan = await Self.plan(input, title: "Plan eval") else { return }
         #expect(plan.route != nil, "the model planned (not the fallback)")
 
         // The hard stops are on the timetable as they are, and nothing overlaps them.
@@ -86,5 +92,19 @@ struct PlanEvals {
         }
         // Homework is still work.
         #expect(plan.blocks.filter { $0.title == "HW 4" }.allSatisfy { $0.kind == .work }, "HW 4 is work")
+    }
+
+    /// A late night: dinner at 20:30, then work until 2 AM. The model plans past midnight, its "00:30" lands tonight,
+    /// nothing runs past 2, and dinner stays put.
+    @Test func aLateNight() async throws {
+        let dinner = PlanBusy(title: "Dinner with Sam", start: Self.at(20, 30), end: Self.at(21, 30))
+        let input = PlanInput(date: Self.at(0), now: Self.at(20), busy: [dinner], obligations: Self.items, calendar: Self.calendar, hours: PlanHours(end: 26))
+        guard let plan = await Self.plan(input, title: "Late night") else { return }
+        #expect(plan.route != nil, "the model planned (not the fallback)")
+        let midnight = Self.at(0, plusDays: 1), close = Self.at(2, plusDays: 1)
+        #expect(plan.blocks.contains { $0.kind != .fixed && $0.start >= midnight }, "the night past midnight is used")
+        #expect(plan.blocks.allSatisfy { $0.end <= close }, "nothing after 2 AM")
+        #expect(zip(plan.blocks, plan.blocks.dropFirst()).allSatisfy { $0.end <= $1.start || $1.kind == .fixed || $0.kind == .fixed }, "in order, without overlaps")
+        #expect(!plan.blocks.contains { $0.kind != .fixed && $0.start < dinner.end && $0.end > dinner.start }, "nothing over dinner")
     }
 }

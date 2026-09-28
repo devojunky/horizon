@@ -20,7 +20,9 @@ struct PlanBlockEditor: View {
     private struct Fields: Equatable { var title: String; var start: Date; var end: Date; var kind: PlanBlock.Kind; var reason: String }
     private var fields: Fields { Fields(title: title, start: start, end: end, kind: kind, reason: reason) }
     private var isDirty: Bool { baseline.map { $0 != fields } ?? !title.isEmpty }
-    private var isValid: Bool { !title.trimmingCharacters(in: .whitespaces).isEmpty && end > start }
+    /// The block's hours on the plan's day: a time after midnight is that night's (`AppModel.planSpan`).
+    private var span: DateInterval? { model.planSpan(from: start, to: end) }
+    private var isValid: Bool { !title.trimmingCharacters(in: .whitespaces).isEmpty && span != nil }
 
     /// The items the plan chose from, one per title, for the picker.
     private var candidates: [PlanObligation] {
@@ -56,7 +58,7 @@ struct PlanBlockEditor: View {
                     DatePicker("Starts", selection: $start, displayedComponents: .hourAndMinute)
                     DatePicker("Ends", selection: $end, displayedComponents: .hourAndMinute)
                 } footer: {
-                    if end <= start { Text("It ends before it starts.") }
+                    if span == nil { Text("It ends before it starts.") }
                     else if block?.kind == .fixed { Text("From your calendar. Changing it here does not change the event.") }
                 }
                 Section {
@@ -102,13 +104,14 @@ struct PlanBlockEditor: View {
     }
 
     private func save() {
+        guard let span else { return }
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let reason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
         if var block {
-            block.title = title; block.start = start; block.end = end; block.kind = kind; block.reason = reason
+            block.title = title; block.start = span.start; block.end = span.end; block.kind = kind; block.reason = reason
             model.updateBlock(block)
         } else {
-            model.addBlock(PlanBlock(start: start, end: end, title: title, reason: reason, kind: kind))
+            model.addBlock(PlanBlock(start: span.start, end: span.end, title: title, reason: reason, kind: kind))
         }
         dismiss()
     }
@@ -120,10 +123,11 @@ struct PlannerNotesEditor: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
+    @State private var hours = PlanHours()
     @State private var confirmingDiscard = false
     @FocusState private var focused: Bool
     private let limit = 1500
-    private var isDirty: Bool { text != model.planInstructions }
+    private var isDirty: Bool { text != model.planInstructions || hours != model.usualPlanHours }
 
     var body: some View {
         NavigationStack {
@@ -147,16 +151,24 @@ struct PlannerNotesEditor: View {
                         if text.count > limit - 300 { Text("\(text.count) of \(limit) characters").monospacedDigit() }
                     }
                 }
+                Section {
+                    Picker("Starts", selection: $hours.start) { ForEach(PlanHours.starts, id: \.self) { Text(PlanHours.label($0)).tag($0) } }
+                    Picker("Ends", selection: $hours.end) { ForEach(PlanHours.ends, id: \.self) { Text(PlanHours.label($0)).tag($0) } }
+                } header: {
+                    Text("Your day")
+                } footer: {
+                    Text("The hours the planner fills on a usual day, from the moment you plan. An end after midnight is that night. For one late night, change Tonight Until on Now instead.")
+                }
             }
             .paper()
             .editorChrome(title: "Tell the Planner", confirm: "Save", disabled: !isDirty,
                           cancel: { if isDirty { confirmingDiscard = true } else { dismiss() } },
-                          action: { model.planInstructions = text.trimmingCharacters(in: .whitespacesAndNewlines); dismiss() })
+                          action: { model.planInstructions = text.trimmingCharacters(in: .whitespacesAndNewlines); model.usualPlanHours = hours; dismiss() })
             .interactiveDismissDisabled(isDirty)
             .confirmationDialog("Discard changes?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
                 Button("Discard Changes", role: .destructive) { dismiss() }
             }
-            .onAppear { text = model.planInstructions; focused = text.isEmpty }
+            .onAppear { text = model.planInstructions; hours = model.usualPlanHours; focused = text.isEmpty }
         }
         #if os(macOS)
         .frame(minWidth: 480, idealWidth: 540, maxWidth: 680, minHeight: 360, idealHeight: 420, maxHeight: 600)

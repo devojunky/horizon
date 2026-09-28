@@ -107,6 +107,16 @@ final class AppModel {
     var planInstructions: String = UserDefaults.standard.string(forKey: "planInstructions") ?? "" {
         didSet { UserDefaults.standard.set(planInstructions, forKey: "planInstructions") }
     }
+    /// The hours the planner fills on a usual day (Tell the Planner's "Your day"). Persisted.
+    var usualPlanHours: PlanHours = UserDefaults.standard.data(forKey: "planHours").flatMap { try? JSONDecoder().decode(PlanHours.self, from: $0) } ?? PlanHours() {
+        didSet { UserDefaults.standard.set(try? JSONEncoder().encode(usualPlanHours), forKey: "planHours") }
+    }
+    /// Tonight's end when the user changed it for one night (Now's "Tonight until"): for that day only, then the usual
+    /// again. Persisted, so it outlasts the app leaving mid-evening.
+    private var tonight: Tonight? = UserDefaults.standard.data(forKey: "planTonight").flatMap { try? JSONDecoder().decode(Tonight.self, from: $0) } {
+        didSet { UserDefaults.standard.set(try? JSONEncoder().encode(tonight), forKey: "planTonight") }
+    }
+    private struct Tonight: Codable { var day: Date; var end: Int }
     private struct SavedPlan: Codable { var day: Date; var plan: DayPlan; var candidates: [PlanObligation]; var edited: Bool }
     #if os(iOS)
     /// The plan's Live Activity (the Lock Screen and the Dynamic Island); its Done button comes back through `PlanCommands`.
@@ -472,17 +482,25 @@ final class AppModel {
         planning = true
         planDraft = []
         let now = Date()
+        let calendar = Calendar.current
+        let day = PlanHours.day(of: now, calendar: calendar)   // after midnight, the night under way is still yesterday's
+        let hours = planHours(for: day)
         var busy: [PlanBusy] = []
         var calendarOff = false
         do {
-            if try await calendarSource.requestAccess() { busy = try await calendarSource.busy(on: now, calendar: .current) } else { calendarOff = true }
+            // The day, and the night after it when the day runs past midnight.
+            let reach = [PlanHours.moment(24, on: day, calendar: calendar), hours.closes(on: day, calendar: calendar)].compactMap { $0 }.max() ?? now
+            if try await calendarSource.requestAccess() { busy = try await calendarSource.busy(in: DateInterval(start: day, end: max(day, reach))) } else { calendarOff = true }
         } catch { lastError = error.localizedDescription }
         let obligations = (try? await store.planObligations(from: now, days: 21)) ?? []   // three weeks out: enough to choose from
         let planner = DayPlanner(log: { message in Task { @MainActor in AppModel.log(message) } })
         let route: IngestOptions.RoutePolicy = planWithClaude && claudeConfiguration != nil ? .claude : .onDevice   // a small task: the device, unless asked
-        let input = PlanInput(date: now, now: now, busy: busy, obligations: obligations, instructions: planInstructions)
+        let input = PlanInput(date: day, now: now, busy: busy, obligations: obligations, hours: hours, instructions: planInstructions)
         var result = await planner.plan(input, route: route, claude: claudeConfiguration) { blocks in
             Task { @MainActor in self.showDraft(blocks) }   // the timetable grows as the model writes
+        }
+        if let close = hours.closes(on: day, calendar: calendar), now >= close, !result.blocks.contains(where: { $0.kind != .fixed }) {
+            result.note = "The day ended at \(PlanHours.label(hours.end)). To keep going tonight, choose a later time below."   // Tonight Until sits under the empty timetable
         }
         if calendarOff { result.note = ([result.note, "Calendar access is off, so nothing on it counted as fixed."].compactMap { $0 }).joined(separator: " ") }
         let streamed = !planDraft.isEmpty
@@ -491,7 +509,7 @@ final class AppModel {
             showDraft(result.blocks)                                  // the calendar's last events arrive the same way
             try? await Task.sleep(for: .milliseconds(700))            // and the rail reaches them before the page settles
         }
-        plan = result; planEdited = false; planDay = Calendar.current.startOfDay(for: now)
+        plan = result; planEdited = false; planDay = day
         planCandidates = DayPlanner.ranked(input)
         planStreamed = streamed
         planning = false
@@ -527,7 +545,7 @@ final class AppModel {
     func addBlock(_ block: PlanBlock) {
         var p = plan ?? DayPlan(blocks: [])
         p.blocks.append(block)
-        if planDay == nil { planDay = Calendar.current.startOfDay(for: Date()) }
+        if planDay == nil { planDay = PlanHours.day(of: Date(), calendar: .current) }
         setEdited(p)
     }
 
@@ -564,6 +582,52 @@ final class AppModel {
     /// The block whose end is asking "finished?" now, for the timetable to ask it too.
     func blockAwaitingAnswer(at now: Date = Date()) -> PlanBlock? { plan?.awaitingAnswer(at: now) }
 
+    // MARK: The day's hours
+
+    /// The hours for `day`: the usual ones, with tonight's end when the user changed it for that night.
+    func planHours(for day: Date) -> PlanHours {
+        var hours = usualPlanHours
+        if let tonight, tonight.day == day { hours.end = tonight.end }
+        return hours
+    }
+
+    /// The end of the day a plan made now is for (Now's "Tonight until"). Setting it changes that night only; the next
+    /// day starts from the usual end again. It does not plan: the caller plans again when there is a plan to redo.
+    var tonightEnd: Int {
+        get { planHours(for: PlanHours.day(of: Date(), calendar: .current)).end }
+        set {
+            let day = PlanHours.day(of: Date(), calendar: .current)
+            tonight = newValue == usualPlanHours.end ? nil : Tonight(day: day, end: newValue)
+        }
+    }
+
+    /// An end chosen for tonight while the plan on file has hand edits: it waits for the user's word to plan again.
+    var pendingTonightEnd: Int?
+
+    /// Tonight's end chosen (Now's pop-up, the Mac's Plan menu): the plan on file is made again up to it. True when that
+    /// needs the user's word first because the plan was edited by hand; then the end waits (`pendingTonightEnd`).
+    func chooseTonightEnd(_ end: Int) -> Bool {
+        guard end != tonightEnd else { return false }
+        if plan != nil, planEdited { pendingTonightEnd = end; return true }
+        tonightEnd = end
+        if plan != nil { Task { await planToday() } }
+        return false
+    }
+
+    /// The user said yes to replacing an edited plan: the end chosen meanwhile, if any, applies, and the day is planned.
+    func planAgain() {
+        if let end = pendingTonightEnd { tonightEnd = end; pendingTonightEnd = nil }
+        Task { await planToday() }
+    }
+
+    /// A block's hours from the editor's times of day, on the plan's day: after midnight is that night (`PlanHours.span`).
+    func planSpan(from start: Date, to end: Date) -> DateInterval? {
+        let calendar = Calendar.current
+        let day = planDay ?? PlanHours.day(of: Date(), calendar: calendar)
+        func clock(_ d: Date) -> (hour: Int, minute: Int) { (calendar.component(.hour, from: d), calendar.component(.minute, from: d)) }
+        return PlanHours.span(from: clock(start), to: clock(end), on: day, calendar: calendar)
+    }
+
     #if DEBUG
     /// `--demo-plan`: a plan around the present moment, to see the Live Activity through each phase without waiting on
     /// the planner: a work block on that ends two minutes from now (then asks "finished?"), a meal, and study later, in a
@@ -575,7 +639,7 @@ final class AppModel {
             PlanBlock(start: at(4), end: at(34), title: "Lunch", reason: "Nothing good gets done hungry.", kind: .meal),
             PlanBlock(start: at(38), end: at(128), title: "Study for Midterm 1", reason: "Worth 20%, in six days: work through the practice exam.", kind: .study, within: "Lock in at library"),
         ]
-        plan = DayPlan(blocks: blocks); planEdited = false; planDay = Calendar.current.startOfDay(for: now); planCandidates = []
+        plan = DayPlan(blocks: blocks); planEdited = false; planDay = PlanHours.day(of: now, calendar: .current); planCandidates = []
         persistPlan()
         Task { await syncActivity() }
     }
@@ -589,9 +653,10 @@ final class AppModel {
         Task { await syncActivity() }
     }
 
-    /// The plan is today's or nothing: called when the app comes forward and when Now appears.
+    /// The plan is the day's, night included, or nothing (`DayPlan.kept`): called when the app comes forward and when
+    /// Now appears.
     func expirePlanIfStale() {
-        guard let planDay, planDay != Calendar.current.startOfDay(for: Date()) else { return }
+        guard let planDay, Date() >= (plan?.kept(for: planDay, calendar: .current) ?? .distantPast) else { return }
         withAnimation { plan = nil; planEdited = false; planCandidates = [] }
         self.planDay = nil
         persistPlan()
@@ -608,7 +673,7 @@ final class AppModel {
 
     private func loadPlan() {
         guard let data = UserDefaults.standard.data(forKey: "dayPlan"), let saved = try? JSONDecoder().decode(SavedPlan.self, from: data) else { return }
-        guard saved.day == Calendar.current.startOfDay(for: Date()) else { UserDefaults.standard.removeObject(forKey: "dayPlan"); return }
+        guard Date() < saved.plan.kept(for: saved.day, calendar: .current) else { UserDefaults.standard.removeObject(forKey: "dayPlan"); return }
         plan = saved.plan; planDay = saved.day; planCandidates = saved.candidates; planEdited = saved.edited
     }
 
