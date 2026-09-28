@@ -82,7 +82,11 @@ struct HorizonApp: App {
         }
         #if os(macOS)
         .defaultSize(width: 1240, height: 800)
-        .commands { HorizonCommands(model: model) }
+        .commands {
+            SidebarCommands()   // View ▸ Show/Hide Sidebar (⌃⌘S): HIG, a sidebar can be hidden from the View menu too
+            ToolbarCommands()   // View ▸ Hide Toolbar, Customize Toolbar…
+            HorizonCommands(model: model)
+        }
         #endif
         #if os(macOS)
         Settings {   // ⌘, — its own window, the way a Mac keeps its settings

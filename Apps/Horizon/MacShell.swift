@@ -177,9 +177,9 @@ private struct Sidebar: View {
                 row(.now)
             }
             Section("Library") {
-                row(.review).badge(toReview)
+                row(.review, badge: toReview)
                 row(.documents)
-                row(.recentlyDeleted).badge(binned)
+                row(.recentlyDeleted, badge: binned)
             }
             if !ordered.isEmpty {
                 Section("Courses") {   // last, the way a Mac lists what grows (Music's playlists, Reminders' lists)
@@ -204,8 +204,12 @@ private struct Sidebar: View {
         .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 320)
     }
 
-    private func row(_ page: MacNavigation.Page) -> some View {
-        Label { Text(page.title) } icon: { SidebarIcon(symbol: page.symbol) }.tag(MacNavigation.Destination.page(page))
+    /// A page's row; its badge goes on before its tag (a badge put on a tagged row drops the tag, and the row can
+    /// no longer be chosen: Review and Recently Deleted could not be).
+    private func row(_ page: MacNavigation.Page, badge: Int = 0) -> some View {
+        Label { Text(page.title) } icon: { SidebarIcon(symbol: page.symbol) }
+            .badge(badge)
+            .tag(MacNavigation.Destination.page(page))
     }
 }
 

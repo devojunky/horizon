@@ -389,5 +389,7 @@ Dated log. Newest first.
 - **Found in passing.**
   - The Coverage page said "No Course Selected" with courses on file.
   - The selected sidebar row's icon was the same orange as its highlight, and vanished.
+  - Review and Recently Deleted could not be chosen in the sidebar at all (their badges dropped the rows' tags); they could only be reached from the menu bar. Found by clicking through the app with the owner's leave.
+  - The View menu had no Show/Hide Sidebar or toolbar commands.
   - The Mac app has no Reminders access at the moment. Coverage's banner says so and was there before, but it sat above the list and out of sight; it now shows at the top. Access is the owner's to grant in System Settings, and nothing was changed there.
 - **The phone is unchanged.** The iPhone's Coverage, course page, Review and strip are as they were (checked in the simulator), and their Mac branches have moved into Mac views of their own.

@@ -64,11 +64,11 @@ struct MacHorizonPage: View {
                     ItemTable(rows: rows, selection: $selection, sortOrder: $sortOrder, showsCourse: data.narrowedTo == nil,
                               mark: mark, edit: { id in editing = obligations.first { $0.id == id } },
                               delete: { ids in for id in ids { Task { await model.discard(id) } }; selection.subtract(ids) })
+                        .animation(.default, value: rows.map(\.id))   // the rows come and go; the words above them change at once
                 }
             }
         }
         .background(Design.paper)
-        .animation(.default, value: chosen)
         .navigationTitle("Horizon")
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)   // the page's head meets the toolbar, not the table: without this the table's pinned header makes the toolbar a hard band
         .toolbar {
@@ -272,7 +272,8 @@ private struct ChartHeader: View {
             Spacer(minLength: 0)
             HeatLegend()
         }
-        .animation(.default, value: shown)
+        // No animation: a chart's reading changes at once as the pointer moves (a crossfade would lay one day's words
+        // over the next's while scrubbing).
     }
 
     private func kicker(_ word: String) -> String { data.narrowedTo.map { "\(word) · \($0.name)" } ?? word }
@@ -373,6 +374,9 @@ private struct TermChart: View {
                             choose(from: a, to: a)
                         }
                     })
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("The term, day by day")
+                .accessibilityChildren { weekElements(g) }
         }
         .frame(height: height)
         .focusable()
@@ -383,19 +387,28 @@ private struct TermChart: View {
             return .handled
         }
         .onKeyPress(.escape) { guard chosen != nil else { return .ignored }; chosen = nil; anchor = nil; cursor = nil; return .handled }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("The term, day by day")
-        .accessibilityChildren {   // VoiceOver's path through the term: each week with something in it, and choosing it as its action
+    }
+
+    /// VoiceOver's path through the term: each week with something in it, over its own days in the chart (so the
+    /// cursor outlines the week it names), choosing it as its action.
+    private func weekElements(_ g: Geometry) -> some View {
+        ZStack(alignment: .topLeading) {
             ForEach(weeks, id: \.start) { week in
                 let items = data.items.filter { $0.due >= week.start && $0.due < week.end }
                 let points = items.filter { !$0.completed }.reduce(0) { $0 + ($1.points ?? 0) }
+                let first = data.periods.firstIndex { $0.end > week.start } ?? 0
+                let last = data.periods.lastIndex { $0.start < week.end } ?? first
+                let width = max(g.x(last + 1) - g.x(first), 1), height = g.bandsBottom - g.bandsTop
                 Rectangle()
+                    .frame(width: width, height: height)
+                    .position(x: g.x(first) + width / 2, y: g.bandsTop + height / 2)
                     .accessibilityLabel("Week of \(week.start.formatted(.dateTime.month(.wide).day()))")
                     .accessibilityValue("\(items.count) item\(items.count == 1 ? "" : "s"), \(points.formatted(.number.precision(.fractionLength(0...1)))) percent of grades at stake")
                     .accessibilityAddTraits(.isButton)
-                    .accessibilityAction { chosen = week }
+                    .accessibilityAction { choose(from: first, to: last) }
             }
         }
+        .frame(width: g.width, height: g.height, alignment: .topLeading)
     }
 
     /// The weeks with anything due in them.
