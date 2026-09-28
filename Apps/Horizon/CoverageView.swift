@@ -3,7 +3,7 @@ import SwiftData
 import HorizonCore
 
 /// SPEC §6.1: not a task list; where the app is probably blind, one course per story, most suspicious first.
-/// Type carries the hierarchy: a sentence, two numbers, quiet detail. No cards, no badges, accent only for urgency.
+/// Type carries the hierarchy: the course's name, a short line per finding, the figures quiet under them. No cards, no badges.
 struct CoverageList: View {
     /// A read is in progress: the empty-state invitation would contradict the live section above it.
     var reading = false
@@ -42,17 +42,13 @@ struct CoverageList: View {
         }
         ForEach(stories) { story in
             Button { open(.course(story.course.id)) } label: {
-                HStack(spacing: 12) {
-                    CoverageStory(story: story)
-                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
-                }
-                .contentShape(Rectangle())
+                CoverageStory(story: story, disclosure: true).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityHint("Opens the course")
             .listRowSeparator(.visible)
             .onPaper()
-            .listRowInsets(EdgeInsets(top: 20, leading: 20, bottom: 20, trailing: 20))
+            .listRowInsets(EdgeInsets(top: 18, leading: 20, bottom: 18, trailing: 20))
         }
         .onMove { from, to in
             var order = stories.map(\.course.id)
@@ -65,59 +61,62 @@ struct CoverageList: View {
     }
 }
 
+/// One course, read top to bottom like a list row (HIG: the name to scan by, then what matters, then the quiet
+/// detail): its code, its name, what says the app may be blind there (one short line each), and its figures.
 struct CoverageStory: View {
     let story: CourseCoverage
+    /// iOS: the row opens the course page, so the name carries the chevron. The Mac's list selects instead.
+    var disclosure = false
 
-    private var urgent: Bool { story.suspicion >= 0.7 }
-
-    /// The code over the sentence (the sentence names the course), when the course has both.
+    /// The code over the name, when the course has both.
     private var code: String? { story.course.title.isEmpty || story.course.code.isEmpty ? nil : story.course.code }
+    /// The findings a step under body on iOS; the Mac's text styles run about 4 points smaller, so there they are body.
+    #if os(macOS)
+    static let findingFont = Font.body, factsFont = Font.subheadline
+    #else
+    static let findingFont = Font.subheadline, factsFont = Font.footnote
+    #endif
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if code != nil || story.updatedLine != nil {
-                // The course's code on the left and how fresh its documents are on the right, like the date and the time
-                // over Now's timetable; on a narrow screen the second goes under the first.
-                ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        if let code { Kicker(code).lineLimit(1) }
-                        Spacer(minLength: 0)
-                        if let updated = story.updatedLine { Kicker(updated).lineLimit(1) }
-                    }
-                    VStack(alignment: .leading, spacing: 4) {
-                        if let code { Kicker(code) }
-                        if let updated = story.updatedLine { Kicker(updated) }
-                    }
-                }
-            }
-            Text(story.headline)
-                .font(.system(.title2, design: .serif, weight: .semibold))
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(alignment: .firstTextBaseline, spacing: 28) {
-                figure(story.daysSilent.map(String.init) ?? "—", label: "days silent", accent: story.isSilent)
-                figure(String(story.upcoming14), label: "next 14 days", accent: false)
-            }
-            .padding(.top, 2)
-            if !story.cadenceGaps.dropFirst().isEmpty || story.neverIngested.count > 1 {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(Array(story.cadenceGaps.dropFirst().enumerated()), id: \.offset) { Text($0.element.sentence.prefixCapitalized) }
-                    ForEach(story.neverIngested.dropFirst(), id: \.platform) { Text($0.sentence(name: story.displayName, first: false).prefixCapitalized) }
-                }
-                .font(.subheadline).foregroundStyle(.secondary)
-            }
-        }
-        .padding(.vertical, 4)
-        .accessibilityElement(children: .combine)
-    }
-
-    private func figure(_ value: String, label: String, accent: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(value).numeral().foregroundStyle(accent ? Design.accent : .primary).contentTransition(.numericText())
-            Kicker(label)
+            if let code { Kicker(code).padding(.bottom, 4) }
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(story.displayName).font(.system(.title3, design: .serif, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                if disclosure { Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary) }
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                if story.findings.isEmpty {
+                    Text("Looks covered.").foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(story.findings.enumerated()), id: \.offset) { Text($0.element) }
+                }
+            }
+            .font(Self.findingFont)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, 8)
+            Facts(parts: story.facts).padding(.top, 10)
         }
+        // One sentence for VoiceOver, the figures after it.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(story.headline)
+        .accessibilityValue(story.facts.joined(separator: ", "))
     }
 }
 
-extension String {
-    var prefixCapitalized: String { prefix(1).uppercased() + dropFirst() }
+/// The figures on one quiet line, broken between figures, never inside one, when the line runs out.
+private struct Facts: View {
+    let parts: [String]
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            Text(parts.joined(separator: " · ")).lineLimit(1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(parts.dropLast().joined(separator: " · ")).lineLimit(1)
+                Text(parts.last ?? "").lineLimit(1)
+            }
+            VStack(alignment: .leading, spacing: 2) { ForEach(parts, id: \.self) { Text($0) } }
+        }
+        .font(CoverageStory.factsFont)
+        .foregroundStyle(.secondary)
+    }
 }

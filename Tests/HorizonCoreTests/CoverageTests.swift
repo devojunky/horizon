@@ -149,6 +149,31 @@ struct CoverageTests {
         #expect(Coverage.assess(course: stale, obligations: [obligation("HW 1", due: Fixture.day(9, 23), course: stale)], documents: [syllabus], now: now, calendar: Fixture.calendar).neverIngested.isEmpty)
     }
 
+    @Test func findingsAndFactsAreShortLines() {
+        // Calculus II: weekly homework on WebAssign, none in the window, the site never read, one exam ahead.
+        let calc = course("MA-UY 1124", components: [GradeComponent(name: "Homework", weight: 0.15, cadence: .weekly, platform: .webAssign),
+                                                     GradeComponent(name: "Weekly Quizzes", weight: 0.1, cadence: .weekly, platform: .gradescope)],
+                          lastIngested: Fixture.day(9, 14), createdAt: Fixture.day(9, 14))
+        let exam = obligation("Exam 1", due: Fixture.day(9, 30), course: calc)
+        let quiz = obligation("Quiz 2", due: Fixture.day(9, 24), course: calc, component: "Weekly Quizzes")
+        let c = Coverage.assess(course: calc, obligations: [exam, quiz], documents: [], now: now, calendar: Fixture.calendar)
+        // The grade row leads as printed, its rhythm said once; a site whose rows a line above names all is named alone.
+        #expect(c.findings == ["Homework (weekly): none on file for the next two weeks.",
+                               "Weekly Quizzes: 1 of 2 on file for the next two weeks.",
+                               "WebAssign: nothing read yet.",
+                               "Gradescope: nothing read yet."])
+        #expect(c.facts == ["2 due in the next two weeks", "7 days silent", "Updated 7 days ago"])
+        // A site whose rows no line names lists them, as printed.
+        #expect(PlatformGap(platform: .myLab, components: ["Pearson MyLab Readings", "Lab Reports"]).finding(listing: true) == "MyLab (Pearson MyLab Readings, Lab Reports): nothing read yet.")
+        #expect(CadenceGap(component: "Essays", cadence: nil, expectedInWindow: 0, onFileInWindow: 0, onFileTotal: 1, expectedTotal: 4).finding == "Essays: 1 of 4 on file.")
+        // Silence the page says is a finding, and the figures leave it out; nothing flagged reads as covered (the view).
+        let bio = course("BIO-UA 11", lastIngested: Fixture.day(9, 21), createdAt: Fixture.day(9, 7))
+        let silent = Coverage.assess(course: bio, obligations: [obligation("Reading 1", due: Fixture.day(9, 15), course: bio)], documents: [], now: now, calendar: Fixture.calendar)
+        #expect(silent.findings == ["Silent for 14 days while work fell due."] && silent.facts == ["Nothing due in the next two weeks", "Updated today"])
+        let empty = Coverage.assess(course: course("PHIL-UA 1"), obligations: [], documents: [], now: now, calendar: Fixture.calendar)
+        #expect(empty.findings == ["Nothing on file."] && empty.facts == ["Nothing due in the next two weeks"])
+    }
+
     @Test func coursesSortBySuspicionNotName() async throws {
         let store = try Fixture.store()
         try await Fixture.ingest(Fixture.calculus(), into: store)   // fresh, dated items, homework on WebAssign never ingested

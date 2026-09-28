@@ -20,9 +20,12 @@ public struct CourseCoverage: Sendable, Identifiable, Equatable {
     public var cadenceGaps: [CadenceGap]
     /// Sites the course's documents say its work lives on, from which nothing has ever been read.
     public var neverIngested: [PlatformGap]
+    /// No document was ever read for the course and it has no items.
+    public var nothingOnFile: Bool
     /// Higher is worse. Courses sort by this, never by name.
     public var suspicion: Double
-    /// "Bio has been silent for 9 days and its syllabus implies weekly quizzes."
+    /// "Bio has been silent for 9 days and its syllabus implies weekly quizzes." The whole story in one sentence: what
+    /// VoiceOver reads for the course. The page shows it as `findings` and `facts`.
     public var headline: String
 
     public var displayName: String { course.displayName }
@@ -31,6 +34,28 @@ public struct CourseCoverage: Sendable, Identifiable, Equatable {
     /// was ever read for it.
     public var updatedLine: String? {
         daysSinceUpdate.map { $0 == 0 ? "Updated today" : $0 == 1 ? "Updated yesterday" : "Updated \($0) days ago" }
+    }
+
+    /// What says the app may be blind here, strongest first, one short line each: the silence, an empty course, the
+    /// rhythms the syllabus sets that the items on file do not keep, the sites never read. Empty when nothing does. A
+    /// site's grade rows are named only when no line before it names them all: a long row is not said twice.
+    public var findings: [String] {
+        var lines: [String] = []
+        if isSilent, let days = daysSilent { lines.append("Silent for \(days) days while work fell due.") }
+        if nothingOnFile { lines.append("Nothing on file.") }
+        lines += cadenceGaps.map(\.finding)
+        let named = Set(cadenceGaps.map { Normalize.key($0.component) })
+        lines += neverIngested.map { $0.finding(listing: !$0.components.allSatisfy { named.contains(Normalize.key($0)) }) }
+        return lines
+    }
+
+    /// The course's figures, a few words each: what is due in the next two weeks, the days since the last check (unless
+    /// a finding says it), how fresh the documents are.
+    public var facts: [String] {
+        var parts = [upcoming14 == 0 ? "Nothing due in the next two weeks" : "\(upcoming14) due in the next two weeks"]
+        if let daysSilent, !isSilent { parts.append(daysSilent == 1 ? "1 day silent" : "\(daysSilent) days silent") }
+        if let updatedLine { parts.append(updatedLine) }
+        return parts
     }
 }
 
@@ -55,6 +80,15 @@ public struct CadenceGap: Sendable, Equatable {
         }
         return "syllabus lists \(expectedTotal ?? 0) \(noun); \(onFileTotal) on file"
     }
+
+    /// "Homework (weekly): none on file for the next two weeks." The grade row leads, named as the syllabus prints it,
+    /// with its rhythm unless the name carries it ("Weekly Quizzes").
+    public var finding: String {
+        guard let cadence, cadence != .once else { return "\(component): \(onFileTotal) of \(expectedTotal ?? 0) on file." }
+        let rhythm = cadence == .weekly ? "weekly" : "biweekly"
+        let label = component.lowercased().split(whereSeparator: { !$0.isLetter }).contains(Substring(rhythm)) ? component : "\(component) (\(rhythm))"
+        return onFileInWindow == 0 ? "\(label): none on file for the next two weeks." : "\(label): \(onFileInWindow) of \(expectedInWindow) on file for the next two weeks."
+    }
 }
 
 /// A site the documents say some of the course's work lives on ("Homework (WebAssign)"), from which no page has ever
@@ -75,6 +109,12 @@ public struct PlatformGap: Sendable, Equatable {
         default: what = "\(owner) " + components.map { $0.lowercased() }.dropLast().joined(separator: ", ") + " and \(components.last!.lowercased()) are on \(site)"
         }
         return what + ", from which nothing has ever been read"
+    }
+
+    /// "WebAssign (Homework): nothing read yet." The site leads; `listing` names the grade rows on it.
+    public func finding(listing: Bool) -> String {
+        let site = Coverage.platformName(platform)
+        return (listing && !components.isEmpty ? "\(site) (\(components.joined(separator: ", ")))" : site) + ": nothing read yet."
     }
 
     /// "Quizzes", "Lab Reports": plural; "Homework", "Final Paper": not.
@@ -159,7 +199,7 @@ public enum Coverage {
         if inWindow.isEmpty, !course.gradeComponents.isEmpty { suspicion += 0.3 }
 
         return CourseCoverage(course: course, daysSilent: daysSilent, isSilent: isSilent, daysSinceUpdate: daysSinceUpdate, upcoming14: inWindow.count,
-                              cadenceGaps: gaps, neverIngested: never, suspicion: suspicion,
+                              cadenceGaps: gaps, neverIngested: never, nothingOnFile: nothingOnFile, suspicion: suspicion,
                               headline: headline(course: course, silentFor: isSilent ? daysSilent : nil, nothingOnFile: nothingOnFile, upcoming: inWindow.count, gaps: gaps, never: never))
     }
 
