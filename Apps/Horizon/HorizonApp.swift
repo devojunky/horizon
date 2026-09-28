@@ -69,6 +69,9 @@ struct HorizonApp: App {
                 .onReceive(NotificationCenter.default.publisher(for: .EKEventStoreChanged)) { _ in Task { await model.drainAndSync() } }
                 #if os(macOS)
                 .task { await WatchedFolder.start(model: model) }
+                #if DEBUG
+                .task { await WindowSnapshot.writeIfAsked() }
+                #endif
                 #endif
         }
         .onChange(of: scenePhase) { _, phase in

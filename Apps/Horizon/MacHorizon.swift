@@ -1,0 +1,544 @@
+#if os(macOS)
+import SwiftUI
+import SwiftData
+import HorizonCore
+
+/// Horizon on a Mac (SPEC §6.2, set for a window and a pointer). A phone needs a bar a finger can hit, 44 points, so
+/// there the term comes in two levels, weeks to read and days to scroll through. A pointer can point at a day a few
+/// points wide, so here there is one: the whole term at the resolution of a day, fitted to the window, and the chart
+/// is a single control over its plot (HIG: a chart's hit region is its plot; the pointer scrubs). The day under the
+/// pointer reads in the header; a click chooses it, a drag chooses any run of days, a click on a week's date in the
+/// axis chooses the week; the arrow keys move the choice and Shift stretches it; Escape lets it go. Under the chart,
+/// the items themselves in a table: what was chosen, else what is coming up, sortable, a row's ring checks it off, a
+/// double-click edits, Delete bins, and the items selected there are marked on the chart.
+struct MacHorizonPage: View {
+    @Environment(AppModel.self) private var model
+    @Query(filter: #Predicate<Obligation> { $0.deletedAt == nil && $0.due != nil }, sort: \Obligation.due) private var obligations: [Obligation]
+    @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
+    @State private var filter: Band.Kind = .all      // the course the page is narrowed to; everything, until the user says otherwise
+    @State private var chosen: DateInterval?         // a day, a week or any run of days
+    @State private var pointer = ChartPointer()      // the day under the pointer: read by the header and the chart, never by the page
+    @State private var selection: Set<UUID> = []
+    @State private var sortOrder = [KeyPathComparator(\ItemRow.due)]
+    @State private var editing: Obligation?
+    @State private var lingering = Lingering()       // just checked off under "Coming up": crossed off for a moment before it leaves
+    private let calendar = Calendar.current
+
+    /// The chosen run of days' items, else what is coming up from today (what is done drops out once its moment is over).
+    private func listed(_ data: StripData) -> [Obligation] {
+        let ids: Set<UUID>
+        if let chosen {
+            ids = Set(data.items.filter { $0.due >= chosen.start && $0.due < chosen.end }.map(\.id))
+        } else {
+            let today = calendar.startOfDay(for: Date())
+            ids = Set(data.items.filter { $0.due >= today && (!$0.completed || lingering.contains($0.id)) }.map(\.id))
+        }
+        return obligations.filter { ids.contains($0.id) }
+    }
+
+    var body: some View {
+        let data = StripData(obligations: obligations, courses: courses, level: .days, filter: filter, calendar: calendar)
+        let listed = listed(data)
+        let rows = listed.map { ItemRow($0, lingering: lingering) }.sorted(using: sortOrder)
+        let marked = Set(listed.filter { selection.contains($0.id) }.compactMap { $0.due.map { calendar.startOfDay(for: $0) } })
+        Group {
+            if data.items.isEmpty {
+                ScrollView {
+                    EditorialEmpty(title: "Nothing on the horizon.", deck: "Add a syllabus or a schedule, or drop one on this window, and the term appears here: every course, every day, how much each one carries.") {
+                        ImportMenu().buttonStyle(.borderedProminent)
+                    }
+                    .padding(.horizontal, Design.margin)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    ChartHeader(data: data, chosen: chosen, pointer: pointer, calendar: calendar)
+                        .padding(.horizontal, Design.margin)
+                        .padding(.top, 14)
+                        .padding(.bottom, 14)
+                    TermChart(data: data, chosen: $chosen, pointer: pointer, marked: marked, calendar: calendar)
+                        .padding(.horizontal, Design.margin)
+                    listHead(data)
+                        .padding(.horizontal, Design.margin)
+                        .padding(.top, 22)
+                        .padding(.bottom, 6)
+                    ItemTable(rows: rows, selection: $selection, sortOrder: $sortOrder, showsCourse: data.narrowedTo == nil,
+                              mark: mark, edit: { id in editing = obligations.first { $0.id == id } },
+                              delete: { ids in for id in ids { Task { await model.discard(id) } }; selection.subtract(ids) })
+                }
+            }
+        }
+        .background(Design.paper)
+        .animation(.default, value: chosen)
+        .navigationTitle("Horizon")
+        .toolbar {
+            if data.choices.count > 1 {   // one course is its own filter
+                ToolbarSpacer(.fixed, placement: .primaryAction)   // the page's own control, apart from the window's
+                ToolbarItem(placement: .primaryAction) {
+                    Picker("Course", selection: Binding(get: { data.narrowedTo?.kind ?? .all }, set: { filter = $0 })) {   // a pop-up button that says what is showing
+                        Text("All Courses").tag(Band.Kind.all)
+                        Divider()
+                        ForEach(data.choices) { Text($0.name).tag($0.kind) }
+                    }
+                    .pickerStyle(.menu)
+                    .help("Show one course, or all of them")
+                }
+            }
+        }
+        .sheet(item: $editing) { ObligationEditor(mode: .edit($0), courses: courses) }
+        .onAppear {
+            if MainTabs.debugOnce("--filter-second-course"), data.choices.count > 1 { filter = data.choices[1].kind }   // DEBUG: narrowed to a course without a click
+            if MainTabs.debugOnce("--scrub-week"), let heavy = data.collisions.first?.day ?? data.items.first(where: { $0.due >= Date() })?.due {   // DEBUG: a week chosen without a click
+                chosen = calendar.dateInterval(of: .weekOfYear, for: heavy)
+            }
+        }
+    }
+
+    /// The table's kicker: what it lists, and the way back to what is coming up.
+    private func listHead(_ data: StripData) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            if let chosen {
+                Kicker(ChartHeader.name(of: chosen, calendar: calendar, style: .short))
+                Spacer()
+                Button("Show Coming Up") { self.chosen = nil }
+                    .controlSize(.small)
+                    .keyboardShortcut(.cancelAction)
+                    .help("List what is coming up instead (Escape)")
+            } else {
+                Kicker(data.narrowedTo.map { "Coming up · \($0.name)" } ?? "Coming up").lineLimit(1)
+                Spacer()
+            }
+        }
+    }
+
+    private func mark(_ id: UUID, _ done: Bool) {
+        lingering.mark(id, done: done)
+        Task { await model.setCompleted(id, done) }
+    }
+}
+
+/// The day under the pointer. Only the chart and its header read it, so a pointer moving over the chart redraws
+/// those two and nothing else.
+@MainActor @Observable final class ChartPointer {
+    var day: DateInterval?
+}
+
+/// An obligation as a table row, with what it sorts by.
+struct ItemRow: Identifiable {
+    let id: UUID
+    let title: String
+    let course: String
+    let due: Date
+    let dueHasTime: Bool
+    let component: String
+    /// Share of the grade at stake; -1 when unknown, so it sorts under every known weight.
+    let weight: Double
+    let done: Bool
+    /// Just checked off, still listed for a moment.
+    let lingering: Bool
+
+    @MainActor init(_ o: Obligation, lingering: Lingering) {
+        id = o.id
+        title = o.title
+        course = o.course?.displayName ?? ""
+        due = o.due ?? .distantFuture
+        dueHasTime = o.dueHasTime
+        component = o.componentName ?? ""
+        weight = o.pointsAtStake ?? -1
+        done = o.completedAt != nil
+        self.lingering = lingering.contains(o.id)
+    }
+}
+
+/// Items in a table: a ring to check one off, its name, course, due date, the grade row it counts toward and its
+/// weight. Sortable by every column but the ring; a double-click edits, Delete bins the selection, the context menu
+/// does all three, and one selected item is what the Item menu acts on.
+struct ItemTable: View {
+    let rows: [ItemRow]
+    @Binding var selection: Set<UUID>
+    @Binding var sortOrder: [KeyPathComparator<ItemRow>]
+    /// False when every row is one course's (the page is narrowed, or it is the course's own page).
+    var showsCourse = true
+    /// What an empty table says in its place.
+    var emptyText = "Nothing due."
+    var mark: (UUID, Bool) -> Void
+    var edit: (UUID) -> Void
+    var delete: (Set<UUID>) -> Void
+
+    var body: some View {
+        Table(rows, selection: $selection, sortOrder: $sortOrder) {
+            TableColumn("") { row in
+                Button { mark(row.id, !row.done) } label: { DoneMark(done: row.done, size: 15).frame(width: 22, height: 22).contentShape(Rectangle()) }
+                    .buttonStyle(.plain)
+                    .help(row.done ? "Mark not done" : "Mark done")
+                    .accessibilityLabel(row.done ? "Done" : "Mark done")
+            }
+            .width(24)
+            TableColumn("Item", value: \.title) { row in
+                Text(row.title).fontWeight(.medium).strikethrough(row.done, color: .secondary).lineLimit(1).truncationMode(.tail)
+                    .help(row.title)
+            }
+            .width(min: 180, ideal: 280)
+            if showsCourse {
+                TableColumn("Course", value: \.course) { row in Text(row.course).foregroundStyle(.secondary).lineLimit(1) }
+                    .width(min: 100, ideal: 170)
+            }
+            TableColumn("Due", value: \.due) { row in Text(Design.due(row.due, hasTime: row.dueHasTime)).monospacedDigit().lineLimit(1) }
+                .width(min: 150, ideal: 200)
+            TableColumn("Counts Toward", value: \.component) { row in Text(row.component.isEmpty ? "—" : row.component).foregroundStyle(row.component.isEmpty ? .tertiary : .secondary).lineLimit(1) }
+                .width(min: 90, ideal: 150)
+            TableColumn("Weight", value: \.weight) { row in
+                Group { if row.weight >= 0 { Design.points(row.weight).fontWeight(.semibold) } else { Text("—").foregroundStyle(.tertiary) } }
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            .width(min: 56, ideal: 70)
+        }
+        .tableStyle(.inset(alternatesRowBackgrounds: true))
+        .scrollContentBackground(.hidden)
+        .scrollEdgeEffectStyle(.soft, for: .top)   // the table sits under the page's head, not the toolbar: no hard band up there
+        .opacity(rows.isEmpty ? 0.001 : 1)   // kept in the layout (its height), but an empty table's header says nothing
+        .overlay(alignment: .top) {
+            if rows.isEmpty { Text(emptyText).foregroundStyle(.secondary).padding(.top, 14).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Design.margin) }
+        }
+        .contextMenu(forSelectionType: UUID.self) { ids in
+            let chosen = rows.filter { ids.contains($0.id) }
+            if !chosen.isEmpty {
+                let allDone = chosen.allSatisfy(\.done)
+                Button(allDone ? "Mark Not Done" : "Mark Done") { for row in chosen { mark(row.id, !allDone) } }
+                if chosen.count == 1, let one = chosen.first { Button("Edit…") { edit(one.id) } }
+                Divider()
+                Button("Delete", role: .destructive) { delete(ids) }
+            }
+        } primaryAction: { ids in
+            if let first = ids.first, ids.count == 1 { edit(first) }
+        }
+        .onDeleteCommand { delete(selection) }
+        .focusedSceneValue(\.selectedItem, selection.count == 1 ? rows.first { selection.contains($0.id) }.map { SelectedItem(id: $0.id, done: $0.done) } : nil)   // Item ▸ Mark Done
+    }
+}
+
+/// What the chart is showing, set above it: a kicker, the deck (the day or the run of days under the pointer, else
+/// the one chosen, else the term), a line of figures, and on the trailing side the legend of what the colour means.
+private struct ChartHeader: View {
+    let data: StripData
+    let chosen: DateInterval?
+    let pointer: ChartPointer
+    let calendar: Calendar
+
+    enum Style { case long, short }
+
+    /// A run of days by name: a day, a week (Monday to Sunday, or however the calendar runs), or from one day to another.
+    static func name(of period: DateInterval, calendar: Calendar, style: Style) -> String {
+        let days = calendar.dateComponents([.day], from: period.start, to: period.end).day ?? 1
+        let last = period.end.addingTimeInterval(-1)
+        if days <= 1 { return period.start.formatted(style == .long ? .dateTime.weekday(.wide).month(.wide).day() : .dateTime.weekday(.abbreviated).month(.abbreviated).day()) }
+        if let week = calendar.dateInterval(of: .weekOfYear, for: period.start), week == period {
+            return "Week of \(period.start.formatted(style == .long ? .dateTime.month(.wide).day() : .dateTime.month(.abbreviated).day()))"
+        }
+        let month: Date.FormatStyle = style == .long ? .dateTime.month(.wide).day() : .dateTime.month(.abbreviated).day()
+        return "\(period.start.formatted(month)) – \(last.formatted(month))"
+    }
+
+    var body: some View {
+        let shown = pointer.day ?? chosen
+        HStack(alignment: .bottom, spacing: 24) {
+            VStack(alignment: .leading, spacing: 5) {
+                if let shown {
+                    let items = data.items.filter { $0.due >= shown.start && $0.due < shown.end }
+                    let points = items.filter { !$0.completed }.reduce(0) { $0 + ($1.points ?? 0) }
+                    let pileup = data.collisions.contains { $0.day >= shown.start && $0.day < shown.end }
+                    let days = calendar.dateComponents([.day], from: shown.start, to: shown.end).day ?? 1
+                    let kind = pileup ? "Pileup" : days <= 1 ? "Day" : calendar.dateInterval(of: .weekOfYear, for: shown.start) == shown ? "Week" : "\(days) days"
+                    Text(kicker(kind)).font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(pileup ? Design.accent : .secondary).lineLimit(1)
+                    Text(Self.name(of: shown, calendar: calendar, style: .long)).deck().lineLimit(1).contentTransition(.numericText())
+                    Text(items.isEmpty ? "Nothing due." : "\(items.count) item\(items.count == 1 ? "" : "s"), \(points.formatted(.number.precision(.fractionLength(0...1))))% of grades at stake.")
+                        .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                } else {
+                    Text(kicker("Semester")).font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(.secondary).lineLimit(1)
+                    Text(summary).deck().lineLimit(1)
+                    Text("Point at a day to read it. Click to choose it, drag across days to choose a stretch, or click a week's date.")
+                        .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+            HeatLegend()
+        }
+        .animation(.default, value: shown)
+    }
+
+    private func kicker(_ word: String) -> String { data.narrowedTo.map { "\(word) · \($0.name)" } ?? word }
+
+    private var summary: String {
+        let total = data.items.count, count = data.collisions.count
+        let pileups = count == 0 ? "no pileups" : count == 1 ? "one pileup" : "\(count) pileups"
+        return "\(total) obligation\(total == 1 ? "" : "s") on the horizon, \(pileups)."
+    }
+}
+
+/// What the chart's colour means (HIG: a legend for what position does not say): the accent deepens with the share
+/// of the grade at stake on a day.
+private struct HeatLegend: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("Less at stake").font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 2) {
+                ForEach([0.0, 5, 12, 25, 40], id: \.self) { points in
+                    RoundedRectangle(cornerRadius: 2).fill(Design.paper).overlay(RoundedRectangle(cornerRadius: 2).fill(Design.accent.opacity(Strip.heat(points: points))))
+                        .frame(width: 12, height: 12)
+                }
+            }
+            Text("More").font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(.bottom, 2)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("The deeper the colour, the more of the grade is at stake that day")
+    }
+}
+
+/// The term, day by day, one band per course (and one for everything above them when there are several). Top to
+/// bottom: the months, the weeks (each week's first date), the bands, and a foot for "Today". Left to right: the
+/// bands' names, then the days, each as wide as the window allows. Load is colour, never size (`Strip.heat`).
+private struct TermChart: View {
+    let data: StripData
+    @Binding var chosen: DateInterval?
+    let pointer: ChartPointer
+    /// Days of the items selected in the table, marked under the bands.
+    let marked: Set<Date>
+    let calendar: Calendar
+    @FocusState private var focused: Bool
+
+    fileprivate struct Geometry {
+        static let labelWidth: CGFloat = 176, monthTier: CGFloat = 22, weekTier: CGFloat = 18, row: CGFloat = 38, foot: CGFloat = 22
+        let width: CGFloat
+        let days: Int
+        let bands: Int
+        var plotX: CGFloat { Self.labelWidth }
+        var dayWidth: CGFloat { max(width - plotX, 1) / CGFloat(max(days, 1)) }
+        var bandsTop: CGFloat { Self.monthTier + Self.weekTier }
+        var bandsBottom: CGFloat { bandsTop + CGFloat(max(bands, 1)) * Self.row }
+        var height: CGFloat { bandsBottom + Self.foot }
+        func x(_ day: Int) -> CGFloat { plotX + CGFloat(day) * dayWidth }
+        /// The day at a point along the chart; a point left of the plot (over the bands' names) is the first day.
+        func day(at x: CGFloat) -> Int? { days == 0 ? nil : min(max(Int(floor((x - plotX) / dayWidth)), 0), days - 1) }
+        func rowTop(_ band: Int) -> CGFloat { bandsTop + CGFloat(band) * Self.row }
+    }
+
+    private var height: CGFloat { Geometry(width: 0, days: data.periods.count, bands: data.bands.count).height }
+
+    var body: some View {
+        GeometryReader { geo in
+            let g = Geometry(width: geo.size.width, days: data.periods.count, bands: data.bands.count)
+            ChartCanvas(data: data, g: g, chosen: chosen, pointer: pointer, marked: marked, calendar: calendar)
+                .overlay(alignment: .topLeading) { bandNames(g) }
+                .contentShape(Rectangle())
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let point):   // over the axis the week reads, as a click there chooses it; over the bands, the day
+                        guard point.x >= g.plotX, point.y < g.bandsBottom + 4, let i = g.day(at: point.x) else { pointer.day = nil; return }
+                        pointer.day = point.y < g.bandsTop ? calendar.dateInterval(of: .weekOfYear, for: data.periods[i].start) : data.periods[i]
+                    case .ended: pointer.day = nil
+                    }
+                }
+                .gesture(DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        guard value.startLocation.x >= g.plotX, value.startLocation.y >= g.bandsTop, abs(value.translation.width) >= 4,
+                              let a = g.day(at: value.startLocation.x), let b = g.day(at: value.location.x) else { return }
+                        chosen = DateInterval(start: data.periods[min(a, b)].start, end: data.periods[max(a, b)].end)   // a drag chooses the run of days it covers
+                    }
+                    .onEnded { value in
+                        focused = true
+                        guard abs(value.translation.width) < 4, value.startLocation.x >= g.plotX, let a = g.day(at: value.startLocation.x) else { return }
+                        let day = data.periods[a]
+                        if value.startLocation.y < g.bandsTop {   // a click on the axis: the week
+                            chosen = calendar.dateInterval(of: .weekOfYear, for: day.start)
+                        } else {
+                            chosen = chosen == day ? nil : day   // the same day again lets it go
+                        }
+                    })
+        }
+        .frame(height: height)
+        .focusable()
+        .focusEffectDisabled()   // a click focuses the chart for the arrow keys; the chosen day's ground shows where they act, a ring round the whole chart would say nothing
+        .focused($focused)
+        .onKeyPress(keys: [.leftArrow, .rightArrow], phases: [.down, .repeat]) { press in
+            step(press.key == .leftArrow ? -1 : 1, stretch: press.modifiers.contains(.shift))
+            return .handled
+        }
+        .onKeyPress(.escape) { guard chosen != nil else { return .ignored }; chosen = nil; return .handled }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("The term, day by day")
+        .accessibilityChildren {   // VoiceOver's path through the term: each week with something in it, and choosing it as its action
+            ForEach(weeks, id: \.start) { week in
+                let items = data.items.filter { $0.due >= week.start && $0.due < week.end }
+                let points = items.filter { !$0.completed }.reduce(0) { $0 + ($1.points ?? 0) }
+                Rectangle()
+                    .accessibilityLabel("Week of \(week.start.formatted(.dateTime.month(.wide).day()))")
+                    .accessibilityValue("\(items.count) item\(items.count == 1 ? "" : "s"), \(points.formatted(.number.precision(.fractionLength(0...1)))) percent of grades at stake")
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityAction { chosen = week }
+            }
+        }
+    }
+
+    /// The weeks with anything due in them.
+    private var weeks: [DateInterval] {
+        var seen: [Date: DateInterval] = [:]
+        for item in data.items { if let week = calendar.dateInterval(of: .weekOfYear, for: item.due) { seen[week.start] = week } }
+        return seen.values.sorted { $0.start < $1.start }
+    }
+
+    /// The arrow keys: the chosen day moves a day (Shift stretches the choice instead); with nothing chosen, today is.
+    private func step(_ by: Int, stretch: Bool) {
+        let days = data.periods
+        guard !days.isEmpty else { return }
+        let today = calendar.startOfDay(for: Date())
+        guard let chosen else {
+            chosen = days.first { $0.start == today } ?? days[0]
+            return
+        }
+        let first = days.firstIndex { $0.start == chosen.start } ?? 0
+        let last = days.lastIndex { $0.start < chosen.end } ?? first
+        if stretch {
+            let end = min(max(last + by, first), days.count - 1)
+            self.chosen = DateInterval(start: days[first].start, end: days[end].end)
+        } else {
+            let at = min(max((by < 0 ? first : last) + by, 0), days.count - 1)
+            self.chosen = days[at]
+        }
+    }
+
+    /// The bands' names, in the column beside their days.
+    private func bandNames(_ g: Geometry) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(data.bands) { band in
+                Text(band.name).font(.caption2.weight(.semibold)).textCase(.uppercase).kerning(0.6)
+                    .foregroundStyle(band.kind == .all ? .primary : .secondary)
+                    .lineLimit(1).truncationMode(.middle)
+                    .frame(width: Geometry.labelWidth - 16, height: Geometry.row, alignment: .leading)
+            }
+        }
+        .padding(.top, g.bandsTop)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+/// The chart's drawing: the ground of the chosen days and the one under the pointer, the months and weeks, the cells,
+/// the pileups, today, and the marks of the items selected in the table.
+private struct ChartCanvas: View {
+    let data: StripData
+    let g: TermChart.Geometry
+    let chosen: DateInterval?
+    let pointer: ChartPointer
+    let marked: Set<Date>
+    let calendar: Calendar
+
+    private func vertical(_ x: CGFloat, _ y0: CGFloat, _ y1: CGFloat) -> Path {
+        Path { p in p.move(to: CGPoint(x: x, y: y0)); p.addLine(to: CGPoint(x: x, y: y1)) }
+    }
+
+    /// The first and last day of a run, as indices along the chart.
+    private func indices(_ period: DateInterval) -> ClosedRange<Int>? {
+        guard let first = data.periods.firstIndex(where: { $0.end > period.start }),
+              let last = data.periods.lastIndex(where: { $0.start < period.end }), first <= last else { return nil }
+        return first...last
+    }
+
+    var body: some View {
+        let hover = pointer.day
+        Canvas { context, size in
+            let days = data.periods
+            guard !days.isEmpty else { return }
+            let today = calendar.startOfDay(for: Date())
+
+            // Grounds, behind everything: the chosen run of days, and the day under the pointer.
+            if let chosen, let run = indices(chosen) {
+                context.fill(Path(CGRect(x: g.x(run.lowerBound), y: g.bandsTop - 2, width: g.x(run.upperBound + 1) - g.x(run.lowerBound), height: g.bandsBottom - g.bandsTop + 4)),
+                             with: .color(.primary.opacity(0.1)))
+            }
+            if let hover, let run = indices(hover) {
+                context.fill(Path(CGRect(x: g.x(run.lowerBound), y: g.bandsTop - 2, width: g.x(run.upperBound + 1) - g.x(run.lowerBound), height: g.bandsBottom - g.bandsTop + 4)),
+                             with: .color(.primary.opacity(0.07)))
+            }
+
+            // Weeks: a faint rule at each week's first day, its date on the lower tier of the axis.
+            let weekWidth = g.dayWidth * 7
+            var flags: [ClosedRange<CGFloat>] = []   // where the pileups' dates sit, which the weeks' dates give way to
+            for collision in data.collisions {
+                guard let i = days.firstIndex(where: { $0.start == collision.day }) else { continue }
+                let label = context.resolve(Text(collision.day.formatted(.dateTime.month(.abbreviated).day())).font(.caption2.weight(.bold)).foregroundStyle(Design.accent))
+                let w = label.measure(in: CGSize(width: 120, height: 30)).width
+                let cx = min(max(g.x(i) + g.dayWidth / 2, g.plotX + w / 2), size.width - w / 2)
+                if flags.contains(where: { $0.overlaps((cx - w / 2 - 4)...(cx + w / 2 + 4)) }) { continue }
+                flags.append((cx - w / 2 - 4)...(cx + w / 2 + 4))
+                context.draw(label, at: CGPoint(x: cx, y: TermChart.Geometry.monthTier + TermChart.Geometry.weekTier / 2), anchor: .center)
+            }
+            for (i, day) in days.enumerated() where calendar.component(.weekday, from: day.start) == calendar.firstWeekday {
+                let x = g.x(i)
+                context.stroke(vertical(x, TermChart.Geometry.monthTier + 3, g.bandsBottom), with: .color(.secondary.opacity(0.14)), lineWidth: 1)
+                guard weekWidth >= 22 else { continue }
+                let label = context.resolve(Text(day.start.formatted(.dateTime.day())).font(.caption2).foregroundStyle(day.start == today ? .primary : .secondary))
+                let w = label.measure(in: CGSize(width: 40, height: 20)).width
+                guard !flags.contains(where: { $0.overlaps((x + 2)...(x + 4 + w)) }) else { continue }
+                context.draw(label, at: CGPoint(x: x + 3, y: TermChart.Geometry.monthTier + TermChart.Geometry.weekTier / 2), anchor: .leading)
+            }
+
+            // Months: a rule where each begins, its name on the upper tier in the widest spelling its room allows.
+            var index = 0
+            while index < days.count {
+                let month = calendar.dateInterval(of: .month, for: days[index].start)
+                let next = days.firstIndex { $0.start >= (month?.end ?? .distantFuture) } ?? days.count
+                let from = g.x(index), to = g.x(next)
+                let begins = calendar.component(.day, from: days[index].start) == 1
+                if begins { context.stroke(vertical(from, 0, g.bandsBottom), with: .color(.secondary.opacity(0.35)), lineWidth: 1) }
+                for face in [Date.FormatStyle.dateTime.month(.wide), .dateTime.month(.abbreviated)] {
+                    let name = context.resolve(Text(days[index].start.formatted(face)).font(.system(.subheadline, design: .serif, weight: .semibold)).foregroundStyle(.primary))
+                    guard name.measure(in: CGSize(width: 300, height: 30)).width <= to - from - 10 else { continue }
+                    context.draw(name, at: CGPoint(x: from + (begins ? 6 : 0), y: 1), anchor: .topLeading)
+                    break
+                }
+                index = next
+            }
+
+            // Lanes: a band's run of days as one soft ground, so a course reads across the term; then its cells: a day
+            // with anything due.
+            let cellHeight = TermChart.Geometry.row - 10
+            for band in 0..<data.bands.count {
+                let lane = CGRect(x: g.plotX, y: g.rowTop(band) + 5, width: g.x(days.count) - g.plotX, height: cellHeight)
+                context.fill(Path(roundedRect: lane, cornerRadius: 4), with: .color(.primary.opacity(0.035)))
+            }
+            for band in 0..<data.bands.count where band < data.cells.count {
+                for (i, day) in days.enumerated() {
+                    guard let cell = data.cells[band][day.start] else { continue }
+                    let rect = CGRect(x: g.x(i) + 0.5, y: g.rowTop(band) + 5, width: max(g.dayWidth - 1, 2), height: cellHeight)
+                    let shape = Path(roundedRect: rect, cornerRadius: min(3, rect.width / 2))
+                    context.fill(shape, with: .color(Design.paper))
+                    context.fill(shape, with: .color(Design.accent.opacity(Strip.heat(points: cell.points))))
+                    if rect.width >= 16 {   // a day wide enough carries its count
+                        let ink: Color = Strip.heat(points: cell.points) > 0.55 ? .black.opacity(0.75) : .primary
+                        context.draw(Text("\(cell.count)").font(.caption2.weight(.semibold)).foregroundStyle(ink), at: CGPoint(x: rect.midX, y: rect.midY))
+                    }
+                }
+            }
+
+            // Pileups: a rule through the day, over the cells, so a heavy day is never lost among its neighbours.
+            for collision in data.collisions {
+                guard let i = days.firstIndex(where: { $0.start == collision.day }) else { continue }
+                context.stroke(vertical(g.x(i) + g.dayWidth / 2, g.bandsTop - 2, g.bandsBottom), with: .color(.primary.opacity(0.65)), lineWidth: 1)
+            }
+
+            // The items selected in the table: a mark under their days.
+            for (i, day) in days.enumerated() where marked.contains(day.start) {
+                let rect = CGRect(x: g.x(i) + 0.5, y: g.bandsBottom + 2, width: max(g.dayWidth - 1, 3), height: 3)
+                context.fill(Path(roundedRect: rect, cornerRadius: 1.5), with: .color(Design.accent))
+            }
+
+            // Today, over everything.
+            if let i = days.firstIndex(where: { $0.start == today }) {
+                let tx = g.x(i) + g.dayWidth / 2
+                context.stroke(vertical(tx, g.bandsTop - 2, g.bandsBottom + 2), with: .color(.primary.opacity(0.7)), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                context.draw(Text("Today").font(.caption2.weight(.semibold)).foregroundStyle(.primary), at: CGPoint(x: tx, y: size.height), anchor: .bottom)
+            }
+        }
+    }
+}
+#endif

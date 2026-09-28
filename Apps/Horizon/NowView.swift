@@ -25,108 +25,137 @@ struct NowView: View {
 
     var body: some View {
         PageStack {
-            // A ZStack, not a Group: a transition needs a container to animate the change of what is inside it
-            // (modifiers on a Group attach to each branch, and the hand-over then happens in one frame).
-            ZStack {
-                switch stage {
-                case .working:
-                    ScrollView { WorkingLine(kicker: "Planning", line: "Reading your calendar and the coming weeks…") }
-                        .transition(.asymmetric(insertion: .opacity, removal: .opacity.combined(with: .offset(y: -16))))   // lifts away as the timetable takes its place
-                case .timetable:   // one view for the plan arriving and the plan settled: its rows carry over
-                    let plan = model.plan
-                    TimelineView(.periodic(from: .now, by: 60)) { context in
-                        PlanList(blocks: model.planning ? model.planDraft : plan?.blocks ?? [], note: model.planning ? nil : plan?.note,
-                                 now: context.date, asking: model.planning ? nil : plan?.awaitingAnswer(at: context.date)?.id,
-                                 streaming: model.planning, revealed: model.planning || model.planStreamed || revealed == plan?.id,
-                                 reduceMotion: reduceMotion, until: model.tonightEnd, usualEnd: model.usualPlanHours.end, edit: { editing = $0 }, delete: { model.deleteBlock($0) },
-                                 mark: { model.markBlock($0, done: $1) }, skip: { model.skipBlock($0, skipped: $1) }, chooseEnd: chooseEnd)
-                            .onChange(of: context.date) { _, _ in Task { await model.syncActivity() } }   // the minute turns: the activity may have a new block on
-                    }
-                    .onAppear { if let plan { reveal(plan.id) } }
-                    .onChange(of: plan?.id) { _, id in if let id { reveal(id) } }
-                    .transition(.opacity)
-                case .invitation:
-                    ScrollView {
-                        EditorialEmpty(title: "Today, planned.", deck: "One plan for the rest of today, around your calendar, with a reason on every block. Tell the planner what to respect, then plan.") {
-                            Button("Plan Today") { Task { await model.planToday() } }.buttonStyle(.borderedProminent)
-                            Button("Tell the Planner…") { telling = true }
-                        }
-                        .padding(.horizontal, 20)
-                        TonightUntil(end: model.tonightEnd, usual: model.usualPlanHours.end, choose: chooseEnd)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, 20)
-                        if !model.planInstructions.isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Hairline()
-                                Kicker("You told the planner").padding(.top, 12)
-                                Text(model.planInstructions).font(.subheadline).foregroundStyle(.secondary).lineLimit(4)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 20)
+            content
+                .navigationTitle("Now")
+                .toolbar {
+                    #if os(iOS)
+                    if model.plan != nil, !model.planning {
+                        ToolbarItem(placement: .primaryAction) {
+                            Button("Plan Again") { if model.planEdited { confirmingReplan = true } else { Task { await model.planToday() } } }
                         }
                     }
-                    .transition(.opacity)
-                }
-            }
-            .paper()
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.4), value: stage)
-            .navigationTitle("Now")
-            .toolbar {
-                #if os(iOS)
-                if model.plan != nil, !model.planning {
                     ToolbarItem(placement: .primaryAction) {
-                        Button("Plan Again") { if model.planEdited { confirmingReplan = true } else { Task { await model.planToday() } } }
+                        Menu {
+                            Button { adding = true } label: { Label("Add Block…", systemImage: "plus") }
+                            Button { telling = true } label: { Label("Tell the Planner…", systemImage: "text.bubble") }
+                        } label: { Label("More", systemImage: "ellipsis.circle") }
+                        .disabled(model.planning)
                     }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Menu {
-                        Button { adding = true } label: { Label("Add Block…", systemImage: "plus") }
-                        Button { telling = true } label: { Label("Tell the Planner…", systemImage: "text.bubble") }
-                    } label: { Label("More", systemImage: "ellipsis.circle") }
-                    .disabled(model.planning)
-                }
-                #else
-                ToolbarItemGroup(placement: .primaryAction) {   // every one of these is also in the Plan menu
-                    Button { adding = true } label: { Label("Add Block", systemImage: "plus") }.help("Add a block to the plan")
-                    Button { telling = true } label: { Label("Tell the Planner", systemImage: "text.bubble") }.help("What the planner should respect (⌥⌘T)")
-                    Button { if model.planEdited, model.plan != nil { confirmingReplan = true } else { Task { await model.planToday() } } } label: {
-                        Label(model.plan == nil ? "Plan Today" : "Plan Again", systemImage: "sun.horizon").labelStyle(.titleAndIcon)
+                    #else
+                    ToolbarSpacer(.fixed, placement: .primaryAction)   // the page's own, apart from the window's
+                    ToolbarItemGroup(placement: .primaryAction) {   // every one of these is also in the Plan menu
+                        Button { adding = true } label: { Label("Add Block", systemImage: "plus") }.help("Add a block to the plan")
+                        Button { telling = true } label: { Label("Tell the Planner", systemImage: "text.bubble") }.help("What the planner should respect (⌥⌘T)")
                     }
-                    .buttonStyle(.borderedProminent)   // the page's one prominent action, in words
-                    .disabled(model.planning)
-                    .help("Plan the rest of today (⇧⌘P)")
+                    if stage != .invitation {   // the invitation offers Plan Today itself: one prominent button on the page, not two
+                        ToolbarItem(placement: .primaryAction) {
+                            Button { if model.planEdited, model.plan != nil { confirmingReplan = true } else { Task { await model.planToday() } } } label: {
+                                Label(model.plan == nil ? "Plan Today" : "Plan Again", systemImage: "sun.horizon").labelStyle(.titleAndIcon)
+                            }
+                            .buttonStyle(.borderedProminent)   // the page's one prominent action, in words
+                            .disabled(model.planning)
+                            .help("Plan the rest of today (⇧⌘P)")
+                        }
+                    }
+                    #endif
                 }
-                #endif
-            }
-            .confirmationDialog("Replace the plan you edited?", isPresented: $confirmingReplan, titleVisibility: .visible) {
-                Button("Plan Again", role: .destructive) { model.planAgain() }
-            } message: {
-                Text("Your changes to today's blocks are lost.")
-            }
-            .onChange(of: confirmingReplan) { _, asking in if !asking { model.pendingTonightEnd = nil } }   // not planned again: tonight's end stays as it was
-            .sheet(item: $editing) { PlanBlockEditor(block: $0) }
-            .sheet(isPresented: $adding) { PlanBlockEditor(block: nil) }
-            .sheet(isPresented: $telling) { PlannerNotesEditor() }
-            .onAppear {
-                model.expirePlanIfStale()
-                if MainTabs.debugFlag("--plan"), !model.planning { Task { await model.planToday() } }   // DEBUG: plans afresh, whatever is on file
-                if MainTabs.debugFlag("--edit-block"), let first = model.plan?.blocks.first { editing = first }
-                if MainTabs.debugFlag("--plan-instructions") { telling = true }
-                if MainTabs.debugFlag("--mark-first-done"), let first = model.plan?.blocks.first(where: \.isOpen) { model.markBlock(first.id, done: true) }   // the first still to do, so a second launch marks the next
-                #if DEBUG
-                if MainTabs.debugOnce("--demo-plan") { model.demoPlan() }   // the Live Activity through each phase, without the planner
-                #endif
-                #if os(iOS)
-                if MainTabs.debugFlag("--intent-first-done"), let first = model.plan?.blocks.first {   // the Live Activity's button, without the button
-                    Task { do { _ = try await MarkBlockDoneIntent(blockID: first.id).perform() } catch { PlanCommands.log?("intent failed: \(error)") } }
+                .confirmationDialog("Replace the plan you edited?", isPresented: $confirmingReplan, titleVisibility: .visible) {
+                    Button("Plan Again", role: .destructive) { model.planAgain() }
+                } message: {
+                    Text("Your changes to today's blocks are lost.")
                 }
-                if MainTabs.debugOnce("--intent-first-skip"), let first = model.plan?.blocks.first(where: \.isOpen) {   // its Skip, the same way
-                    Task { do { _ = try await SkipBlockIntent(blockID: first.id).perform() } catch { PlanCommands.log?("intent failed: \(error)") } }
+                .onChange(of: confirmingReplan) { _, asking in if !asking { model.pendingTonightEnd = nil } }   // not planned again: tonight's end stays as it was
+                .sheet(item: $editing) { PlanBlockEditor(block: $0) }
+                .sheet(isPresented: $adding) { PlanBlockEditor(block: nil) }
+                .sheet(isPresented: $telling) { PlannerNotesEditor() }
+                .onAppear {
+                    model.expirePlanIfStale()
+                    if MainTabs.debugFlag("--plan"), !model.planning { Task { await model.planToday() } }   // DEBUG: plans afresh, whatever is on file
+                    if MainTabs.debugFlag("--edit-block"), let first = model.plan?.blocks.first { editing = first }
+                    if MainTabs.debugFlag("--plan-instructions") { telling = true }
+                    if MainTabs.debugFlag("--mark-first-done"), let first = model.plan?.blocks.first(where: \.isOpen) { model.markBlock(first.id, done: true) }   // the first still to do, so a second launch marks the next
+                    #if DEBUG
+                    if MainTabs.debugOnce("--demo-plan") { model.demoPlan() }   // the Live Activity through each phase, without the planner
+                    #endif
+                    #if os(iOS)
+                    if MainTabs.debugFlag("--intent-first-done"), let first = model.plan?.blocks.first {   // the Live Activity's button, without the button
+                        Task { do { _ = try await MarkBlockDoneIntent(blockID: first.id).perform() } catch { PlanCommands.log?("intent failed: \(error)") } }
+                    }
+                    if MainTabs.debugOnce("--intent-first-skip"), let first = model.plan?.blocks.first(where: \.isOpen) {   // its Skip, the same way
+                        Task { do { _ = try await SkipBlockIntent(blockID: first.id).perform() } catch { PlanCommands.log?("intent failed: \(error)") } }
+                    }
+                    #endif
                 }
-                #endif
+        }
+    }
+
+    /// On a Mac the day's context sits in a column beside the plan (tonight's end, what the planner was told, what
+    /// is due soon); a phone keeps them under the plan.
+    @ViewBuilder private var content: some View {
+        #if os(macOS)
+        HStack(alignment: .top, spacing: 0) {
+            stages.frame(maxWidth: .infinity)
+            NowRail(end: model.tonightEnd, usualEnd: model.usualPlanHours.end, chooseEnd: chooseEnd, tell: { telling = true })
+                .frame(width: 300)
+        }
+        .background(Design.paper)
+        #else
+        stages
+        #endif
+    }
+
+    /// The planner at work, the timetable, or the invitation.
+    private var stages: some View {
+        // A ZStack, not a Group: a transition needs a container to animate the change of what is inside it
+        // (modifiers on a Group attach to each branch, and the hand-over then happens in one frame).
+        ZStack {
+            switch stage {
+            case .working:
+                ScrollView { WorkingLine(kicker: "Planning", line: "Reading your calendar and the coming weeks…") }
+                    .transition(.asymmetric(insertion: .opacity, removal: .opacity.combined(with: .offset(y: -16))))   // lifts away as the timetable takes its place
+            case .timetable:   // one view for the plan arriving and the plan settled: its rows carry over
+                let plan = model.plan
+                TimelineView(.periodic(from: .now, by: 60)) { context in
+                    PlanList(blocks: model.planning ? model.planDraft : plan?.blocks ?? [], note: model.planning ? nil : plan?.note,
+                             now: context.date, asking: model.planning ? nil : plan?.awaitingAnswer(at: context.date)?.id,
+                             streaming: model.planning, revealed: model.planning || model.planStreamed || revealed == plan?.id,
+                             reduceMotion: reduceMotion, until: model.tonightEnd, usualEnd: model.usualPlanHours.end, edit: { editing = $0 }, delete: { model.deleteBlock($0) },
+                             mark: { model.markBlock($0, done: $1) }, skip: { model.skipBlock($0, skipped: $1) }, chooseEnd: chooseEnd)
+                        .onChange(of: context.date) { _, _ in Task { await model.syncActivity() } }   // the minute turns: the activity may have a new block on
+                }
+                .onAppear { if let plan { reveal(plan.id) } }
+                .onChange(of: plan?.id) { _, id in if let id { reveal(id) } }
+                .transition(.opacity)
+            case .invitation:
+                ScrollView {
+                    EditorialEmpty(title: "Today, planned.", deck: "One plan for the rest of today, around your calendar, with a reason on every block. Tell the planner what to respect, then plan.") {
+                        Button("Plan Today") { Task { await model.planToday() } }.buttonStyle(.borderedProminent)
+                        #if os(iOS)   // a Mac has it in the column beside the page
+                        Button("Tell the Planner…") { telling = true }
+                        #endif
+                    }
+                    .padding(.horizontal, 20)
+                    #if os(iOS)   // a Mac keeps these in the column beside the page
+                    TonightUntil(end: model.tonightEnd, usual: model.usualPlanHours.end, choose: chooseEnd)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 20)
+                    if !model.planInstructions.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Hairline()
+                            Kicker("You told the planner").padding(.top, 12)
+                            Text(model.planInstructions).font(.subheadline).foregroundStyle(.secondary).lineLimit(4)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 20)
+                    }
+                    #endif
+                }
+                .transition(.opacity)
             }
         }
+        .paper()
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.4), value: stage)
     }
 
     /// Tonight's end chosen: the plan on file is made again up to it, after asking when it was edited by hand.
@@ -177,10 +206,28 @@ private struct PlanList: View {
         return block.id == asking || now >= block.end ? "Not Finished" : "Skip"
     }
 
+    /// The day and the time, the planner's note, and how much is done.
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Kicker(PlanHours.day(of: now, calendar: .current).formatted(.dateTime.weekday(.wide).month(.wide).day()))   // after midnight, the night's own day
+                Spacer()
+                Kicker(now.formatted(date: .omitted, time: .shortened))
+            }
+            if let note { Text(note).font(.footnote).foregroundStyle(.secondary).textCase(nil) }
+            if done > 0, !streaming { Kicker(done == blocks.count ? "All done" : "\(done) of \(blocks.count) done") }
+        }
+        .frame(maxWidth: 820, alignment: .leading)   // the timetable's own measure
+        .padding(.bottom, 4)
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             List {
                 Section {
+                    #if os(macOS)
+                    header.pageRow(top: 16, bottom: 10).accessibilityAddTraits(.isHeader)   // a row: a Mac pins a header on window grey, off the paper
+                    #endif
                     ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
                         Button { edit(block) } label: {
                             BlockRow(block: block, now: now, asking: block.id == asking, first: index == 0, last: index == blocks.count - 1, arriving: streaming, reduceMotion: reduceMotion,
@@ -190,7 +237,7 @@ private struct PlanList: View {
                         .allowsHitTesting(!streaming)   // not `disabled`, which would dim the rows as they arrive
                         .frame(maxWidth: 820, alignment: .leading)   // a measure: a wide window does not stretch a timetable
                         .id(block.id)
-                        .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+                        .pageRow(top: 0, bottom: 0)
                         .listRowSeparator(.hidden)
                         .opacity(revealed ? 1 : 0)
                         .offset(y: revealed ? 0 : 14)
@@ -223,29 +270,24 @@ private struct PlanList: View {
                         .padding(.vertical, 14)
                         .id("planning")
                         .transition(.opacity)
-                        .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+                        .pageRow(top: 0, bottom: 0)
                         .listRowSeparator(.hidden)
                         .accessibilityLabel("Planning the rest")
                     } else {
                         if blocks.isEmpty { Text("Nothing planned. Add a block, or plan again.").foregroundStyle(.secondary).listRowSeparator(.hidden) }
+                        #if os(iOS)   // a Mac keeps it in the column beside the page
                         // Where the plan stops, the choice of where it stops tonight.
                         TonightUntil(end: until, usual: usualEnd, choose: chooseEnd)
                             .padding(.leading, blocks.isEmpty ? 0 : 92 + 34)   // under the words, past the time column and the rail
                             .padding(.vertical, 14)
-                            .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+                            .pageRow(top: 0, bottom: 0)
                             .listRowSeparator(.hidden)
+                        #endif
                     }
                 } header: {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Kicker(PlanHours.day(of: now, calendar: .current).formatted(.dateTime.weekday(.wide).month(.wide).day()))   // after midnight, the night's own day
-                            Spacer()
-                            Kicker(now.formatted(date: .omitted, time: .shortened))
-                        }
-                        if let note { Text(note).font(.footnote).foregroundStyle(.secondary).textCase(nil) }
-                        if done > 0, !streaming { Kicker(done == blocks.count ? "All done" : "\(done) of \(blocks.count) done") }
-                    }
-                    .padding(.bottom, 4)
+                    #if os(iOS)
+                    header
+                    #endif
                 }
                 .onPaper()
             }

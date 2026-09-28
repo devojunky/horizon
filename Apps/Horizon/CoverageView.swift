@@ -2,8 +2,28 @@ import SwiftUI
 import SwiftData
 import HorizonCore
 
+extension Coverage {
+    /// Every course's story, in the order courses are shown in everywhere (Coverage, and the Mac's sidebar): the
+    /// user's own first; courses without one follow, most suspicious first.
+    @MainActor static func stories(courses: [Course], obligations: [Obligation], documents: [SourceDocument]) -> [CourseCoverage] {
+        let live = obligations.map(ObligationSnapshot.init)
+        let docs = documents.map(DocumentSnapshot.init)
+        let assessed = courses.map { assess(course: CourseSnapshot($0), obligations: live, documents: docs) }
+        return assessed.sorted { a, b in
+            switch (a.course.sortOrder, b.course.sortOrder) {
+            case (let x?, let y?): x < y
+            case (.some, nil): true
+            case (nil, .some): false
+            case (nil, nil): a.suspicion > b.suspicion
+            }
+        }
+    }
+}
+
+#if os(iOS)
 /// SPEC §6.1: not a task list; where the app is probably blind, one course per story, most suspicious first.
-/// Type carries the hierarchy: the course's name, a short line per finding, the figures quiet under them. No cards, no badges.
+/// Type carries the hierarchy: the course's name, a short line per finding, the figures quiet under them. No cards, no
+/// badges. (The Mac sets the stories side by side: `MacCoveragePage`.)
 struct CoverageList: View {
     /// A read is in progress: the empty-state invitation would contradict the live section above it.
     var reading = false
@@ -16,20 +36,7 @@ struct CoverageList: View {
     @Query(filter: #Predicate<Obligation> { $0.deletedAt == nil }) private var obligations: [Obligation]
     @Query(filter: #Predicate<SourceDocument> { $0.deletedAt == nil }) private var documents: [SourceDocument]
 
-    /// The user's own order first; courses without one follow, most suspicious first.
-    private var stories: [CourseCoverage] {
-        let live = obligations.map(ObligationSnapshot.init)
-        let docs = documents.map(DocumentSnapshot.init)
-        let assessed = courses.map { Coverage.assess(course: CourseSnapshot($0), obligations: live, documents: docs) }
-        return assessed.sorted { a, b in
-            switch (a.course.sortOrder, b.course.sortOrder) {
-            case (let x?, let y?): x < y
-            case (.some, nil): true
-            case (nil, .some): false
-            case (nil, nil): a.suspicion > b.suspicion
-            }
-        }
-    }
+    private var stories: [CourseCoverage] { Coverage.stories(courses: courses, obligations: obligations, documents: documents) }
 
     var body: some View {
         if courses.isEmpty, !reading, !hasUnfiled {
@@ -38,7 +45,7 @@ struct CoverageList: View {
             }
             .listRowSeparator(.hidden)
             .onPaper()
-            .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
+            .pageRow(top: 8, bottom: 8)
         }
         ForEach(stories) { story in
             Button { open(.course(story.course.id)) } label: {
@@ -48,7 +55,7 @@ struct CoverageList: View {
             .accessibilityHint("Opens the course")
             .listRowSeparator(.visible)
             .onPaper()
-            .listRowInsets(EdgeInsets(top: 18, leading: 20, bottom: 18, trailing: 20))
+            .pageRow(top: 18, bottom: 18)
         }
         .onMove { from, to in
             var order = stories.map(\.course.id)
@@ -60,12 +67,13 @@ struct CoverageList: View {
         }
     }
 }
+#endif
 
 /// One course, read top to bottom like a list row (HIG: the name to scan by, then what matters, then the quiet
 /// detail): its code, its name, what says the app may be blind there (one short line each), and its figures.
 struct CoverageStory: View {
     let story: CourseCoverage
-    /// iOS: the row opens the course page, so the name carries the chevron. The Mac's list selects instead.
+    /// The row opens the course's page (on a Mac, its place in the sidebar), so the name carries the chevron.
     var disclosure = false
 
     /// The code over the name, when the course has both.
@@ -85,6 +93,22 @@ struct CoverageStory: View {
                 Spacer(minLength: 0)
                 if disclosure { Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary) }
             }
+            CoverageFindings(story: story).padding(.top, 8)
+        }
+        // One sentence for VoiceOver, the figures after it.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(story.headline)
+        .accessibilityValue(story.facts.joined(separator: ", "))
+    }
+}
+
+/// What a story says under its course's name: one short line per finding ("Looks covered." when there is none),
+/// then the figures, quiet. Coverage's rows and, on a Mac, the head of a course's page.
+struct CoverageFindings: View {
+    let story: CourseCoverage
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
                 if story.findings.isEmpty {
                     Text("Looks covered.").foregroundStyle(.secondary)
@@ -92,15 +116,10 @@ struct CoverageStory: View {
                     ForEach(Array(story.findings.enumerated()), id: \.offset) { Text($0.element) }
                 }
             }
-            .font(Self.findingFont)
+            .font(CoverageStory.findingFont)
             .fixedSize(horizontal: false, vertical: true)
-            .padding(.top, 8)
             Facts(parts: story.facts).padding(.top, 10)
         }
-        // One sentence for VoiceOver, the figures after it.
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(story.headline)
-        .accessibilityValue(story.facts.joined(separator: ", "))
     }
 }
 

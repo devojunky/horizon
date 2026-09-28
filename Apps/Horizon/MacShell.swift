@@ -18,13 +18,21 @@ import AppKit
             switch self { case .coverage: "eye"; case .horizon: "chart.bar.xaxis"; case .now: "sun.horizon"; case .review: "checkmark.circle"; case .documents: "doc.text"; case .recentlyDeleted: "trash" }
         }
     }
-    var page: Page = .coverage
-    /// The course in Coverage's detail pane.
-    var course: UUID?
+    /// A page of the app, or a course's own page: what the sidebar has selected.
+    enum Destination: Hashable { case page(Page), course(UUID) }
+    var destination: Destination = .page(.coverage)
+    /// The page shown, when it is not a course's.
+    var page: Page? { if case .page(let page) = destination { page } else { nil } }
+    /// The course whose page is shown: the Course menu acts on it, and a document added here is filed under it.
+    var course: UUID? { if case .course(let id) = destination { id } else { nil } }
+    func show(_ page: Page) { destination = .page(page) }
+    func show(course id: UUID) { destination = .course(id) }
+
     var importing = false
     var addingItem = false
     var addingCourse = false
-    var editingCourse = false
+    /// The course being edited (Course ▸ Edit Course…, or the menu on its story or its row in the sidebar).
+    var editingCourse: UUID?
     var addingBlock = false
     var tellingPlanner = false
     var confirmingReplan = false
@@ -39,11 +47,15 @@ struct SelectedItem: Equatable {
 extension FocusedValues {
     @Entry var navigation: MacNavigation?
     @Entry var selectedItem: SelectedItem?
+    @Entry var reviewActions: ReviewActions?
 }
 
-/// The Mac window: a sidebar of the app's areas and a detail column, the toolbar carrying what acts on every page
-/// (Add Document, Sync), and a drop target for files from the Finder anywhere on it. Sheets the menu bar opens
-/// (Add Item, New Course, Edit Course, Add Block, Tell the Planner) live here.
+/// The Mac window: a sidebar of the app's areas and its courses, and a detail column (HIG: a sidebar holds the areas
+/// and the top-level collections; Reminders keeps its lists there, Mail its mailboxes). A course is a place of its
+/// own, one click from anywhere, and its page has the whole column: nothing is split inside the detail, so nothing
+/// in it moves when something is chosen. The toolbar carries what acts on every page (Add Document, Sync), each page
+/// adds its own after a gap, and a file from the Finder can be dropped anywhere on the window. Sheets the menu bar
+/// opens (Add Item, New Course, Edit Course, Add Block, Tell the Planner) live here.
 struct MacRootView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openSettings) private var openSettings
@@ -52,38 +64,42 @@ struct MacRootView: View {
     @State private var columns: NavigationSplitViewVisibility = .all
     @State private var dropping = false
 
-    private var selectedCourse: Course? { courses.first { $0.id == nav.course } }
+    private var shownCourse: Course? { nav.course.flatMap { id in courses.first { $0.id == id } } }
+    private var editedCourse: Course? { nav.editingCourse.flatMap { id in courses.first { $0.id == id } } }
 
     var body: some View {
         @Bindable var nav = nav
         NavigationSplitView(columnVisibility: $columns) {
-            Sidebar(page: $nav.page)
+            Sidebar(nav: nav)
         } detail: {
             detail
                 .toolbar {
+                    if shownCourse != nil { ToolbarSpacer(.flexible, placement: .primaryAction) }   // a course's page keeps its title off the toolbar: this holds the buttons at the trailing edge, where every other page has them
                     ToolbarItemGroup(placement: .primaryAction) {   // both are File menu commands as well
-                        ImportMenu().help("Add a document to read (⌘O)")
+                        ImportMenu(courseID: shownCourse?.id).help(shownCourse.map { "Add a document to \($0.displayName) (⌘O)" } ?? "Add a document to read (⌘O)")
                         Button { Task { await model.drainAndSync() } } label: { Label("Sync with Reminders", systemImage: "arrow.triangle.2.circlepath") }
                             .help("Read what is queued and sync with Reminders (⌘R)")
                     }
                 }
         }
         .focusedSceneValue(\.navigation, nav)
-        .dropDestination(for: URL.self) { urls, _ in   // a syllabus dragged out of the Finder
+        .dropDestination(for: URL.self) { urls, _ in   // a syllabus dragged out of the Finder; on a course's page, filed under it
             let files = urls.filter(\.isFileURL)
             guard !files.isEmpty else { return false }
-            Task { await model.importFiles(files) }
+            let course = shownCourse?.id
+            Task { await model.importFiles(files, courseID: course) }
             return true
         } isTargeted: { dropping = $0 }
-        .overlay { if dropping { DropVeil().transition(.opacity) } }
+        .overlay { if dropping { DropVeil(course: shownCourse?.displayName).transition(.opacity) } }
         .animation(.snappy, value: dropping)
         .frame(minWidth: 980, minHeight: 620)
         .fileImporter(isPresented: $nav.importing, allowedContentTypes: ImportMenu.readable, allowsMultipleSelection: true) { result in
-            if case .success(let urls) = result { Task { await model.importFiles(urls) } }
+            let course = shownCourse?.id
+            if case .success(let urls) = result { Task { await model.importFiles(urls, courseID: course) } }
         }
         .sheet(isPresented: $nav.addingItem) { ObligationEditor(mode: .manual, courses: courses) }
         .sheet(isPresented: $nav.addingCourse) { CourseEditor(course: nil) }
-        .sheet(isPresented: $nav.editingCourse) { if let selectedCourse { CourseEditor(course: selectedCourse) } }
+        .sheet(isPresented: Binding(get: { editedCourse != nil }, set: { if !$0 { nav.editingCourse = nil } })) { if let editedCourse { CourseEditor(course: editedCourse) } }
         .sheet(isPresented: $nav.addingBlock) { PlanBlockEditor(block: nil) }
         .sheet(isPresented: $nav.tellingPlanner) { PlannerNotesEditor() }
         .confirmationDialog("Replace the plan you edited?", isPresented: $nav.confirmingReplan, titleVisibility: .visible) {
@@ -92,40 +108,55 @@ struct MacRootView: View {
             Text("Your changes to today's blocks are lost.")
         }
         .onChange(of: nav.confirmingReplan) { _, asking in if !asking { model.pendingTonightEnd = nil } }   // not planned again: tonight's end stays as it was
+        .onChange(of: courses.map(\.id)) { _, ids in   // the course on show was deleted (here, or on another device): back to Coverage
+            if let id = nav.course, !ids.contains(id) { nav.show(.coverage) }
+        }
         .onAppear {
-            if MainTabs.debugFlag("--tab-horizon") { nav.page = .horizon }
-            if MainTabs.debugFlag("--tab-now") { nav.page = .now }
-            if MainTabs.debugFlag("--open-documents") { nav.page = .documents }
-            if MainTabs.debugFlag("--open-recently-deleted") { nav.page = .recentlyDeleted }
-            if MainTabs.debugFlag("--open-review") { nav.page = .review }
+            if MainTabs.debugFlag("--tab-horizon") { nav.show(.horizon) }
+            if MainTabs.debugFlag("--tab-now") { nav.show(.now) }
+            if MainTabs.debugFlag("--open-documents") { nav.show(.documents) }
+            if MainTabs.debugFlag("--open-recently-deleted") { nav.show(.recentlyDeleted) }
+            if MainTabs.debugFlag("--open-review") { nav.show(.review) }
+            if MainTabs.debugFlag("--open-course"), let first = Coverage.stories(courses: courses, obligations: [], documents: []).first { nav.show(course: first.course.id) }   // DEBUG: a course's page without a click
             if MainTabs.debugFlag("--open-settings") { openSettings() }
+            #if DEBUG
+            if MainTabs.debugFlag("--light") { NSApp.appearance = NSAppearance(named: .aqua) }   // the app's own appearance, for screenshots; the system's is left alone
+            if MainTabs.debugFlag("--dark") { NSApp.appearance = NSAppearance(named: .darkAqua) }
+            #endif
         }
     }
 
     @ViewBuilder private var detail: some View {
-        switch nav.page {
-        case .coverage: CoveragePane(nav: nav)
-        case .horizon: HorizonStripView()
-        case .now: NowView()
-        case .review: ReviewView()
-        case .documents: DocumentsTable()
-        case .recentlyDeleted: RecentlyDeletedTable()
+        switch nav.destination {
+        case .page(.coverage): MacCoveragePage(nav: nav)
+        case .page(.horizon): MacHorizonPage()
+        case .page(.now): NowView()
+        case .page(.review): MacReviewPage()
+        case .page(.documents): DocumentsTable()
+        case .page(.recentlyDeleted): RecentlyDeletedTable()
+        case .course:
+            if let shownCourse { MacCoursePage(course: shownCourse).id(shownCourse.id) } else { MacCoveragePage(nav: nav) }
         }
     }
 }
 
-/// The areas of the app, with what waits in two of them as badges.
+/// The areas of the app, what waits in two of them as badges, and the courses, in Coverage's order (the user's own,
+/// by dragging here or there). A course's row opens its page; its menu edits or deletes it, and so does the Delete key.
 private struct Sidebar: View {
-    @Binding var page: MacNavigation.Page
+    @Bindable var nav: MacNavigation
+    @Environment(AppModel.self) private var model
+    @Query(filter: #Predicate<Course> { $0.deletedAt == nil }) private var courses: [Course]
     @Query(filter: #Predicate<Obligation> { $0.deletedAt == nil }) private var obligations: [Obligation]
+    @Query(filter: #Predicate<SourceDocument> { $0.deletedAt == nil }) private var documents: [SourceDocument]
     @Query(filter: #Predicate<Course> { $0.deletedAt != nil && $0.erasedAt == nil }) private var binnedCourses: [Course]
     @Query(filter: #Predicate<SourceDocument> { $0.deletedAt != nil }) private var deletedDocuments: [SourceDocument]
 
     private var toReview: Int { obligations.filter { $0.state == .pendingReview && $0.completedAt == nil }.count }   // done needs no review
     private var binned: Int { binnedCourses.count + deletedDocuments.filter(\.isBinned).count }
+    private var ordered: [CourseCoverage] { Coverage.stories(courses: courses, obligations: obligations, documents: documents) }
 
     var body: some View {
-        List(selection: Binding(get: { Optional(page) }, set: { if let chosen = $0 { page = chosen } })) {
+        List(selection: Binding(get: { Optional(nav.destination) }, set: { if let chosen = $0 { nav.destination = chosen } })) {
             Section {
                 row(.coverage)
                 row(.horizon)
@@ -136,91 +167,42 @@ private struct Sidebar: View {
                 row(.documents)
                 row(.recentlyDeleted).badge(binned)
             }
+            if !ordered.isEmpty {
+                Section("Courses") {   // last, the way a Mac lists what grows (Music's playlists, Reminders' lists)
+                    ForEach(ordered) { story in
+                        Label { Text(story.displayName) } icon: { SidebarIcon(symbol: "book.closed") }
+                            .tag(MacNavigation.Destination.course(story.course.id))
+                            .contextMenu {
+                                Button("Edit Course…") { nav.editingCourse = story.course.id }
+                                Button("Delete Course", role: .destructive) { Task { await model.deleteCourse(story.course.id) } }
+                            }
+                    }
+                    .onMove { from, to in
+                        var order = ordered.map(\.course.id)
+                        order.move(fromOffsets: from, toOffset: to)
+                        Task { await model.reorderCourses(order) }
+                    }
+                }
+            }
         }
         .listStyle(.sidebar)
+        .onDeleteCommand { if let id = nav.course { Task { await model.deleteCourse(id) } } }   // to Recently Deleted: no dialog
         .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 320)
     }
 
-    /// The icon in the app's accent whatever accent the system is set to (a sidebar's icons otherwise take the
-    /// system's, blue by default, and ignore a tint set on the window).
     private func row(_ page: MacNavigation.Page) -> some View {
-        Label { Text(page.title) } icon: { Image(systemName: page.symbol).foregroundStyle(Design.accent) }.tag(page)
+        Label { Text(page.title) } icon: { SidebarIcon(symbol: page.symbol) }.tag(MacNavigation.Destination.page(page))
     }
 }
 
-/// Coverage on a Mac: the stories in a pane on the left, the selected course's page on the right, the divider theirs
-/// to move. A story stays highlighted while its course is shown; a right-click or the Delete key acts on it.
-private struct CoveragePane: View {
-    @Bindable var nav: MacNavigation
-    @Environment(AppModel.self) private var model
-    @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
-    @Query(filter: #Predicate<Obligation> { $0.deletedAt == nil }) private var obligations: [Obligation]
-    @Query(filter: #Predicate<SourceDocument> { $0.deletedAt == nil }) private var documents: [SourceDocument]
-
-    /// The user's own order first; courses without one follow, most suspicious first.
-    private var stories: [CourseCoverage] {
-        let live = obligations.map(ObligationSnapshot.init)
-        let docs = documents.map(DocumentSnapshot.init)
-        return courses.map { Coverage.assess(course: CourseSnapshot($0), obligations: live, documents: docs) }.sorted { a, b in
-            switch (a.course.sortOrder, b.course.sortOrder) {
-            case (let x?, let y?): x < y
-            case (.some, nil): true
-            case (nil, .some): false
-            case (nil, nil): a.suspicion > b.suspicion
-            }
-        }
-    }
-    private var selected: Course? { courses.first { $0.id == nav.course } }
-
+/// A sidebar row's icon in the app's accent whatever accent the system is set to (a sidebar's icons otherwise take
+/// the system's, blue by default, and ignore a tint set on the window), and white on the row while it is selected,
+/// where the accent is the highlight itself and an accent icon would vanish into it.
+private struct SidebarIcon: View {
+    let symbol: String
+    @Environment(\.backgroundProminence) private var prominence
     var body: some View {
-        HSplitView {
-            List(selection: $nav.course) {
-                IntakeStatus(openDocuments: { nav.page = .documents }).selectionDisabled()
-                if stories.isEmpty, model.reading == nil {
-                    EditorialEmpty(title: "Nothing on file.", deck: "Add a syllabus, a schedule, or a screenshot of an assignment list, or drop one on this window. Horizon reads it, writes the deadlines to Reminders, and tells you where it is still blind.") {
-                        ImportMenu().buttonStyle(.borderedProminent)
-                    }
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
-                    .selectionDisabled()
-                }
-                ForEach(stories) { story in
-                    CoverageStory(story: story)
-                        .tag(story.course.id)
-                        .listRowSeparator(.visible)
-                        .listRowSeparatorTint(Design.rule)
-                        .listRowInsets(EdgeInsets(top: 20, leading: 20, bottom: 20, trailing: 20))
-                        .contextMenu {
-                            Button("Edit Course…") { nav.course = story.course.id; nav.editingCourse = true }
-                            Button("Delete Course", role: .destructive) { Task { await model.deleteCourse(story.course.id) } }
-                        }
-                }
-                .onMove { from, to in
-                    var order = stories.map(\.course.id)
-                    order.move(fromOffsets: from, toOffset: to)
-                    Task { await model.reorderCourses(order) }
-                }
-            }
-            .listStyle(.inset)
-            .paper()
-            .animation(.default, value: courses.map(\.id))
-            .onDeleteCommand { if let id = nav.course { Task { await model.deleteCourse(id) } } }
-            .frame(minWidth: 320, idealWidth: 400, maxWidth: 560, maxHeight: .infinity)
-            Group {
-                if let selected {
-                    CourseView(course: selected).id(selected.id)
-                } else {
-                    ContentUnavailableView("No Course Selected", systemImage: "book", description: Text("Choose a course to see its grade table, items and policies."))
-                }
-            }
-            .frame(minWidth: 440, idealWidth: 480, maxWidth: .infinity, maxHeight: .infinity)   // a small ideal: the pane takes what the list leaves, never more than the column
-            .background(Design.paper)
-        }
-        .navigationTitle("Coverage")
-        .navigationSubtitle(selected?.displayName ?? "")
-        .onChange(of: courses.map(\.id), initial: true) { _, ids in   // something is always shown when there is something to show
-            if nav.course.map({ !ids.contains($0) }) ?? true { nav.course = stories.first?.course.id ?? ids.first }
-        }
+        Image(systemName: symbol).foregroundStyle(prominence == .increased ? AnyShapeStyle(.white) : AnyShapeStyle(Design.accent))
     }
 }
 
@@ -232,26 +214,33 @@ struct DocumentsTable: View {
     @State private var selection: Set<UUID> = []
     @State private var sortOrder = [KeyPathComparator(\SourceDocument.queuedAt, order: .reverse)]
     @State private var confirmDevice: [SourceDocument] = []   // waiting for Claude; the Mac may read them once the user says so
+    @State private var preview: URL?   // the document being looked at, in Quick Look
 
     private var rows: [SourceDocument] { documents.sorted(using: sortOrder) }
     private func chosen(_ ids: Set<UUID>) -> [SourceDocument] { documents.filter { ids.contains($0.id) } }
 
     var body: some View {
         Table(rows, selection: $selection, sortOrder: $sortOrder) {
-            TableColumn("Document", value: \.displayName) { doc in
+            TableColumn("Document", value: \.displayName) { doc in   // two lines on every row, so the rows keep one height
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(doc.displayName).fontWeight(.medium)
-                    if doc.displayName != doc.filename { Text(doc.filename).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }   // the file it came as
-                    if let failure = doc.failure { Text(failure).font(.caption).foregroundStyle(Design.accent) }
+                    Text(doc.displayName).fontWeight(.medium).lineLimit(1)
+                    Text(doc.displayName != doc.filename ? doc.filename : Self.kind(doc)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)   // the file it came as
+                }
+                .padding(.vertical, 3)
+            }
+            .width(min: 220, ideal: 320)
+            TableColumn("Status", value: \.statusLabel) { doc in
+                HStack(spacing: 4) {
+                    Text(doc.statusLabel).foregroundStyle(doc.status == .failed ? Design.accent : .primary)
+                        .help(doc.failure ?? "")   // why it could not be read, on hover
                     if !doc.warnings.isEmpty {   // what the read had to say, on hover
-                        Text(doc.warnings.count == 1 ? "1 note from the read" : "\(doc.warnings.count) notes from the read").font(.caption).foregroundStyle(.secondary)
+                        Text(doc.warnings.count == 1 ? "· 1 note" : "· \(doc.warnings.count) notes").foregroundStyle(.secondary)
                             .help(doc.warnings.joined(separator: "\n"))
                     }
                 }
-                .padding(.vertical, 2)
+                .lineLimit(1)
             }
-            .width(min: 220, ideal: 320)
-            TableColumn("Status", value: \.statusLabel) { doc in Text(doc.statusLabel) }.width(min: 80, ideal: 120)
+            .width(min: 100, ideal: 150)
             TableColumn("Course") { doc in
                 if let course = doc.course { Text(course.displayName) }
                 else if doc.status == .parsed, !courses.isEmpty {
@@ -262,7 +251,7 @@ struct DocumentsTable: View {
                 } else { Text("—").foregroundStyle(.tertiary) }
             }
             .width(min: 120, ideal: 180)
-            TableColumn("Added", value: \.queuedAt) { doc in Text(doc.queuedAt.formatted(date: .abbreviated, time: .shortened)) }.width(min: 130, ideal: 160)
+            TableColumn("Added", value: \.queuedAt) { doc in Text(Self.added(doc.queuedAt)).monospacedDigit() }.width(min: 140, ideal: 160)
             TableColumn("Read") { doc in
                 if doc.status == .parsed {
                     Text("\(doc.inputTokens) in · \(doc.outputTokens) out · \(doc.durationMs / 1000) s · \(Self.routeName(doc.route))").monospacedDigit().foregroundStyle(.secondary)
@@ -282,6 +271,10 @@ struct DocumentsTable: View {
         }
         .contextMenu(forSelectionType: UUID.self) { ids in
             let docs = chosen(ids)
+            if docs.count == 1, let doc = docs.first, model.hasFile(doc) {
+                Button("Open") { look(at: doc) }
+                Divider()
+            }
             if docs.contains(where: { $0.status == .failed || $0.status == .awaitingCloudParse || $0.status == .cancelled }) {
                 Button("Retry") { for doc in docs { Task { await model.retry(documentID: doc.id) } } }
             }
@@ -294,8 +287,18 @@ struct DocumentsTable: View {
                 }
             }
             Button("Delete", role: .destructive) { delete(ids) }
+        } primaryAction: { ids in   // a double-click opens the file, as the Finder does
+            if let doc = chosen(ids).first { look(at: doc) }
         }
         .onDeleteCommand { delete(selection) }
+        .onKeyPress(.space) {   // Space shows the selected file in Quick Look, as the Finder does
+            guard let doc = chosen(selection).first else { return .ignored }
+            look(at: doc)
+            return .handled
+        }
+        .quickLookPreview($preview)
+        .scrollContentBackground(.hidden)
+        .background(Design.paper)   // the page every other one sits on; the rows' stripes lie on it
         .opacity(documents.isEmpty ? 0 : 1)
         .overlay {
             if documents.isEmpty {
@@ -306,6 +309,25 @@ struct DocumentsTable: View {
         .navigationTitle("Documents")
     }
 
+    /// When a document came in: the day and the time, the year only when it is not this one.
+    static func added(_ date: Date) -> String {
+        Calendar.current.isDate(date, equalTo: Date(), toGranularity: .year)
+            ? date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
+            : date.formatted(.dateTime.year().month(.abbreviated).day().hour().minute())
+    }
+
+    /// What a document is, for the line under a name that is its file's own.
+    static func kind(_ doc: SourceDocument) -> String {
+        let pages = doc.pageCount > 1 ? " · \(doc.pageCount) pages" : ""
+        switch doc.filename.split(separator: ".").last?.lowercased() {
+        case "pdf": return "PDF" + pages
+        case "docx": return "Word document" + pages
+        case "txt", "md": return "Text" + pages
+        case "png", "jpg", "jpeg", "heic", "gif", "tiff": return "Picture"
+        default: return "Document" + pages
+        }
+    }
+
     static func routeName(_ raw: String?) -> String {
         switch raw { case "onDevice": "on this Mac"; case "claude": "Claude"; case "privateCloudCompute": "Private Cloud Compute"; case "openAI": "OpenAI"; default: raw ?? "" }   // the last two: documents read before Claude
     }
@@ -313,6 +335,12 @@ struct DocumentsTable: View {
     private func delete(_ ids: Set<UUID>) {   // straight to Recently Deleted, restorable for 30 days
         for id in ids { Task { await model.deleteDocument(id) } }
         selection.subtract(ids)
+    }
+
+    /// The file in Quick Look, when it is on this Mac.
+    private func look(at doc: SourceDocument) {
+        guard model.hasFile(doc) else { return }
+        preview = model.previewFile(for: doc)
     }
 }
 
@@ -356,6 +384,7 @@ struct RecentlyDeletedTable: View {
         }
         .onDeleteCommand { erasing = chosen(selection) }
         .toolbar {
+            ToolbarSpacer(.fixed, placement: .primaryAction)   // the page's own, apart from the window's Add Document and Sync
             ToolbarItemGroup(placement: .primaryAction) {
                 Button { restore(selection) } label: { Label("Restore", systemImage: "arrow.uturn.backward") }
                     .help("Put the selection back").disabled(selection.isEmpty)
@@ -369,6 +398,8 @@ struct RecentlyDeletedTable: View {
         } message: {
             Text("This cannot be undone.")
         }
+        .scrollContentBackground(.hidden)
+        .background(Design.paper)
         .opacity(entries.isEmpty ? 0 : 1)
         .overlay {
             if entries.isEmpty {
@@ -404,13 +435,15 @@ struct RecentlyDeletedTable: View {
 
 /// The window while a file is dragged over it.
 private struct DropVeil: View {
+    /// The course whose page is showing: what is dropped there is filed under it.
+    var course: String?
     var body: some View {
         ZStack {
             Design.paper.opacity(0.88)
             VStack(spacing: 12) {
                 Image(systemName: "arrow.down.doc").font(.system(size: 44, weight: .light)).foregroundStyle(Design.accent)
                 Text("Drop to read").deck()
-                Text("A syllabus, a schedule, a screenshot.").foregroundStyle(.secondary)
+                Text(course.map { "Filed under \($0)." } ?? "A syllabus, a schedule, a screenshot.").foregroundStyle(.secondary)
             }
             RoundedRectangle(cornerRadius: 18).strokeBorder(Design.accent, style: StrokeStyle(lineWidth: 2, dash: [10, 8])).padding(16)
         }
@@ -424,6 +457,7 @@ struct HorizonCommands: Commands {
     let model: AppModel
     @FocusedValue(\.navigation) private var nav
     @FocusedValue(\.selectedItem) private var item
+    @FocusedValue(\.reviewActions) private var review
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -444,14 +478,19 @@ struct HorizonCommands: Commands {
             pageItem(.documents, "5")
             pageItem(.recentlyDeleted, "6")
         }
-        CommandMenu("Course") {
-            Button("Edit Course…") { nav?.editingCourse = true }.keyboardShortcut("e").disabled(nav?.course == nil)
+        CommandMenu("Course") {   // the course whose page is showing
+            Button("Edit Course…") { nav?.editingCourse = nav?.course }.keyboardShortcut("e").disabled(nav?.course == nil)
             Button("Delete Course") { if let id = nav?.course { Task { await model.deleteCourse(id) } } }
                 .keyboardShortcut(.delete, modifiers: .command).disabled(nav?.course == nil)
         }
-        CommandMenu("Item") {   // the item highlighted on the course's page
+        CommandMenu("Item") {   // the item selected in a table (a course's items, Horizon's), and those selected in Review
             Button(item?.done == true ? "Mark Not Done" : "Mark Done") { if let item { Task { await model.setCompleted(item.id, !item.done) } } }
                 .keyboardShortcut("d", modifiers: [.command, .shift]).disabled(item == nil)
+            Divider()
+            Button(review.map { $0.count == 1 ? "Confirm" : "Confirm \($0.count) Items" } ?? "Confirm") { review?.confirm() }
+                .keyboardShortcut(.return, modifiers: .command).disabled(review == nil)
+            Button(review.map { $0.count == 1 ? "Discard" : "Discard \($0.count) Items" } ?? "Discard") { review?.discard() }
+                .disabled(review == nil)
         }
         CommandMenu("Plan") {
             Button(model.plan == nil ? "Plan Today" : "Plan Again") {
@@ -477,7 +516,7 @@ struct HorizonCommands: Commands {
 
     /// A page as a checked item in the View menu, with its number.
     private func pageItem(_ page: MacNavigation.Page, _ key: KeyEquivalent) -> some View {
-        Toggle(page.title, isOn: Binding(get: { nav?.page == page }, set: { if $0 { nav?.page = page } }))
+        Toggle(page.title, isOn: Binding(get: { nav?.page == page }, set: { if $0 { nav?.show(page) } }))
             .keyboardShortcut(key).disabled(nav == nil)
     }
 }
@@ -505,6 +544,30 @@ struct MacSettingsView: View {
                 .frame(width: 580, height: 640)
                 .tabItem { Label("Reading", systemImage: "doc.text.magnifyingglass") }
         }
+    }
+}
+#endif
+
+#if os(macOS) && DEBUG
+/// `--snapshot <path>` (DEBUG): a few seconds after launch the window draws itself into a PNG at `path`, toolbar
+/// and all, and a second one, `<path>-2.png`, a few seconds later; `screencapture` cannot see a window while the
+/// screen is locked, and this can.
+enum WindowSnapshot {
+    @MainActor static func writeIfAsked() async {
+        guard let i = CommandLine.arguments.firstIndex(of: "--snapshot"), i + 1 < CommandLine.arguments.count else { return }
+        let path = CommandLine.arguments[i + 1]
+        try? await Task.sleep(for: .seconds(4))
+        write(to: path)
+        try? await Task.sleep(for: .seconds(3))
+        write(to: path.replacingOccurrences(of: ".png", with: "-2.png"))
+    }
+
+    @MainActor private static func write(to path: String) {
+        guard let window = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain }),
+              let view = window.contentView?.superview ?? window.contentView,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
     }
 }
 #endif

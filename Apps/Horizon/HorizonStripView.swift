@@ -41,13 +41,14 @@ struct MainTabs: View {
 }
 
 /// A band of the strip: everything together, a course, or the items filed under none.
-private struct Band: Identifiable, Equatable {
+struct Band: Identifiable, Equatable {
     enum Kind: Hashable { case all, course(UUID), unfiled }
     var kind: Kind
     var name: String
     var id: Kind { kind }
 }
 
+#if os(iOS)
 /// Where things sit in the strip. Top to bottom: an axis of two tiers (a month's name where it begins; under it each
 /// bar's own date, so nothing is ever drawn over anything), one row per band (what a roomy band has to spare, then
 /// its name's line seated on its cells, then a gap), and a foot for "Today". Left to right: bars of one width, a week
@@ -102,9 +103,10 @@ private struct StripGeometry: Equatable {
 /// The list's rows as of the last pass. A bar that did not change keeps the closure it was made with (`equatable`),
 /// so what a tap needs to know about the page now is read from here, not captured then.
 @MainActor private final class RowsBox { var ids: [UUID] = [] }
+#endif
 
 /// Everything the page draws from, worked out once per pass instead of once per use.
-private struct StripData {
+struct StripData {
     var items: [StripItem] = []
     var bands: [Band] = []
     var bandItems: [[StripItem]] = []
@@ -121,11 +123,14 @@ private struct StripData {
     /// The band the page is narrowed to, when it is (a filter naming a course that has gone is no filter).
     var narrowedTo: Band?
 
+    /// A month's name on a bar's upper tier: where the month begins (with a rule), or a reminder of it on a week's first day.
+    struct Month: Equatable { var name: String; var begins: Bool }
+
     struct Bar: Identifiable, Equatable {
         var id: Date { period.start }
         var period: DateInterval
         var cells: [Strip.Cell?]
-        var month: StripBar.Month?
+        var month: Month?
         var today: Bool
         var pileupDate: Date?
     }
@@ -161,13 +166,14 @@ private struct StripData {
         bars = periods.map { period in
             // A month's name where it begins; and since nine days are across a phone and a month's first may be weeks away, each week's first day says the month again, quietly.
             let components = calendar.dateComponents([.day, .weekday], from: period.start)
-            let month: StripBar.Month? = components.day == 1 ? .init(name: period.start.formatted(.dateTime.month(.wide)), begins: true)
+            let month: Month? = components.day == 1 ? .init(name: period.start.formatted(.dateTime.month(.wide)), begins: true)
                 : components.weekday == calendar.firstWeekday ? .init(name: period.start.formatted(.dateTime.month(.abbreviated)), begins: false) : nil
             return Bar(period: period, cells: cells.map { $0[period.start] }, month: month, today: period.start == today, pileupDate: pileups[period.start])
         }
     }
 }
 
+#if os(iOS)
 /// SPEC §6.2: one continuous strip of the term, one band per course, and above them (when there are several) a band
 /// for everything, where the shape of the term shows. Load is colour, not size: the accent deepens with the points
 /// at stake, and a cell carries its count. Days where heavy items pile up are called out.
@@ -176,8 +182,9 @@ private struct StripData {
 /// makes it, drawn once. Its bars are not controls; the whole of it is one, and a touch means "look closer here": the
 /// strip goes to days at that week, with the week chosen, so the list under it is that week's work. Days are for
 /// working: a bar is a day, a real button the full height of the strip and never narrower than the HIG's control size
-/// (44 points for a finger, 28 for a pointer), so the strip scrolls, and a line above it keeps the whole term in
-/// view with a window on where the strip is. A pinch goes between the two, keeping the date under the fingers.
+/// for a finger (44 points), so the strip scrolls, and a line above it keeps the whole term in view with a window on
+/// where the strip is. A pinch goes between the two, keeping the date under the fingers. (A pointer can point at a
+/// day a few points wide, so the Mac shows the whole term by day at once: `MacHorizonPage`.)
 ///
 /// The page is one scroll (HIG: no competing scroll regions; the days scroll sideways inside it): the range, the
 /// header, the strip, then the list. Built to cost nothing at rest and little in motion: the overview is one canvas
@@ -194,7 +201,6 @@ struct HorizonStripView: View {
     @State private var rows = RowsBox()
     @State private var filter: Band.Kind = .all      // the course the page is narrowed to; everything, until the user says otherwise
     @State private var chosen: DateInterval?         // the week (from the overview) or the day (from its bar) whose work the list shows
-    @State private var hover: DateInterval?          // macOS: the week or day under the pointer reads in the header without a click
     @State private var editing: Obligation?
     @State private var lingering = Lingering()       // just checked off under "Coming up": crossed off for a moment before it leaves, so a slip can be undone
     @State private var listHeadY: CGFloat = 0        // where the list begins on the screen, to know when a chosen period's items are under the fold
@@ -203,11 +209,7 @@ struct HorizonStripView: View {
     /// What sits above the strip on the page (the range, the header, the overview), and what the list needs to show
     /// its head (its kicker and two rows): the strip's bands share the rest.
     private let chromeAbove: CGFloat = 230, listHead: CGFloat = 170
-    #if os(macOS)
-    private let touch = false
-    #else
     private let touch = true
-    #endif
 
     private func geometry(in size: CGSize, data: StripData) -> StripGeometry {
         let rows = max(data.bands.count, 1)
@@ -248,16 +250,14 @@ struct HorizonStripView: View {
                 ScrollViewReader { page in
                     List {
                         Section {
-                            #if os(iOS)
                             RangeTabs(selection: Binding(get: { level }, set: { setLevel($0, data: data, g: g, width: geo.size.width) }))
                                 .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
-                            #endif
-                            StripHeader(level: level, cell: cell(for: hover ?? chosen, among: data.items), total: data.items.count, collisions: data.collisions, course: data.narrowedTo?.name)
-                                .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 10, trailing: 20))
+                            StripHeader(level: level, cell: cell(for: chosen, among: data.items), total: data.items.count, collisions: data.collisions, course: data.narrowedTo?.name)
+                                .pageRow(top: 8, bottom: 10)
                             if contentWidth > geo.size.width + 1 {   // the term does not fit across: a line that shows all of it, and where the strip is in it
                                 TermOverview(data: data, motion: motion, contentWidth: contentWidth, viewport: geo.size.width, calendar: calendar)
                                     .transition(.opacity)
-                                .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 2, trailing: 20))
+                                    .pageRow(top: 0, bottom: 2)
                             }
                             strip(data, g, width: geo.size.width) { period in
                                 guard Date().timeIntervalSince(motion.pinchedAt) > 0.4 else { return }   // two fingers lifting are not a tap
@@ -270,20 +270,12 @@ struct HorizonStripView: View {
                                 }
                                 if chosen != nil { reveal(page, viewportBottom: geo.frame(in: .global).maxY) }
                             }
-                            .listRowInsets(EdgeInsets())
+                            .bleedRow()   // edge to edge: the strip keeps the page's margins inside itself
                         }
                         .listRowSeparator(.hidden)
                         .onPaper()
                         Section {
-                            ForEach(listed) { obligation in
-                                Button { editing = obligation } label: { ObligationRow(obligation: obligation, showCourse: data.narrowedTo == nil, mark: { mark(obligation.id, $0) }) }   // narrowed to a course, a row need not say which
-                                    .buttonStyle(.plain)
-                                    .id(obligation.id)   // what `reveal` scrolls to
-                                    .obligationActions(done: obligation.completedAt != nil, mark: { mark(obligation.id, $0) }, edit: { editing = obligation },
-                                                       delete: { Task { await model.discard(obligation.id) } })
-                                    .accessibilityHint("Opens the editor")
-                            }
-                            if listed.isEmpty { Text(chosen == nil ? "Nothing coming up." : "Nothing due.").foregroundStyle(.secondary).id("nothing") }
+                            comingUp(listed, data: data)
                         } header: {
                             listHeader(data).onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { listHeadY = $0 }
                         }
@@ -327,15 +319,6 @@ struct HorizonStripView: View {
                 if data.choices.count > 1 {   // one course is its own filter
                     let narrowed = Binding(get: { data.narrowedTo?.kind ?? .all }, set: { filter = $0 })
                     ToolbarItem(placement: .primaryAction) {
-                        #if os(macOS)
-                        Picker("Course", selection: narrowed) {   // a pop-up button that says what is showing, where a Mac keeps a view's options
-                            Text("All Courses").tag(Band.Kind.all)
-                            Divider()
-                            ForEach(data.choices) { Text($0.name).tag($0.kind) }
-                        }
-                        .pickerStyle(.menu)
-                        .help("Show one course, or all of them")
-                        #else
                         Menu {
                             Picker("Course", selection: narrowed) {
                                 Text("All Courses").tag(Band.Kind.all)
@@ -345,22 +328,9 @@ struct HorizonStripView: View {
                             Label("Filter by Course", systemImage: data.narrowedTo == nil ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
                         }
                         .accessibilityValue(data.narrowedTo?.name ?? "All courses")
-                        #endif
                     }
                 }
             }
-            #if os(macOS)
-            .toolbar {
-                ToolbarItem(placement: .principal) {   // the range as a segmented control in the toolbar, where a Mac keeps a view's options
-                    Picker("Range", selection: Binding(get: { level }, set: { landing = (chosen?.start ?? Date(), 0.2); level = $0 })) {   // the chosen period, else today, a little in from the leading edge
-                        Text("Semester").tag(Strip.Level.weeks)
-                        Text("Days").tag(Strip.Level.days)
-                    }
-                    .pickerStyle(.segmented)
-                    .help("The whole term to read, or its days to work from")
-                }
-            }
-            #endif
             .sheet(item: $editing) { ObligationEditor(mode: .edit($0), courses: courses) }
         }
     }
@@ -392,19 +362,11 @@ struct HorizonStripView: View {
                        hasItems: { i in data.cells.contains { $0[data.periods[i].start] != nil } }, reach: Strip.minimumBar(touch: touch) / 2).map { data.periods[$0] }
         }
         return Stretch(motion: motion) {
-            OverviewCanvas(data: data, g: g, chosen: hover, calendar: calendar)
+            OverviewCanvas(data: data, g: g, calendar: calendar)
                 .frame(width: width, height: g.height)
         }
         .contentShape(Rectangle())
         .onTapGesture { location in if let period = week(location.x) { choose(period) } }
-        #if os(macOS)
-        .onContinuousHover { phase in   // the pointer reads a week into the header; a click looks closer
-            switch phase {
-            case .active(let point): hover = week(point.x)
-            case .ended: hover = nil
-            }
-        }
-        #endif
         .simultaneousGesture(MagnifyGesture()
             .onChanged { value in
                 motion.pinchedAt = Date()
@@ -445,8 +407,8 @@ struct HorizonStripView: View {
 
     /// The days, to work from (`DaysStrip`).
     private func days(_ data: StripData, _ g: StripGeometry, width: CGFloat, choose: @escaping (DateInterval) -> Void) -> some View {
-        DaysStrip(bars: data.bars, totalFirst: data.bands.first?.kind == .all, g: g, width: width, motion: motion, lit: hover ?? chosen, calendar: calendar,
-                  choose: choose, hover: { period, inside in hover = inside ? period : (hover == period ? nil : hover) },
+        DaysStrip(bars: data.bars, totalFirst: data.bands.first?.kind == .all, g: g, width: width, motion: motion, lit: chosen, calendar: calendar,
+                  choose: choose,
                   pinchedIn: { anchorX in setLevel(.weeks, data: data, g: g, width: width, anchorX: anchorX) })
     }
 
@@ -460,7 +422,7 @@ struct HorizonStripView: View {
                         .foregroundStyle(band.kind == .all ? .primary : .secondary)
                         .padding(.trailing, 6).background(Design.paper)
                     Spacer(minLength: 0)
-                    if band.kind != .all, let cell = cell(for: hover ?? chosen, among: data.bandItems[index]), cell.count > 0 {
+                    if band.kind != .all, let cell = cell(for: chosen, among: data.bandItems[index]), cell.count > 0 {
                         Text(cell.points > 0 ? "\(cell.count) · \(cell.points.formatted(.number.precision(.fractionLength(0...1))))%" : "\(cell.count)").monospacedDigit()
                             .foregroundStyle(.secondary).padding(.leading, 6).background(Design.paper).transition(.opacity)
                     }
@@ -473,12 +435,26 @@ struct HorizonStripView: View {
         }
         .padding(.horizontal, g.inset)
         .padding(.top, g.axisHeight)
-        .animation(.default, value: hover ?? chosen)
+        .animation(.default, value: chosen)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
 
     /// Over the list: what it is a list of, and, for a chosen bar, the way back to what is coming up.
+    /// Under the strip: the chosen period's items, else what is coming up.
+    @ViewBuilder private func comingUp(_ listed: [Obligation], data: StripData) -> some View {
+        ForEach(listed) { obligation in
+            Button { editing = obligation } label: { ObligationRow(obligation: obligation, showCourse: data.narrowedTo == nil, mark: { mark(obligation.id, $0) }) }   // narrowed to a course, a row need not say which
+                .buttonStyle(.plain)
+                .id(obligation.id)   // what `reveal` scrolls to
+                .obligationActions(done: obligation.completedAt != nil, mark: { mark(obligation.id, $0) }, edit: { editing = obligation },
+                                   delete: { Task { await model.discard(obligation.id) } })
+                .accessibilityHint("Opens the editor")
+                .macRow(top: 4, bottom: 4)
+        }
+        if listed.isEmpty { Text(chosen == nil ? "Nothing coming up." : "Nothing due.").foregroundStyle(.secondary).id("nothing").macRow() }
+    }
+
     private func listHeader(_ data: StripData) -> some View {
         HStack(alignment: .firstTextBaseline) {
             if let chosen {
@@ -553,11 +529,10 @@ private struct DaysStrip: View {
     let g: StripGeometry
     let width: CGFloat
     let motion: StripMotion
-    /// The period chosen, or under the pointer: its days' bars stand on a soft ground.
+    /// The period chosen: its days' bars stand on a soft ground.
     let lit: DateInterval?
     let calendar: Calendar
     var choose: (DateInterval) -> Void
-    var hover: (DateInterval, Bool) -> Void
     /// A pinch in, with where the fingers were along the row: back to the semester.
     var pinchedIn: (CGFloat) -> Void
     @State private var position = ScrollPosition()
@@ -568,7 +543,7 @@ private struct DaysStrip: View {
                 LazyHStack(spacing: 0) {
                     ForEach(bars) { bar in
                         StripBar(bar: bar, totalFirst: totalFirst, g: g, chosen: lit.map { bar.period.start >= $0.start && bar.period.start < $0.end } ?? false,
-                                 choose: { choose(bar.period) }, hover: { hover(bar.period, $0) })
+                                 choose: { choose(bar.period) })
                             .equatable()
                     }
                 }
@@ -614,8 +589,6 @@ private struct Stretch<Content: View>: View {
 private struct OverviewCanvas: View {
     let data: StripData
     let g: StripGeometry
-    /// macOS: the week under the pointer.
-    let chosen: DateInterval?
     let calendar: Calendar
 
     private func vertical(_ x: CGFloat, from y0: CGFloat, to y1: CGFloat) -> Path {
@@ -628,11 +601,6 @@ private struct OverviewCanvas: View {
             let x: (Date) -> CGFloat = { g.inset + CGFloat($0.timeIntervalSince(origin) / (7 * 86_400)) * g.barWidth }
             let end = g.inset + CGFloat(data.periods.count) * g.barWidth
 
-            if let chosen {   // the week under the pointer: a soft ground behind each band's cells
-                for band in 0..<max(data.bands.count, 1) {
-                    context.fill(Path(CGRect(x: x(chosen.start), y: g.baseline(band) - g.cellsHeight, width: g.barWidth, height: g.cellsHeight)), with: .color(.primary.opacity(0.1)))
-                }
-            }
             // Upper tier: each month where it begins, in the widest spelling its room allows; the first, partial one from the strip's start.
             var month = calendar.dateInterval(of: .month, for: origin)?.start ?? origin
             while x(month) < end {
@@ -688,18 +656,14 @@ private struct OverviewCanvas: View {
 }
 
 /// One bar of the days: a day, the full height of the strip, and a button (HIG: a control is at least 44 points
-/// across for a finger, 28 for a pointer; `Strip.barWidth` sees to the width, the strip's height to the rest).
+/// across for a finger; `Strip.barWidth` sees to the width, the strip's height to the rest).
 /// Drawn once and then only moved by the scroll; equal inputs mean it is not drawn again.
 private struct StripBar: View, Equatable {
-    /// A month's name on the upper tier: where the month begins (with a rule), or a reminder of it on a week's first day.
-    struct Month: Equatable { var name: String; var begins: Bool }
-
     let bar: StripData.Bar
     let totalFirst: Bool
     let g: StripGeometry
     let chosen: Bool
     var choose: () -> Void
-    var hover: (Bool) -> Void
 
     nonisolated static func == (a: StripBar, b: StripBar) -> Bool {
         a.bar == b.bar && a.totalFirst == b.totalFirst && a.g == b.g && a.chosen == b.chosen
@@ -726,9 +690,6 @@ private struct StripBar: View, Equatable {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        #if os(macOS)
-        .onHover(perform: hover)
-        #endif
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(bar.period.start.formatted(.dateTime.weekday(.wide).month(.wide).day()))
         .accessibilityValue(summary)
@@ -947,17 +908,13 @@ private struct StripHeader: View {
                 let week = HorizonStripView.isWeek(cell.period)
                 Text(kicker(pileup ? "Pileup" : week ? "Week" : "Day")).font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(pileup ? Design.accent : .secondary).lineLimit(1)
                 Text(week ? "Week of \(cell.period.start.formatted(.dateTime.month(.wide).day()))" : cell.period.start.formatted(.dateTime.weekday(.wide).month(.wide).day()))
-                    .deck().lineLimit(2, reservesSpace: true).contentTransition(.numericText())
+                    .deck().lineLimit(Self.deckLines, reservesSpace: true).contentTransition(.numericText())
                 Text(cell.items.isEmpty ? "Nothing due." : "\(cell.count) item\(cell.count == 1 ? "" : "s"), \(cell.points.formatted(.number.precision(.fractionLength(0...1))))% of grades at stake.")
                     .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
             } else {
                 Text(kicker("Semester")).font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(.secondary).lineLimit(1)
-                Text(summary).deck().lineLimit(2, reservesSpace: true)
-                #if os(macOS)
-                Text(level == .weeks ? "Point at a week to read it; click to look closer." : "Point at a day to read it; click to keep it.").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                #else
+                Text(summary).deck().lineLimit(Self.deckLines, reservesSpace: true)
                 Text(level == .weeks ? "Tap a week to look closer." : "Tap a day to read it. Pinch for the semester.").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                #endif
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -965,8 +922,12 @@ private struct StripHeader: View {
         .animation(.default, value: level)
     }
 
+    /// The deck keeps one height whatever it says, so the strip under it never moves.
+    static let deckLines = 2
+
     private var summary: String {
         let pileups = collisions.count == 0 ? "no pileups" : collisions.count == 1 ? "one pileup" : "\(collisions.count) pileups"
         return "\(total) obligation\(total == 1 ? "" : "s") on the horizon, \(pileups)."
     }
 }
+#endif

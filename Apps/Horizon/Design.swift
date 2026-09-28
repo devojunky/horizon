@@ -18,6 +18,16 @@ enum Design {
     static let card = dynamic(light: (1.0, 0.996, 0.988), dark: (0.145, 0.139, 0.128))
     /// Hairline rules.
     static let rule = Color.primary.opacity(0.16)
+    /// Where a page's words begin and end: 20 points in from its column's edges, the inset of a Mac toolbar's title
+    /// and of iOS's own margins. Every row, header and deck on a page starts on this line.
+    static let margin: CGFloat = 20
+    /// What a plain list pads its rows by at either side, outside any insets they ask for: 8 points on a Mac
+    /// (measured), none on iOS.
+    #if os(macOS)
+    static let listPadding: CGFloat = 8
+    #else
+    static let listPadding: CGFloat = 0
+    #endif
 
     static func points(_ value: Double?) -> Text {
         guard let value else { return Text("") }
@@ -69,12 +79,67 @@ extension View {
     func paper() -> some View { scrollContentBackground(.hidden).background(Design.paper.ignoresSafeArea()) }
     /// A row or a section on the paper: no cell colour of its own, hairline separators. Row modifiers only take
     /// effect on rows and sections, never on the List, so every section of a plain list on the paper carries this.
-    /// On a Mac a list's rows are clear already, and a row background would paint over the selection highlight.
+    /// On a Mac a list's rows are clear already (a row background would paint over the selection highlight), and air
+    /// parts the rows instead of rules: a Mac list draws its separators from the words to the list's far edge, past
+    /// the margin, which reads as unfinished (HIG: group with negative space first).
     func onPaper() -> some View {
         #if os(macOS)
-        listRowSeparatorTint(Design.rule)
+        listRowSeparator(.hidden)
         #else
         listRowBackground(Color.clear).listRowSeparatorTint(Design.rule)
+        #endif
+    }
+
+    /// A row of a plain list set on the page's margins (`Design.margin`), with `top` and `bottom` of air: its words
+    /// start where the page's title does, on either platform. A Mac's list gives a row its top inset below it as well
+    /// (measured), so there the air is the row's own padding and the insets are the sides alone.
+    func pageRow(top: CGFloat = 10, bottom: CGFloat = 10) -> some View {
+        let side = Design.margin - Design.listPadding
+        #if os(macOS)
+        return padding(.top, top).padding(.bottom, bottom)
+            .listRowInsets(EdgeInsets(top: 0, leading: side, bottom: 0, trailing: side))
+        #else
+        return listRowInsets(EdgeInsets(top: top, leading: side, bottom: bottom, trailing: side))
+        #endif
+    }
+
+    /// A row on the page's margins on a Mac; iOS keeps its list's own insets, which are already on its margins.
+    func macRow(top: CGFloat = 6, bottom: CGFloat = 6) -> some View {
+        #if os(macOS)
+        pageRow(top: top, bottom: bottom)
+        #else
+        self
+        #endif
+    }
+
+    /// A row that runs from one edge of the list to the other, whatever the list pads its rows by (the strip, which
+    /// keeps its own margins inside).
+    func bleedRow() -> some View {
+        listRowInsets(EdgeInsets(top: 0, leading: -Design.listPadding, bottom: 0, trailing: -Design.listPadding))
+    }
+}
+
+/// A section of a page with a kicker over it. On iOS the kicker is the section's header; on a Mac it is the section's
+/// first row, since a plain list there pins a header on a band of window grey with a rule under it, off the paper.
+struct PageSection<Content: View>: View {
+    let kicker: String
+    var accent = false
+    /// Air above the kicker on a Mac, where it parts this section from the one before.
+    var spacing: CGFloat = 28
+    @ViewBuilder var content: Content
+
+    init(_ kicker: String, accent: Bool = false, spacing: CGFloat = 28, @ViewBuilder content: () -> Content) {
+        self.kicker = kicker; self.accent = accent; self.spacing = spacing; self.content = content()
+    }
+
+    var body: some View {
+        #if os(macOS)
+        Section {
+            Kicker(kicker, accent: accent).pageRow(top: spacing, bottom: 4).selectionDisabled().accessibilityAddTraits(.isHeader)
+            content
+        }
+        #else
+        Section { content } header: { Kicker(kicker, accent: accent) }
         #endif
     }
 }

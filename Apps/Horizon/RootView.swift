@@ -59,6 +59,7 @@ struct IntakeStatus: View {
                         Button(count == 1 ? "Read on This Device…" : "Read Them on This Device…") { confirmDevice = first }.buttonStyle(.bordered).controlSize(.small)
                     }
                 }
+                .macRow(top: 16, bottom: 4)
             }
             .listRowSeparator(.hidden)
             .onPaper()
@@ -81,6 +82,7 @@ struct IntakeStatus: View {
                     Button("Open System Settings") { if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders") { openURL(url) } }.controlSize(.small)
                     #endif
                 }
+                .macRow(top: 16, bottom: 4)
             }
             .listRowSeparator(.hidden)
             .onPaper()
@@ -90,6 +92,7 @@ struct IntakeStatus: View {
                     Label("The Horizon list is gone from Reminders, so deadlines stay in Horizon until it is back.", systemImage: "exclamationmark.triangle").foregroundStyle(Design.accent)
                     Button("Recreate List") { Task { await model.recreateRemindersList() } }.buttonStyle(.bordered).controlSize(.small)
                 }
+                .macRow(top: 16, bottom: 4)
             }
             .listRowSeparator(.hidden)
             .onPaper()
@@ -105,6 +108,7 @@ struct IntakeStatus: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityHint("Opens Documents")
+                .macRow(top: 16, bottom: 4)
             }
             .listRowSeparator(.hidden)
             .onPaper()
@@ -116,6 +120,7 @@ struct IntakeStatus: View {
                     else { Image(systemName: "arrow.triangle.2.circlepath") }
                 }
                 .foregroundStyle(model.lastError == nil ? .secondary : Design.accent)
+                .macRow(top: 16, bottom: 4)
             }
             .listRowSeparator(.hidden)
             .onPaper()
@@ -328,6 +333,7 @@ struct ReadingSection: View {
                 CreepingProgressBar(real: reading.fraction, mark: reading.nextMark)
             }
             .padding(.vertical, 4)
+            .macRow(top: 8, bottom: 4)
             if showDetails {
                 ForEach(reading.items) { item in
                     HStack(alignment: .firstTextBaseline) {
@@ -336,6 +342,7 @@ struct ReadingSection: View {
                         Text(item.dateAsWritten ?? "…").foregroundStyle(.secondary).monospacedDigit()
                     }
                     .font(.subheadline)
+                    .macRow(top: 2, bottom: 2)
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
@@ -445,14 +452,16 @@ struct ObligationRow: View {
 /// The mark on an obligation's row: a ring to press, a filled dot with a check once done (Now's done dot, at a row's size).
 struct DoneMark: View {
     let done: Bool
+    /// The ring's width: a row's 20 points, or smaller in a Mac table's row.
+    var size: CGFloat = 20
 
     var body: some View {
         ZStack {
             if done {
-                Circle().fill(.primary).frame(width: 20, height: 20)
-                Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(Design.paper)
+                Circle().fill(.primary).frame(width: size, height: size)
+                Image(systemName: "checkmark").font(.system(size: size / 2, weight: .bold)).foregroundStyle(Design.paper)
             } else {
-                Circle().strokeBorder(.secondary, lineWidth: 1.5).frame(width: 20, height: 20)
+                Circle().strokeBorder(.secondary, lineWidth: size > 16 ? 1.5 : 1.25).frame(width: size, height: size)
             }
         }
         .transition(.scale.combined(with: .opacity))

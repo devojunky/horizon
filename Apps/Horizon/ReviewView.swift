@@ -2,7 +2,9 @@ import SwiftUI
 import SwiftData
 import HorizonCore
 
-/// SPEC §4.1 step 6: one screen, one tap. Confirm as parsed, fix a field, or discard.
+#if os(iOS)
+/// SPEC §4.1 step 6: one screen, one tap. Confirm as parsed, fix a field, or discard. (The Mac's is a table with the
+/// same three actions on a selection: `MacReviewPage`.)
 struct ReviewView: View {
     @Environment(AppModel.self) private var model
     @Query(sort: \Obligation.due) private var obligations: [Obligation]
@@ -21,7 +23,7 @@ struct ReviewView: View {
             ForEach(pending) { item in
                 VStack(alignment: .leading, spacing: 8) {
                     ObligationRow(obligation: item)
-                    Text(reason(for: item)).font(.footnote).foregroundStyle(item.changeNote == nil ? .secondary : Design.accent)
+                    Text(item.reviewReason).font(.footnote).foregroundStyle(item.changeNote == nil ? .secondary : Design.accent)
                     HStack {
                         Button("Confirm", systemImage: "checkmark") { Task { await model.confirm(item.id) } }.buttonStyle(.bordered).tint(Design.accent)
                         Button("Edit") { editing = item }.buttonStyle(.bordered)
@@ -41,12 +43,25 @@ struct ReviewView: View {
         .navigationTitle("Review")
         .sheet(item: $editing) { ObligationEditor(mode: .review($0), courses: courses) }
     }
+}
+#endif
 
-    private func reason(for item: Obligation) -> String {
-        if let note = item.changeNote { return note }
+extension Obligation {
+    /// Why an item waits for review, in a line: what the date was read as, what the guards found, and how sure the
+    /// reader was; or what a later read changed (`changeNote`).
+    var reviewReason: String {
+        if let note = changeNote { return note }
         var parts: [String] = []
-        if let written = item.dateAsWritten, !written.isEmpty { parts.append("Read as “\(written)”") }
-        let flags = item.flags.compactMap { flag -> String? in
+        if let written = dateAsWritten, !written.isEmpty { parts.append("Read as “\(written)”") }
+        let found = reviewFlags
+        if !found.isEmpty { parts.append(found.joined(separator: ", ")) }
+        parts.append("Confidence \(Int((confidence * 100).rounded()))%")
+        return parts.joined(separator: " · ")
+    }
+
+    /// What the guards found, in words.
+    var reviewFlags: [String] {
+        flags.compactMap { flag -> String? in
             switch flag {
             case "dateNotInSource": "date not found in the document"
             case "dateDisagreement": "two readings of the date"
@@ -61,8 +76,5 @@ struct ReviewView: View {
             default: nil
             }
         }
-        if !flags.isEmpty { parts.append(flags.joined(separator: ", ")) }
-        parts.append("Confidence \(Int((item.confidence * 100).rounded()))%")
-        return parts.joined(separator: " · ")
     }
 }
