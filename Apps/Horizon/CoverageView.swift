@@ -70,16 +70,31 @@ struct CoverageStory: View {
 
     private var urgent: Bool { story.suspicion >= 0.7 }
 
+    /// The code over the sentence (the sentence names the course), when the course has both.
+    private var code: String? { story.course.title.isEmpty || story.course.code.isEmpty ? nil : story.course.code }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if !story.course.title.isEmpty, !story.course.code.isEmpty {
-                Kicker(story.course.code)   // the sentence names the course
+            if code != nil || story.updatedLine != nil {
+                // The course's code on the left and how fresh its documents are on the right, like the date and the time
+                // over Now's timetable; on a narrow screen the second goes under the first.
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        if let code { Kicker(code).lineLimit(1) }
+                        Spacer(minLength: 0)
+                        if let updated = story.updatedLine { Kicker(updated).lineLimit(1) }
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        if let code { Kicker(code) }
+                        if let updated = story.updatedLine { Kicker(updated) }
+                    }
+                }
             }
             Text(story.headline)
                 .font(.system(.title2, design: .serif, weight: .semibold))
                 .fixedSize(horizontal: false, vertical: true)
             HStack(alignment: .firstTextBaseline, spacing: 28) {
-                figure(story.daysSilent.map(String.init) ?? "—", label: "days silent", accent: (story.daysSilent ?? 99) >= 7)
+                figure(story.daysSilent.map(String.init) ?? "—", label: "days silent", accent: story.isSilent)
                 figure(String(story.upcoming14), label: "next 14 days", accent: false)
             }
             .padding(.top, 2)

@@ -53,16 +53,21 @@ public struct CourseSnapshot: Sendable, Identifiable, Equatable {
     public var lastIngested: Date?
     public var sortOrder: Int? = nil
     public var deletedAt: Date? = nil
+    /// When the course came into the app: where its silence starts counting before anything is completed.
+    public var createdAt: Date? = nil
 
     public init(id: UUID = UUID(), code: String, title: String, term: String? = nil, termStart: Date? = nil, termEnd: Date? = nil,
-                gradeComponents: [GradeComponent] = [], platforms: [String] = [], lastIngested: Date? = nil, sortOrder: Int? = nil, deletedAt: Date? = nil) {
+                gradeComponents: [GradeComponent] = [], platforms: [String] = [], lastIngested: Date? = nil, sortOrder: Int? = nil, deletedAt: Date? = nil,
+                createdAt: Date? = nil) {
         self.id = id; self.code = code; self.title = title; self.term = term; self.termStart = termStart; self.termEnd = termEnd
         self.gradeComponents = gradeComponents; self.platforms = platforms; self.lastIngested = lastIngested; self.sortOrder = sortOrder; self.deletedAt = deletedAt
+        self.createdAt = createdAt
     }
 
     public init(_ c: Course) {
         self.init(id: c.id, code: c.code, title: c.title, term: c.term, termStart: c.termStart, termEnd: c.termEnd,
-                  gradeComponents: c.gradeComponents, platforms: c.platforms, lastIngested: c.lastIngested, sortOrder: c.sortOrder, deletedAt: c.deletedAt)
+                  gradeComponents: c.gradeComponents, platforms: c.platforms, lastIngested: c.lastIngested, sortOrder: c.sortOrder, deletedAt: c.deletedAt,
+                  createdAt: c.createdAt)
     }
 
     /// What the app calls the course: its name, falling back to the code.

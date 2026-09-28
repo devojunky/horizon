@@ -5,25 +5,31 @@ import IngestKit
 
 struct CoverageTests {
     let now = Fixture.day(9, 21, hour: 12, minute: 0)   // Monday, September 21, 2026
-    func course(_ code: String, components: [GradeComponent] = [], platforms: [String] = [], lastIngested: Date? = nil) -> CourseSnapshot {
-        CourseSnapshot(code: code, title: code, termStart: Fixture.day(9, 2), termEnd: Fixture.day(12, 14), gradeComponents: components, platforms: platforms, lastIngested: lastIngested)
+    func course(_ code: String, components: [GradeComponent] = [], platforms: [String] = [], lastIngested: Date? = nil, createdAt: Date? = nil) -> CourseSnapshot {
+        CourseSnapshot(code: code, title: code, termStart: Fixture.day(9, 2), termEnd: Fixture.day(12, 14), gradeComponents: components, platforms: platforms,
+                       lastIngested: lastIngested, createdAt: createdAt)
     }
-    func obligation(_ title: String, due: Date?, course: CourseSnapshot, component: String? = nil, completed: Bool = false, platform: Platform = .syllabusOnly, document: UUID? = nil) -> ObligationSnapshot {
+    func obligation(_ title: String, due: Date?, course: CourseSnapshot, component: String? = nil, completed: Bool = false, completedAt: Date? = nil,
+                    platform: Platform = .syllabusOnly, document: UUID? = nil) -> ObligationSnapshot {
         ObligationSnapshot(id: UUID(), title: title, due: due, dueHasTime: false, platform: platform, componentName: component, pointsAtStake: nil, confidence: 1,
                            state: .projected, origin: .document, flags: [], notes: nil, userOverrides: [], ekExternalID: nil, projectedTitle: nil, projectedDue: nil,
-                           projectedNotes: nil, completedAt: completed ? now : nil, deletedAt: nil, changeNote: nil, createdOn: "A", courseID: course.id, courseCode: course.code,
-                           sourceDocumentID: document, sourcePage: nil)
+                           projectedNotes: nil, completedAt: completedAt ?? (completed ? now : nil), deletedAt: nil, changeNote: nil, createdOn: "A", courseID: course.id,
+                           courseCode: course.code, sourceDocumentID: document, sourcePage: nil)
     }
 
     @Test func nothingOnFile() {
         let empty = course("PHIL-UA 1")
         let c = Coverage.assess(course: empty, obligations: [], documents: [], now: now, calendar: Fixture.calendar)
         #expect(c.daysSilent == nil && c.upcoming14 == 0 && c.cadenceGaps.isEmpty && c.suspicion == 1)
-        #expect(c.headline == "PHIL-UA 1 has nothing on file.")
-        // A parsed document supplies the silence figure when the course itself records none; queued ones do not count.
+        #expect(c.headline == "PHIL-UA 1 has nothing on file." && c.updatedLine == nil)
+        // A parsed document says how fresh the course is when the course itself records nothing; queued ones do not count,
+        // and reading one is not the user doing anything: the silence is untouched.
         let parsed = DocumentSnapshot(id: UUID(), filename: "a.pdf", sha256: "a", kind: "pdf", status: .parsed, queuedAt: now, ingestedAt: Fixture.day(9, 14), deviceName: "A", platform: nil, courseID: empty.id)
         let queued = DocumentSnapshot(id: UUID(), filename: "b.pdf", sha256: "b", kind: "pdf", status: .queued, queuedAt: now, ingestedAt: now, deviceName: "A", platform: nil, courseID: empty.id)
-        #expect(Coverage.assess(course: empty, obligations: [], documents: [parsed, queued], now: now, calendar: Fixture.calendar).daysSilent == 7)
+        let read = Coverage.assess(course: empty, obligations: [], documents: [parsed, queued], now: now, calendar: Fixture.calendar)
+        #expect(read.daysSinceUpdate == 7 && read.updatedLine == "Updated 7 days ago" && read.daysSilent == nil)
+        #expect(read.headline == "PHIL-UA 1 has nothing due in the next two weeks." && read.suspicion == 0)   // something was read: not "nothing on file"
+        #expect(Coverage.assess(course: course("PHIL-UA 1", lastIngested: now), obligations: [], documents: [], now: now, calendar: Fixture.calendar).updatedLine == "Updated today")
     }
 
     @Test func windowRunsThroughTheEndOfDayFourteen() {
@@ -63,20 +69,51 @@ struct CoverageTests {
         #expect(c.headline == "BIO-UA 11's syllabus lists 4 essays; 1 on file.")
     }
 
-    @Test func silenceAndWindowCounts() {
-        let bio = course("BIO-UA 11", lastIngested: Fixture.day(9, 12))
-        let items = [obligation("Lab Report 1", due: Fixture.day(9, 25), course: bio), obligation("Exam 1", due: Fixture.day(10, 2), course: bio),
-                     obligation("Lab Report 2", due: Fixture.day(10, 26), course: bio), obligation("Done", due: Fixture.day(9, 23), course: bio, completed: true)]
-        let c = Coverage.assess(course: bio, obligations: items, documents: [], now: now, calendar: Fixture.calendar)
-        #expect(c.daysSilent == 9 && c.upcoming14 == 2)
-        #expect(c.headline == "BIO-UA 11 has been silent for 9 days.")
+    @Test func silenceCountsFromTheLastCompletionAndACheckResetsIt() {
+        // In the app since Sep 7; last checked something off on Sep 12; a reading fell due on Sep 15 and is still open.
+        let bio = course("BIO-UA 11", lastIngested: Fixture.day(9, 20), createdAt: Fixture.day(9, 7))
+        let checked = obligation("Lab Report 0", due: Fixture.day(9, 11), course: bio, completedAt: Fixture.day(9, 12, hour: 20, minute: 0))
+        let overdue = obligation("Reading 1", due: Fixture.day(9, 15), course: bio)
+        let ahead = [obligation("Lab Report 1", due: Fixture.day(9, 25), course: bio), obligation("Exam 1", due: Fixture.day(10, 2), course: bio),
+                     obligation("Lab Report 2", due: Fixture.day(10, 26), course: bio)]
+        func assess(_ items: [ObligationSnapshot], _ c: CourseSnapshot? = nil) -> CourseCoverage {
+            Coverage.assess(course: c ?? bio, obligations: items, documents: [], now: now, calendar: Fixture.calendar)
+        }
+        let silent = assess([checked, overdue] + ahead)
+        #expect(silent.daysSilent == 9 && silent.isSilent && silent.upcoming14 == 2 && silent.suspicion == 9 * 0.05)
+        #expect(silent.headline == "BIO-UA 11 has been silent for 9 days.")
+        #expect(silent.daysSinceUpdate == 1 && silent.updatedLine == "Updated yesterday")   // a document read yesterday is not the user's doing
+        // A check this morning resets the count; unchecked again, the silence runs from Sep 12 as before (the same items as `silent`).
+        let reset = assess([checked, overdue, obligation("Quiz 0", due: Fixture.day(9, 18), course: bio, completedAt: Fixture.day(9, 21, hour: 9, minute: 0))] + ahead)
+        #expect(reset.daysSilent == 0 && !reset.isSilent && reset.suspicion == 0)
+        #expect(reset.headline == "BIO-UA 11 looks covered: 2 due in the next two weeks.")
+        // Nothing fell due during the silence: the count stands, but the course is quiet, not silent.
+        let quiet = assess([checked] + ahead)
+        #expect(quiet.daysSilent == 9 && !quiet.isSilent && quiet.headline == "BIO-UA 11 looks covered: 2 due in the next two weeks.")
+        // Nothing completed yet: the silence runs from the course's arrival, and what fell due before it does not count.
+        let beforeArrival = obligation("HW 0", due: Fixture.day(9, 3), course: bio)
+        let neverChecked = assess([beforeArrival, overdue] + ahead)
+        #expect(neverChecked.daysSilent == 14 && neverChecked.isSilent)
+        #expect(!assess([beforeArrival] + ahead).isSilent)
+        // Under a week is not silence yet, whatever fell due.
+        let newer = course("BIO-UA 11", createdAt: Fixture.day(9, 16))
+        let recent = assess([obligation("Reading 2", due: Fixture.day(9, 18), course: newer)], newer)
+        #expect(recent.daysSilent == 5 && !recent.isSilent && recent.headline == "BIO-UA 11 has nothing due in the next two weeks.")
+        // A deleted item's check does not count.
+        var gone = obligation("Quiz 0", due: Fixture.day(9, 18), course: bio, completedAt: now); gone.deletedAt = now
+        #expect(assess([checked, overdue, gone] + ahead).daysSilent == 9)
     }
 
     @Test func weeklyCadenceWithNothingOnFileIsAGap() {
-        let bio = course("BIO-UA 11", components: [GradeComponent(name: "Quizzes", weight: 0.2, cadence: .weekly), GradeComponent(name: "Final Exam", weight: 0.2, cadence: .once)], lastIngested: Fixture.day(9, 12))
-        let c = Coverage.assess(course: bio, obligations: [obligation("Exam 1", due: Fixture.day(10, 2), course: bio, component: "Exam 1")], documents: [], now: now, calendar: Fixture.calendar)
+        let bio = course("BIO-UA 11", components: [GradeComponent(name: "Quizzes", weight: 0.2, cadence: .weekly), GradeComponent(name: "Final Exam", weight: 0.2, cadence: .once)],
+                         lastIngested: Fixture.day(9, 12), createdAt: Fixture.day(9, 12))
+        let c = Coverage.assess(course: bio, obligations: [obligation("Exam 1", due: Fixture.day(10, 2), course: bio, component: "Exam 1"), obligation("Reading 2", due: Fixture.day(9, 14), course: bio)],
+                                documents: [], now: now, calendar: Fixture.calendar)
         #expect(c.cadenceGaps.map(\.component) == ["Quizzes"])
         #expect(c.headline == "BIO-UA 11 has been silent for 9 days and its syllabus implies weekly quizzes; none on file for the next two weeks.")
+        // A grade row that names its own rhythm is not said twice.
+        #expect(CadenceGap(component: "Weekly Quizzes", cadence: .weekly, expectedInWindow: 2, onFileInWindow: 0, onFileTotal: 0, expectedTotal: nil).sentence
+                == "syllabus implies weekly quizzes; none on file for the next two weeks")
         // Two quizzes on file for the window satisfy a weekly rhythm.
         let covered = Coverage.assess(course: bio, obligations: [obligation("Quiz 3", due: Fixture.day(9, 25), course: bio, component: "Quizzes"), obligation("Quiz 4", due: Fixture.day(10, 2), course: bio, component: "Quizzes")], documents: [], now: now, calendar: Fixture.calendar)
         #expect(covered.cadenceGaps.isEmpty)

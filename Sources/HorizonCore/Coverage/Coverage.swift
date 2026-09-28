@@ -6,8 +6,15 @@ import IngestKit
 public struct CourseCoverage: Sendable, Identifiable, Equatable {
     public var id: UUID { course.id }
     public var course: CourseSnapshot
-    /// Days since the last document for this course was read. Nil when nothing was ever ingested.
+    /// Days since the user last completed one of the course's items (checked off in the app or in Reminders), or, when
+    /// nothing has been completed since, since the course came into the app. A check resets it to 0; unchecking gives
+    /// back the completion before. Reading a document leaves it alone: that is `daysSinceUpdate`.
     public var daysSilent: Int?
+    /// The silence is worth saying (the accent, the headline, the suspicion): a week or more of it, with work that fell
+    /// due during it still open. A course with nothing due is quiet, not silent.
+    public var isSilent: Bool
+    /// Days since a document for the course was last read ("Updated 7 days ago"). Nil when none ever was.
+    public var daysSinceUpdate: Int?
     /// Obligations due in the next 14 days, not completed.
     public var upcoming14: Int
     public var cadenceGaps: [CadenceGap]
@@ -19,6 +26,12 @@ public struct CourseCoverage: Sendable, Identifiable, Equatable {
     public var headline: String
 
     public var displayName: String { course.displayName }
+
+    /// How fresh the course's documents are, in a few words: "Updated today", "Updated 7 days ago"; nil when no document
+    /// was ever read for it.
+    public var updatedLine: String? {
+        daysSinceUpdate.map { $0 == 0 ? "Updated today" : $0 == 1 ? "Updated yesterday" : "Updated \($0) days ago" }
+    }
 }
 
 /// A grade component whose stated rhythm is not showing up in the obligations on file.
@@ -34,7 +47,8 @@ public struct CadenceGap: Sendable, Equatable {
 
     public var sentence: String {
         let rhythm: String = switch cadence { case .weekly: "weekly"; case .biweekly: "biweekly"; default: "\(expectedTotal ?? 0)" }
-        let noun = component.lowercased()
+        var noun = component.lowercased()
+        if cadence != nil, noun.hasPrefix(rhythm + " ") { noun = String(noun.dropFirst(rhythm.count + 1)) }   // "Weekly Quizzes": not "weekly weekly quizzes"
         if cadence != nil {
             return onFileInWindow == 0 ? "syllabus implies \(rhythm) \(noun); none on file for the next two weeks"
                                        : "syllabus implies \(rhythm) \(noun); only \(onFileInWindow) of \(expectedInWindow) on file for the next two weeks"
@@ -72,14 +86,24 @@ public struct PlatformGap: Sendable, Equatable {
 
 public enum Coverage {
     public static let window: TimeInterval = 14 * 86400
+    /// Days without a completion, with work falling due meanwhile, before a course is called silent.
+    public static let silentAfter = 7
     /// File kinds that are pictures of a site rather than documents about the course.
     static let imageKinds: Set<String> = ["png", "jpg", "jpeg", "heic", "heif", "tif", "tiff", "webp", "gif"]
 
     public static func assess(course: CourseSnapshot, obligations: [ObligationSnapshot], documents: [DocumentSnapshot], now: Date = Date(), calendar: Calendar = .current) -> CourseCoverage {
         let mine = obligations.filter { $0.courseID == course.id && $0.deletedAt == nil }
         let docs = documents.filter { $0.courseID == course.id && $0.status == .parsed }
+        func days(since date: Date) -> Int { max(0, calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: now)).day ?? 0) }
+        // Silence is the user's: the last item completed, or the course's arrival when nothing has been completed since.
+        let quietSince = ([course.createdAt] + mine.map(\.completedAt)).compactMap { $0 }.max()
+        let daysSilent = quietSince.map(days(since:))
+        let fellDue = quietSince.map { start in mine.contains { $0.completedAt == nil && ($0.due.map { $0 > start && $0 <= now } ?? false) } } ?? false
+        let isSilent = fellDue && (daysSilent ?? 0) >= silentAfter
+        // Freshness is the documents': the last one read for the course.
         let lastRead = ([course.lastIngested] + docs.map(\.ingestedAt)).compactMap { $0 }.max()
-        let daysSilent = lastRead.map { max(0, calendar.dateComponents([.day], from: calendar.startOfDay(for: $0), to: calendar.startOfDay(for: now)).day ?? 0) }
+        let daysSinceUpdate = lastRead.map(days(since:))
+        let nothingOnFile = lastRead == nil && mine.isEmpty
         // "The next two weeks" runs through the end of the 14th day from today, so a date-only deadline (23:59) on that day counts.
         let today = calendar.startOfDay(for: now)
         let windowEnd = calendar.date(byAdding: .day, value: 15, to: today) ?? now.addingTimeInterval(window)
@@ -128,21 +152,23 @@ public enum Coverage {
         let never = Platform.allCases.filter { named.contains($0) && !ingestedFrom.contains($0) }.map { PlatformGap(platform: $0, components: componentsOn[$0] ?? []) }
 
         var suspicion = 0.0
-        if let days = daysSilent { suspicion += min(Double(days), 30) * 0.05 } else { suspicion += 1 }
+        if isSilent, let days = daysSilent { suspicion += min(Double(days), 30) * 0.05 }
+        if nothingOnFile { suspicion += 1 }
         suspicion += Double(gaps.count) * 0.4
         suspicion += Double(never.count) * 0.3
         if inWindow.isEmpty, !course.gradeComponents.isEmpty { suspicion += 0.3 }
 
-        return CourseCoverage(course: course, daysSilent: daysSilent, upcoming14: inWindow.count, cadenceGaps: gaps, neverIngested: never,
-                              suspicion: suspicion, headline: headline(course: course, daysSilent: daysSilent, upcoming: inWindow.count, gaps: gaps, never: never))
+        return CourseCoverage(course: course, daysSilent: daysSilent, isSilent: isSilent, daysSinceUpdate: daysSinceUpdate, upcoming14: inWindow.count,
+                              cadenceGaps: gaps, neverIngested: never, suspicion: suspicion,
+                              headline: headline(course: course, silentFor: isSilent ? daysSilent : nil, nothingOnFile: nothingOnFile, upcoming: inWindow.count, gaps: gaps, never: never))
     }
 
     /// One sentence a person would say. The strongest signals only, each clause carrying its own subject.
-    static func headline(course: CourseSnapshot, daysSilent: Int?, upcoming: Int, gaps: [CadenceGap], never: [PlatformGap]) -> String {
+    static func headline(course: CourseSnapshot, silentFor: Int?, nothingOnFile: Bool, upcoming: Int, gaps: [CadenceGap], never: [PlatformGap]) -> String {
         let name = course.displayName
         var clauses: [String] = []
-        if let days = daysSilent, days >= 7 { clauses.append("\(name) has been silent for \(days) days") }
-        if daysSilent == nil { clauses.append("\(name) has nothing on file") }
+        if let days = silentFor { clauses.append("\(name) has been silent for \(days) days") }
+        if nothingOnFile { clauses.append("\(name) has nothing on file") }
         if let gap = gaps.first { clauses.append((clauses.isEmpty ? "\(name)'s " : "its ") + gap.sentence) }
         if let gap = never.first { clauses.append(gap.sentence(name: name, first: clauses.isEmpty)) }
         guard !clauses.isEmpty else {
