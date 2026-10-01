@@ -39,7 +39,7 @@ struct ObligationEditor: View {
             Form {
                 Section {
                     LabeledContent("Title") { TextField("Quiz 3", text: $title).multilineTextAlignment(.trailing).promptOnly() }
-                    Picker("Course", selection: $courseID) {
+                    Picker("Course", selection: $courseID.animation()) {   // a course with a grade table brings its row in, animated
                         Text("None").tag(UUID?.none)
                         ForEach(courses) { Text($0.displayName).tag(UUID?.some($0.id)) }
                     }
@@ -58,10 +58,10 @@ struct ObligationEditor: View {
                     }
                 }
                 Section {
-                    Toggle("Has a date", isOn: $hasDate)
+                    Toggle("Has a date", isOn: $hasDate.animation())   // the date's rows come and go with it, animated, not in one frame
                     if hasDate {
                         DatePicker("Due", selection: $due, displayedComponents: hasTime ? [.date, .hourAndMinute] : [.date])
-                        Toggle("At a specific time", isOn: $hasTime)
+                        Toggle("At a specific time", isOn: $hasTime.animation())
                     }
                 }
                 Section {

@@ -97,6 +97,7 @@ struct CourseView: View {
         .listStyle(.plain)
         .paper()
         .animation(.default, value: toDo.map(\.id))
+        .animation(.default, value: documents.map(\.id))   // a document deleted here leaves its row animated
         .navigationTitle(course.displayName)
         .toolbar {
             ToolbarItem(placement: .primaryAction) { ImportMenu(courseID: course.id) }

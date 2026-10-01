@@ -65,6 +65,8 @@ struct CoverageList: View {
         .onDelete { offsets in   // straight to Recently Deleted, where it can be restored for 30 days: no dialog
             for story in offsets.map({ stories[$0] }) { Task { await model.deleteCourse(story.course.id) } }
         }
+        .animation(.default, value: stories.map(\.id))         // a course moving up or down the page as its story changes moves there, animated
+        .animation(.default, value: stories.map(\.findings))   // a finding coming or going grows or shrinks its row, animated
     }
 }
 #endif

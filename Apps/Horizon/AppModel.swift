@@ -667,6 +667,41 @@ final class AppModel {
         persistPlan()
         Task { await syncActivity() }
     }
+
+    /// `--demo-plan-stream`: a plan arriving the way the planner's does (the working line, a block at a time, the hand
+    /// over to the settled plan), long enough to scroll, and the same every time: the timetable's motion, to look at
+    /// and to record, without a model. Nothing is kept: the plan on file before it comes back at the next launch.
+    func demoPlanStream(now: Date = Date()) async {
+        guard !planning else { return }
+        let at = { (minutes: Double) in now.addingTimeInterval(minutes * 60) }
+        let blocks = [
+            PlanBlock(start: at(5), end: at(55), title: "Problem Set 4", reason: "Due Thursday; the longest of the week.", kind: .work),
+            PlanBlock(start: at(60), end: at(90), title: "Lunch", reason: "Nothing good gets done hungry.", kind: .meal),
+            PlanBlock(start: at(95), end: at(185), title: "Study for Midterm 1", reason: "Worth 20%, in six days: work through the practice exam.", kind: .study, within: "Lock in at library"),
+            PlanBlock(start: at(190), end: at(200), title: "Walk", reason: "Ten minutes away from the desk.", kind: .rest),
+            PlanBlock(start: at(205), end: at(265), title: "Lab Report 2", reason: "Due Monday; the data is in, the write-up is not.", kind: .work),
+            PlanBlock(start: at(270), end: at(330), title: "Organizational Behavior", reason: "On your calendar.", kind: .fixed),
+            PlanBlock(start: at(335), end: at(395), title: "Dinner", reason: "A real break before the evening.", kind: .meal),
+            PlanBlock(start: at(400), end: at(460), title: "Reading for Unit 3", reason: "Two chapters before Tuesday's quiz.", kind: .work),
+            PlanBlock(start: at(465), end: at(475), title: "Rest", reason: "Eyes off the screen.", kind: .rest),
+            PlanBlock(start: at(480), end: at(540), title: "Study for Quiz 4", reason: "Worth 2.4%, on Friday: the practice set from section 7.3.", kind: .study),
+            PlanBlock(start: at(545), end: at(575), title: "WebAssign 7.4", reason: "Due tonight at 11:59; short, and it keeps the streak.", kind: .work),
+            PlanBlock(start: at(580), end: at(610), title: "Pack for tomorrow", reason: "The lab starts at eight.", kind: .rest),
+        ]
+        planning = true
+        planDraft = []
+        try? await Task.sleep(for: .seconds(2))   // reading the calendar and the coming weeks
+        for n in 1...blocks.count {
+            showDraft(Array(blocks.prefix(n)))
+            try? await Task.sleep(for: .milliseconds(900))
+        }
+        try? await Task.sleep(for: .milliseconds(700))   // the rail reaches the last block before the page settles
+        plan = DayPlan(blocks: Self.keepingIdentities(blocks, from: planDraft)); planEdited = false; planDay = PlanHours.day(of: now, calendar: .current)
+        planCandidates = []
+        planStreamed = true
+        planning = false
+        planDraft = []
+    }
     #endif
 
     private func setEdited(_ p: DayPlan) {

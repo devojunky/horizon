@@ -405,3 +405,30 @@ Dated log. Newest first.
   - Escape never closed an editor on the Mac. The field that has the keyboard keeps Escape from the Cancel button, and an editor's first field always has the keyboard. It now works in every editor.
   - A course's page kept a deleted item on screen, on the Mac and on the iPhone, until something else redrew the page. The page now reads its items and documents the way the other pages do.
 - **Testing on a copy.** On Sep 28 a test launch opened an old build of the app (from Sep 4), which converted the store to its own older layout and lost what that layout had no place for. Course and document deletions came undone and the documents' titles went. The app now has a test mode that opens a copy of a store and can never open the real one. That mode never touches Reminders and reads nothing. Every test of the app on real data runs that way, launched from the current build by its full path.
+
+## 2026-10-01 · Motion, audited
+
+- **The owner's brief.** Every change on screen should feel polished and smooth, iOS above all, with the Mac following its own, quieter conventions. Three cases were named:
+  - On Now, a block marked done or skipped grew a line over its title that popped in.
+  - When the planning message went away, the page jumped.
+  - Going from the days back to the semester stuttered, where the opposite way was fluid.
+- **What was found** (recorded on the simulator and read frame by frame, before and after):
+  - **Now's done line.** "1 of 3 done" lived in the list's section header, and a header's height changes in a single frame, so the whole timetable jumped down at once. The block's own row also ran an animation of its own on a different curve from the list's, so its words slid inside a row still growing.
+  - **The planning message.** "Planning… Reading your calendar" sat in one scroll view and the timetable in another. Swapping them faded the large "Now" title out and back in, and the page started over at the top.
+  - **Back to the semester.** The line above the strip that shows the whole term came and went with the level, so the strip moved as the two levels cross-faded. For a third of a second both levels showed through each other, two sets of band names apart, with the two headings written over each other. After a pinch the range's underline also arrived late.
+  - **Smaller, the same in kind:**
+    - Rows that appear as a toggle is turned on (an item's date and time, a course's grade row) popped in.
+    - Review's rows vanished at once when an item was confirmed or discarded.
+    - A document's lines changed in one frame as it was read.
+    - Some of Coverage's banners (waiting for Claude, Reminders off, the list gone) and the review line came and went without animation.
+    - A course's place on Coverage moved without animation.
+- **What changed:**
+  - **Now is one list at every stage.** The planning message is the list's foot, which becomes the line under the arriving blocks and then Tonight Until, so nothing under the rows ever drops. The planner's note and "1 of 3 done" are rows, which arrive animated. A block's change rides the plan's own transaction.
+  - **Horizon's strip keeps its place.** Above the strip is one slot at both levels: at the semester, a legend for what the colour means; at the days, the term line as before. Every way of changing level (the tabs, a tap on a week, a pinch) runs the same transaction. The strip and the heading change by fading through: the old goes before the new comes, so they never show through each other.
+  - Toggles that reveal rows animate them. Review's and Documents' rows leave and change animated. Coverage animates everything above its stories, and its stories' moves.
+  - **Reduce Motion.** The settling zoom between levels goes, and so does the animation of changes the user did not make (the minute turning on Now). Fades stay.
+  - **The Mac.** Its tables (Review, Documents, Recently Deleted) let rows come and go as a Mac table's do, and Coverage's banners push the cards down animated. What the pointer drives (a day in the chart, the item beside Review's table) still changes at once.
+- **Chosen here; reversible:**
+  - The semester gains a colour legend. It fills the slot that keeps the strip still, and the HIG asks for a legend wherever colour carries meaning.
+  - "1 of 3 done" moves from the header line into the timetable, as its first row.
+- **Not measured.** Dropped frames on the iPhone itself: the simulator's timing is not the phone's, so the stutter going back to the semester is fixed in its causes (a moving strip, two levels drawn at once, a late underline) and is best confirmed on the device.

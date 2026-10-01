@@ -48,6 +48,35 @@ struct Band: Identifiable, Equatable {
     var id: Kind { kind }
 }
 
+/// What the strip's colour means (HIG: a legend for what position does not say): the accent deepens with the share
+/// of the grade at stake in a cell, a day's on the Mac's chart and at the days, a week's in the semester.
+struct HeatLegend: View {
+    var period = "day"
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("Less at stake").font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 2) {
+                ForEach([0.0, 5, 12, 25, 40], id: \.self) { points in
+                    RoundedRectangle(cornerRadius: 2).fill(Design.paper).overlay(RoundedRectangle(cornerRadius: 2).fill(Design.accent.opacity(Strip.heat(points: points))))
+                        .frame(width: 12, height: 12)
+                }
+            }
+            Text("More").font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(.bottom, 2)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("The deeper the colour, the more of the grade is at stake that \(period)")
+    }
+}
+
+extension AnyTransition {
+    /// One thing giving way to another in the same place, the old gone before the new is in: a fade through, so two
+    /// texts or two drawings are never seen over each other (a crossfade shows both at half strength for a moment).
+    static var fadeThrough: AnyTransition {
+        .asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.1)), removal: .opacity.animation(.easeIn(duration: 0.1)))
+    }
+}
+
 #if os(iOS)
 /// Where things sit in the strip. Top to bottom: an axis of two tiers (a month's name where it begins; under it each
 /// bar's own date, so nothing is ever drawn over anything), one row per band (what a roomy band has to spare, then
@@ -204,12 +233,16 @@ struct HorizonStripView: View {
     @State private var editing: Obligation?
     @State private var lingering = Lingering()       // just checked off under "Coming up": crossed off for a moment before it leaves, so a slip can be undone
     @State private var listHeadY: CGFloat = 0        // where the list begins on the screen, to know when a chosen period's items are under the fold
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .caption2) private var labelHeight: CGFloat = 16
     private let calendar = Calendar.current
     /// What sits above the strip on the page (the range, the header, the overview), and what the list needs to show
     /// its head (its kicker and two rows): the strip's bands share the rest.
     private let chromeAbove: CGFloat = 230, listHead: CGFloat = 170
     private let touch = true
+    /// Semester to days or back: one transaction for everything the change moves (the strip, the key above it, the
+    /// header, the range's underline), whichever way it was asked for (a tab, a tap, a pinch). Less motion: a fade.
+    private var levelChange: Animation { reduceMotion ? .easeInOut(duration: 0.2) : .smooth(duration: 0.35) }
 
     private func geometry(in size: CGSize, data: StripData) -> StripGeometry {
         let rows = max(data.bands.count, 1)
@@ -254,17 +287,25 @@ struct HorizonStripView: View {
                                 .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
                             StripHeader(level: level, cell: cell(for: chosen, among: data.items), total: data.items.count, collisions: data.collisions, course: data.narrowedTo?.name)
                                 .pageRow(top: 8, bottom: 10)
-                            if contentWidth > geo.size.width + 1 {   // the term does not fit across: a line that shows all of it, and where the strip is in it
-                                TermOverview(data: data, motion: motion, contentWidth: contentWidth, viewport: geo.size.width, calendar: calendar)
-                                    .transition(.opacity)
-                                    .pageRow(top: 0, bottom: 2)
+                            // The strip's key, in the same place at both levels so the strip under it never moves (a
+                            // row that came and went with the level moved the strip as it changed, and the two levels
+                            // showed through each other a line apart): at the semester what the colour means; at the
+                            // days, when the term does not fit across, a line with all of it and where the strip is in it.
+                            ZStack(alignment: .leading) {
+                                if level == .days, contentWidth > geo.size.width + 1 {
+                                    TermOverview(data: data, motion: motion, contentWidth: contentWidth, viewport: geo.size.width, calendar: calendar)
+                                        .transition(.fadeThrough)
+                                } else {
+                                    HeatLegend(period: level == .weeks ? "week" : "day").transition(.fadeThrough)
+                                }
                             }
+                            .frame(height: 44)
+                            .pageRow(top: 0, bottom: 2)
                             strip(data, g, width: geo.size.width) { period in
                                 guard Date().timeIntervalSince(motion.pinchedAt) > 0.4 else { return }   // two fingers lifting are not a tap
                                 if level == .weeks {   // the overview: look closer here, with the week chosen so the list is its work
-                                    chosen = period
                                     landing = (period.start, (g.inset + 22) / max(geo.size.width, 1))   // the week's first day at the leading margin
-                                    level = .days
+                                    withAnimation(levelChange) { chosen = period; level = .days }
                                 } else {
                                     chosen = chosen == period ? nil : period   // the same day again lets it go
                                 }
@@ -285,7 +326,6 @@ struct HorizonStripView: View {
                     .environment(\.defaultMinListRowHeight, 1)
                     .paper()
                     .animation(.default, value: chosen)
-                    .animation(.default, value: level)
                     .animation(.default, value: listed.map(\.id))
                 }
                 .overlay {
@@ -338,13 +378,16 @@ struct HorizonStripView: View {
     /// The strip at either level, and over it the bands' names, which stay put. A name has its own line above its
     /// band's cells, so it never covers a cell; beside it, while a period is chosen, what that course has in it.
     private func strip(_ data: StripData, _ g: StripGeometry, width: CGFloat, choose: @escaping (DateInterval) -> Void) -> some View {
-        Group {
-            if level == .weeks { overview(data, g, width: width, choose: choose) } else { days(data, g, width: width, choose: choose) }
+        ZStack(alignment: .topLeading) {   // the two levels in one place: the old goes before the new comes, so they never show through each other
+            if level == .weeks { overview(data, g, width: width, choose: choose).transition(.fadeThrough) }
+            else { days(data, g, width: width, choose: choose).transition(.fadeThrough) }
         }
         .onChange(of: level) { _, new in   // the strip now holds the new level: the date that was held goes back where it was
             if new == .weeks { chosen = nil; landing = nil }   // the semester is for reading: what was picked out among the days is let go, and the list is what is coming up
-            motion.pinch = new == .days ? 0.94 : 1.06   // the new level settles into place: the step reads as a zoom
-            withAnimation(.spring(duration: 0.4)) { motion.pinch = 1 }
+            if !reduceMotion {   // the new level settles into place: the step reads as a zoom (a zoom is what less motion leaves out)
+                motion.pinch = new == .days ? 0.94 : 1.06
+                withAnimation(.spring(duration: 0.4)) { motion.pinch = 1 }
+            }
             if new == .days { land(data, g, width: width) }
         }
         .overlay(alignment: .topLeading) { bandLabels(data, g) }
@@ -490,7 +533,7 @@ struct HorizonStripView: View {
         } else {           // the range's stop: the chosen period, else today, a little in from the leading edge (what is ahead matters most)
             landing = (chosen?.start ?? Date(), 0.2)
         }
-        level = new   // `onChange(of: level)` lands the held date once the days are up
+        withAnimation(levelChange) { level = new }   // `onChange(of: level)` lands the held date once the days are up
     }
 
     /// A tap has chosen a bar: if the head of its list is under the fold, the page moves just far enough to show its
@@ -865,7 +908,7 @@ private struct RangeTabs: View {
             HStack(spacing: 24) {
                 ForEach(Strip.Level.allCases, id: \.self) { stop in
                     let selected = stop == selection
-                    Button { withAnimation(.snappy) { selection = stop } } label: {
+                    Button { selection = stop } label: {   // the page animates the change, the underline with it
                         VStack(spacing: 8) {
                             Text(stop == .weeks ? "Semester" : "Days").font(.subheadline.weight(selected ? .semibold : .regular)).foregroundStyle(selected ? .primary : .secondary)
                             ZStack {
@@ -901,24 +944,30 @@ private struct StripHeader: View {
     private func kicker(_ word: String) -> String { course.map { "\(word) · \($0)" } ?? word }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        ZStack(alignment: .topLeading) {   // what is chosen, or the semester: one gives way to the other in place
             if let cell {
                 let pileup = collisions.contains { $0.day >= cell.period.start && $0.day < cell.period.end }
                 let week = HorizonStripView.isWeek(cell.period)
-                Text(kicker(pileup ? "Pileup" : week ? "Week" : "Day")).font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(pileup ? Design.accent : .secondary).lineLimit(1)
-                Text(week ? "Week of \(cell.period.start.formatted(.dateTime.month(.wide).day()))" : cell.period.start.formatted(.dateTime.weekday(.wide).month(.wide).day()))
-                    .deck().lineLimit(Self.deckLines, reservesSpace: true).contentTransition(.numericText())
-                Text(cell.items.isEmpty ? "Nothing due." : "\(cell.count) item\(cell.count == 1 ? "" : "s"), \(cell.points.formatted(.number.precision(.fractionLength(0...1))))% of grades at stake.")
-                    .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(kicker(pileup ? "Pileup" : week ? "Week" : "Day")).font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(pileup ? Design.accent : .secondary).lineLimit(1)
+                    Text(week ? "Week of \(cell.period.start.formatted(.dateTime.month(.wide).day()))" : cell.period.start.formatted(.dateTime.weekday(.wide).month(.wide).day()))
+                        .deck().lineLimit(Self.deckLines, reservesSpace: true).contentTransition(.numericText())
+                    Text(cell.items.isEmpty ? "Nothing due." : "\(cell.count) item\(cell.count == 1 ? "" : "s"), \(cell.points.formatted(.number.precision(.fractionLength(0...1))))% of grades at stake.")
+                        .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                }
+                .transition(.fadeThrough)
             } else {
-                Text(kicker("Semester")).font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(.secondary).lineLimit(1)
-                Text(summary).deck().lineLimit(Self.deckLines, reservesSpace: true)
-                Text(level == .weeks ? "Tap a week to look closer." : "Tap a day to read it. Pinch for the semester.").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(kicker("Semester")).font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(.secondary).lineLimit(1)
+                    Text(summary).deck().lineLimit(Self.deckLines, reservesSpace: true)
+                    Text(level == .weeks ? "Tap a week to look closer." : "Tap a day to read it. Pinch for the semester.").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        .contentTransition(.opacity)
+                }
+                .transition(.fadeThrough)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .animation(.default, value: cell?.period)
-        .animation(.default, value: level)
+        .animation(.default, value: cell?.period)   // a day chosen after another: its date's figures roll
     }
 
     /// The deck keeps one height whatever it says, so the strip under it never moves.

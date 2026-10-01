@@ -40,6 +40,7 @@ struct ReviewView: View {
         }
         .listStyle(.plain)
         .paper()
+        .animation(.default, value: pending.map(\.id))   // a confirmed or discarded item leaves its row animated, the rest close up
         .navigationTitle("Review")
         .sheet(item: $editing) { ObligationEditor(mode: .review($0), courses: courses) }
     }

@@ -109,6 +109,7 @@ struct MacReviewPage: View {
         .scrollContentBackground(.hidden)
         .scrollEdgeEffectStyle(.soft, for: .top)   // under the page's line, not the toolbar
         .takesKeyboard($tableFocused, hasRows: true)   // ↑ and ↓ go through the items, ⌘↩ and ⌘⌫ act on them: the pointer is needed only to edit
+        .animation(.default, value: rows.map(\.id))   // a confirmed or discarded row leaves as a Mac table's rows do, the rest closing up
         .contextMenu(forSelectionType: UUID.self) { ids in
             if !ids.isEmpty {
                 Button(ids.count == 1 ? "Confirm" : "Confirm \(ids.count) Items") { confirm(ids) }

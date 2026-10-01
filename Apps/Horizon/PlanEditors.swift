@@ -76,6 +76,7 @@ struct PlanBlockEditor: View {
                 }
             }
             .paper()
+            .animation(.default, value: span == nil)   // "It ends before it starts." comes and goes as the times change
             .editorChrome(title: block == nil ? "New Block" : "Edit Block", confirm: block == nil ? "Add" : "Save", disabled: !isValid || !isDirty,
                           cancel: { if isDirty { confirmingDiscard = true } else { dismiss() } }, action: save)
             .interactiveDismissDisabled(isDirty)
@@ -161,6 +162,7 @@ struct PlannerNotesEditor: View {
                 }
             }
             .paper()
+            .animation(.default, value: text.count > limit - 300)   // the count comes in near the limit, not in one frame
             .editorChrome(title: "Tell the Planner", confirm: "Save", disabled: !isDirty,
                           cancel: { if isDirty { confirmingDiscard = true } else { dismiss() } },
                           action: { model.planInstructions = text.trimmingCharacters(in: .whitespacesAndNewlines); model.usualPlanHours = hours; dismiss() })

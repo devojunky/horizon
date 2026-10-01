@@ -287,26 +287,6 @@ private struct ChartHeader: View {
     }
 }
 
-/// What the chart's colour means (HIG: a legend for what position does not say): the accent deepens with the share
-/// of the grade at stake on a day.
-private struct HeatLegend: View {
-    var body: some View {
-        HStack(spacing: 8) {
-            Text("Less at stake").font(.caption).foregroundStyle(.secondary)
-            HStack(spacing: 2) {
-                ForEach([0.0, 5, 12, 25, 40], id: \.self) { points in
-                    RoundedRectangle(cornerRadius: 2).fill(Design.paper).overlay(RoundedRectangle(cornerRadius: 2).fill(Design.accent.opacity(Strip.heat(points: points))))
-                        .frame(width: 12, height: 12)
-                }
-            }
-            Text("More").font(.caption).foregroundStyle(.secondary)
-        }
-        .padding(.bottom, 2)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("The deeper the colour, the more of the grade is at stake that day")
-    }
-}
-
 /// The term, day by day, one band per course (and one for everything above them when there are several). Top to
 /// bottom: the months, the weeks (each week's first date), the bands, and a foot for "Today". Left to right: the
 /// bands' names, then the days, each as wide as the window allows. Load is colour, never size (`Strip.heat`).

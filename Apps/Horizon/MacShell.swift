@@ -326,6 +326,7 @@ struct DocumentsTable: View {
         }
         .tableStyle(.inset(alternatesRowBackgrounds: true))
         .takesKeyboard($focused, hasRows: !documents.isEmpty)
+        .animation(.default, value: documents.map(\.id))   // rows come and go as a Mac table's do
         .confirmationDialog("Read on this Mac instead?", isPresented: Binding(get: { !confirmDevice.isEmpty }, set: { if !$0 { confirmDevice = [] } }), titleVisibility: .visible) {
             Button(confirmDevice.count == 1 ? "Read on This Mac" : "Read \(confirmDevice.count) on This Mac") {
                 let ids = confirmDevice.map(\.id)
@@ -444,6 +445,7 @@ struct RecentlyDeletedTable: View {
         }
         .tableStyle(.inset(alternatesRowBackgrounds: true))
         .takesKeyboard($focused, hasRows: !entries.isEmpty)
+        .animation(.default, value: entries.map(\.id))   // restored and erased rows leave as a Mac table's do
         .contextMenu(forSelectionType: UUID.self) { ids in
             Button("Restore") { restore(ids) }
             Button("Delete Now…", role: .destructive) { erasing = chosen(ids) }

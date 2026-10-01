@@ -102,6 +102,8 @@ struct ReadingSettingsSections: View {
         } footer: {
             Text("Your own key from the Claude Console, kept in this device's Keychain and never synced; usage is billed to your Anthropic account. Removing the key turns Claude off.")
         }
+        .animation(.default, value: hasKey)          // Remove Key comes with a key, animated
+        .animation(.default, value: verdict?.text)   // the test's verdict arrives under the button, animated
         Section {
             Toggle("Plan the day with Claude", isOn: $model.planWithClaude).disabled(!hasKey)
         } header: {

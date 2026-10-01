@@ -16,9 +16,7 @@ struct NowView: View {
     @State private var confirmingReplan = false
     @State private var revealed: UUID?   // the plan whose rows have arrived; a plan that came at once reveals its rows one after another
 
-    /// What the page shows: the planner at work, the timetable (arriving or settled), or the invitation.
-    private enum Stage { case working, timetable, invitation }
-    private var stage: Stage {
+    private var stage: NowStage {
         if model.planning, model.planDraft.isEmpty { return .working }
         return model.planning || model.plan != nil ? .timetable : .invitation
     }
@@ -76,6 +74,7 @@ struct NowView: View {
                     if MainTabs.debugFlag("--mark-first-done"), let first = model.plan?.blocks.first(where: \.isOpen) { model.markBlock(first.id, done: true) }   // the first still to do, so a second launch marks the next
                     #if DEBUG
                     if MainTabs.debugOnce("--demo-plan") { model.demoPlan() }   // the Live Activity through each phase, without the planner
+                    if MainTabs.debugOnce("--demo-plan-stream") { Task { await model.demoPlanStream() } }   // a plan streaming in, the same every time
                     #endif
                     #if os(iOS)
                     if MainTabs.debugFlag("--intent-first-done"), let first = model.plan?.blocks.first {   // the Live Activity's button, without the button
@@ -104,58 +103,25 @@ struct NowView: View {
         #endif
     }
 
-    /// The planner at work, the timetable, or the invitation.
+    /// The planner at work, the timetable, or the invitation: one list for all three, so the page never trades one
+    /// scroll view for another under the navigation bar (the large title faded out and back in when it did), and
+    /// what arrives takes the place of what was there: the planning line becomes the timetable's foot as the first
+    /// block comes, and the foot becomes Tonight Until when the plan settles, so nothing below the rows jumps.
     private var stages: some View {
-        // A ZStack, not a Group: a transition needs a container to animate the change of what is inside it
-        // (modifiers on a Group attach to each branch, and the hand-over then happens in one frame).
-        ZStack {
-            switch stage {
-            case .working:
-                ScrollView { WorkingLine(kicker: "Planning", line: "Reading your calendar and the coming weeks…") }
-                    .transition(.asymmetric(insertion: .opacity, removal: .opacity.combined(with: .offset(y: -16))))   // lifts away as the timetable takes its place
-            case .timetable:   // one view for the plan arriving and the plan settled: its rows carry over
-                let plan = model.plan
-                TimelineView(.periodic(from: .now, by: 60)) { context in
-                    PlanList(blocks: model.planning ? model.planDraft : plan?.blocks ?? [], note: model.planning ? nil : plan?.note,
-                             now: context.date, asking: model.planning ? nil : plan?.awaitingAnswer(at: context.date)?.id,
-                             streaming: model.planning, revealed: model.planning || model.planStreamed || revealed == plan?.id,
-                             reduceMotion: reduceMotion, until: model.tonightEnd, usualEnd: model.usualPlanHours.end, edit: { editing = $0 }, delete: { model.deleteBlock($0) },
-                             mark: { model.markBlock($0, done: $1) }, skip: { model.skipBlock($0, skipped: $1) }, chooseEnd: chooseEnd)
-                        .onChange(of: context.date) { _, _ in Task { await model.syncActivity() } }   // the minute turns: the activity may have a new block on
-                }
-                .onAppear { if let plan { reveal(plan.id) } }
-                .onChange(of: plan?.id) { _, id in if let id { reveal(id) } }
-                .transition(.opacity)
-            case .invitation:
-                ScrollView {
-                    EditorialEmpty(title: "Today, planned.", deck: "One plan for the rest of today, around your calendar, with a reason on every block. Tell the planner what to respect, then plan.") {
-                        Button("Plan Today") { Task { await model.planToday() } }.buttonStyle(.borderedProminent)
-                        #if os(iOS)   // a Mac has it in the column beside the page
-                        Button("Tell the Planner…") { telling = true }
-                        #endif
-                    }
-                    .padding(.horizontal, 20)
-                    #if os(iOS)   // a Mac keeps these in the column beside the page
-                    TonightUntil(end: model.tonightEnd, usual: model.usualPlanHours.end, choose: chooseEnd)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 20)
-                    if !model.planInstructions.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Hairline()
-                            Kicker("You told the planner").padding(.top, 12)
-                            Text(model.planInstructions).font(.subheadline).foregroundStyle(.secondary).lineLimit(4)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 20)
-                    }
-                    #endif
-                }
-                .transition(.opacity)
-            }
+        let plan = model.plan
+        return TimelineView(.periodic(from: .now, by: 60)) { context in
+            PlanList(stage: stage, blocks: model.planning ? model.planDraft : plan?.blocks ?? [], note: model.planning ? nil : plan?.note,
+                     now: context.date, asking: model.planning ? nil : plan?.awaitingAnswer(at: context.date)?.id,
+                     streaming: model.planning, revealed: model.planning || model.planStreamed || revealed == plan?.id,
+                     reduceMotion: reduceMotion, until: model.tonightEnd, usualEnd: model.usualPlanHours.end, instructions: model.planInstructions,
+                     planToday: { Task { await model.planToday() } }, tell: { telling = true },
+                     edit: { editing = $0 }, delete: { model.deleteBlock($0) },
+                     mark: { model.markBlock($0, done: $1) }, skip: { model.skipBlock($0, skipped: $1) }, chooseEnd: chooseEnd)
+                .onChange(of: context.date) { _, _ in Task { await model.syncActivity() } }   // the minute turns: the activity may have a new block on
         }
+        .onAppear { if let plan { reveal(plan.id) } }
+        .onChange(of: plan?.id) { _, id in if let id { reveal(id) } }
         .paper()
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.4), value: stage)
     }
 
     /// Tonight's end chosen: the plan on file is made again up to it, after asking when it was edited by hand.
@@ -177,10 +143,16 @@ struct NowView: View {
 
 }
 
-/// The timetable: the day and the time in the header (and the planner's note, when it has one), one row per block.
-/// While the plan streams the rows arrive one by one, each extending the rail, and a line at the foot says the
-/// planner is still writing; the list scrolls to keep up. Once settled, a row opens the editor and swipes away.
+/// What Now shows: the planner at work, the timetable (arriving or settled), or the invitation to plan.
+private enum NowStage { case working, timetable, invitation }
+
+/// The page, in one list whatever it shows: the day and the time at its head, then the planner's note and how much
+/// is done (rows, so they arrive with an animation: a header's height changes in a single frame), one row per block,
+/// and a foot that is the planner at work while the plan comes and Tonight Until once it is settled. While the plan
+/// streams the rows arrive one by one, each extending the rail, and the list scrolls to keep the foot in view. Once
+/// settled, a row opens the editor and swipes away. With no plan, the invitation stands where the rows would.
 private struct PlanList: View {
+    let stage: NowStage
     let blocks: [PlanBlock]
     let note: String?
     let now: Date
@@ -192,6 +164,10 @@ private struct PlanList: View {
     /// Tonight's end, and the usual one, for the line at the foot of the timetable.
     let until: Int
     let usualEnd: Int
+    /// What the user told the planner, shown under the invitation.
+    let instructions: String
+    var planToday: () -> Void
+    var tell: () -> Void
     var edit: (PlanBlock) -> Void
     var delete: (UUID) -> Void
     var mark: (UUID, Bool) -> Void
@@ -206,16 +182,18 @@ private struct PlanList: View {
         return block.id == asking || now >= block.end ? "Not Finished" : "Skip"
     }
 
-    /// The day and the time, the planner's note, and how much is done.
+    /// Where each block stands as the minutes pass (on now, over, asking "finished?"): a change animates the rows it
+    /// moves, unless the user has asked for less motion (it is automatic, not theirs).
+    private var timeline: [Int] {
+        blocks.map { block in block.id == asking ? 3 : !block.isOpen || now >= block.end ? 0 : now >= block.start ? 1 : 2 }
+    }
+
+    /// The day and the time: one line, always, so the list under it never moves when something is done.
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Kicker(PlanHours.day(of: now, calendar: .current).formatted(.dateTime.weekday(.wide).month(.wide).day()))   // after midnight, the night's own day
-                Spacer()
-                Kicker(now.formatted(date: .omitted, time: .shortened))
-            }
-            if let note { Text(note).font(.footnote).foregroundStyle(.secondary).textCase(nil) }
-            if done > 0, !streaming { Kicker(done == blocks.count ? "All done" : "\(done) of \(blocks.count) done") }
+        HStack {
+            Kicker(PlanHours.day(of: now, calendar: .current).formatted(.dateTime.weekday(.wide).month(.wide).day()))   // after midnight, the night's own day
+            Spacer()
+            Kicker(now.formatted(date: .omitted, time: .shortened))
         }
         #if os(macOS)
         .frame(maxWidth: 820, alignment: .leading)   // the timetable's own measure (its rows keep it too)
@@ -230,6 +208,30 @@ private struct PlanList: View {
                     #if os(macOS)
                     header.pageRow(top: 16, bottom: 10).accessibilityAddTraits(.isHeader)   // a row: a Mac pins a header on window grey, off the paper
                     #endif
+                    if let note {
+                        Text(note).font(.footnote).foregroundStyle(.secondary)
+                            .frame(maxWidth: 820, alignment: .leading)
+                            .pageRow(top: 0, bottom: 8)
+                            .listRowSeparator(.hidden)
+                    }
+                    if done > 0, !streaming {
+                        Kicker(done == blocks.count ? "All done" : "\(done) of \(blocks.count) done")
+                            .contentTransition(.numericText())
+                            .frame(maxWidth: 820, alignment: .leading)
+                            .pageRow(top: 0, bottom: 8)
+                            .listRowSeparator(.hidden)
+                    }
+                    if stage == .invitation {
+                        EditorialEmpty(title: "Today, planned.", deck: "One plan for the rest of today, around your calendar, with a reason on every block. Tell the planner what to respect, then plan.") {
+                            Button("Plan Today", action: planToday).buttonStyle(.borderedProminent)
+                            #if os(iOS)   // a Mac has it in the column beside the page
+                            Button("Tell the Planner…", action: tell).buttonStyle(.borderless)   // in a list row: its own tap, in the tint, as on any page
+                            #endif
+                        }
+                        .frame(maxWidth: 820, alignment: .leading)
+                        .pageRow(top: 0, bottom: 0)
+                        .listRowSeparator(.hidden)
+                    }
                     ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
                         Button { edit(block) } label: {
                             BlockRow(block: block, now: now, asking: block.id == asking, first: index == 0, last: index == blocks.count - 1, arriving: streaming, reduceMotion: reduceMotion,
@@ -263,29 +265,24 @@ private struct PlanList: View {
                         }
                         .accessibilityHint(streaming ? "" : "Opens the editor")
                     }
-                    if streaming {
-                        HStack(spacing: 10) {
-                            ProgressView().controlSize(.small)
-                            Text("Planning the rest…").font(.footnote).foregroundStyle(.secondary)
-                        }
-                        .padding(.leading, 92 + 34)   // under the words, past the time column and the rail
-                        .padding(.vertical, 14)
-                        .id("planning")
-                        .transition(.opacity)
+                    if stage == .timetable, !streaming, blocks.isEmpty {
+                        Text("Nothing planned. Add a block, or plan again.").foregroundStyle(.secondary).pageRow(top: 14, bottom: 0).listRowSeparator(.hidden)
+                    }
+                    foot
+                        .id("foot")
                         .pageRow(top: 0, bottom: 0)
                         .listRowSeparator(.hidden)
-                        .accessibilityLabel("Planning the rest")
-                    } else {
-                        if blocks.isEmpty { Text("Nothing planned. Add a block, or plan again.").foregroundStyle(.secondary).listRowSeparator(.hidden) }
-                        #if os(iOS)   // a Mac keeps it in the column beside the page
-                        // Where the plan stops, the choice of where it stops tonight.
-                        TonightUntil(end: until, usual: usualEnd, choose: chooseEnd)
-                            .padding(.leading, blocks.isEmpty ? 0 : 92 + 34)   // under the words, past the time column and the rail
-                            .padding(.vertical, 14)
-                            .pageRow(top: 0, bottom: 0)
-                            .listRowSeparator(.hidden)
-                        #endif
+                    #if os(iOS)   // a Mac keeps it in the column beside the page
+                    if stage == .invitation, !instructions.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Hairline()
+                            Kicker("You told the planner").padding(.top, 12)
+                            Text(instructions).font(.subheadline).foregroundStyle(.secondary).lineLimit(4)
+                        }
+                        .pageRow(top: 6, bottom: 20)
+                        .listRowSeparator(.hidden)
                     }
+                    #endif
                 } header: {
                     #if os(iOS)
                     header
@@ -294,14 +291,54 @@ private struct PlanList: View {
                 .onPaper()
             }
             .listStyle(.plain)
-            // A row arriving is laid out in a transaction, so the planning line below it glides down as the rail
-            // draws (the row's own pieces are still hidden; the list's fade shows nothing). Settled rows change at once.
+            .environment(\.defaultMinListRowHeight, 1)   // a one-line row (the note, what is done) is its own height, not 44 points of air
+            // A row arriving is laid out in a transaction, so the foot below it glides down as the rail draws (the
+            // row's own pieces are still hidden; the list's fade shows nothing).
             .animation(streaming && !reduceMotion ? .easeOut(duration: 0.45) : nil, value: blocks.map(\.id))
+            // The page between its stages, and the plan settling: the foot changes what it says in place.
+            .animation(reduceMotion ? .easeInOut(duration: 0.2) : .smooth(duration: 0.45), value: stage)
+            .animation(reduceMotion ? .easeInOut(duration: 0.2) : .smooth(duration: 0.45), value: streaming)
+            // The minute turning moves "Now" to the next block, fades the one just over, asks "finished?".
+            .animation(reduceMotion ? nil : .smooth(duration: 0.45), value: timeline)
             .onChange(of: blocks.count) { _, _ in
                 guard streaming else { return }   // keep the newest block in view as the plan grows
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.5).delay(0.3)) { proxy.scrollTo("planning", anchor: .bottom) }
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.5).delay(0.3)) { proxy.scrollTo("foot", anchor: .bottom) }
             }
         }
+    }
+
+    /// The last row, one row whatever it says, so the page never loses its foot: the planner at work, large while
+    /// nothing has come yet and a line under the rows while they arrive; then, settled, where the plan stops tonight
+    /// (on a Mac that is in the column beside the page, and the foot keeps its room so the rows do not drop).
+    private var foot: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if stage == .working {
+                WorkingLine(kicker: "Planning", line: "Reading your calendar and the coming weeks…")
+                    .padding(.horizontal, -20)   // the line keeps its own 20 points; the row has the page's already
+                    .transition(.opacity)
+            } else if streaming {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("Planning the rest…").font(.footnote).foregroundStyle(.secondary)
+                }
+                .padding(.leading, 92 + 34)   // under the words, past the time column and the rail
+                .padding(.vertical, 14)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Planning the rest")
+                .transition(.opacity)
+            } else {
+                #if os(iOS)
+                // Where the plan stops, the choice of where it stops tonight.
+                TonightUntil(end: until, usual: usualEnd, choose: chooseEnd)
+                    .padding(.leading, blocks.isEmpty ? 0 : 92 + 34)   // under the words, past the time column and the rail
+                    .padding(.vertical, 14)
+                    .transition(.opacity)
+                #else
+                Color.clear.frame(height: 44).accessibilityHidden(true)
+                #endif
+            }
+        }
+        .frame(maxWidth: 820, alignment: .leading)
     }
 }
 
@@ -390,7 +427,9 @@ struct BlockRow: View {
             Spacer(minLength: 0)
         }
         .opacity(phase == .past && !asking ? 0.45 : 1)   // a block asking "finished?" waits on the user: it is not faded with the past
-        .animation(.snappy, value: block.isDone)
+        // No animation of its own: a mark arrives in the plan's transaction (`AppModel.markBlock`), which the list
+        // grows the row by too. One of its own ran on another curve, and the row's words slid inside a row that
+        // was still growing.
         .contentShape(Rectangle())
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(Self.clock(block.start)) to \(Self.clock(block.end)), \(block.title)\(block.within.map { ", in \($0)" } ?? "")\(block.isDone ? ", done" : block.isSkipped ? (block.wasLeftUnfinished ? ", not finished" : ", skipped") : asking ? ", finished?" : phase == .current ? ", now" : "")")

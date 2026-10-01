@@ -68,6 +68,7 @@ struct DocumentsView: View {
             Text("The device model is less sure of tables and pictures than Claude, and it takes minutes on a long document. Nothing is sent to Anthropic.")
         }
         .animation(.default, value: documents.map(\.id))
+        .animation(.default, value: documents.map(\.status))   // a document read, failed or waiting: its row's lines change animated, not in one frame
         .animation(.default, value: binned)
         .navigationTitle("Documents")
         .onAppear { if MainTabs.debugFlag("--delete-first-document"), let first = documents.first { Task { await model.deleteDocument(first.id) } } }

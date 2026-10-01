@@ -163,6 +163,7 @@ struct RootView: View {
                     NavigationLink { ReviewView() } label: {
                         HStack(alignment: .firstTextBaseline) {
                             Text(pending.count == 1 ? "One item to review" : "\(pending.count) items to review").font(.system(.title3, design: .serif, weight: .semibold))
+                                .contentTransition(.numericText())
                             Spacer()
                         }
                     }
@@ -195,10 +196,16 @@ struct RootView: View {
             .listStyle(.plain)
             .paper()
             .refreshable { await model.drainAndSync() }   // the page pulled down reads the queue and syncs with Reminders
+            // Whatever comes or goes above the stories comes or goes animated: the read, the sync's line, a banner
+            // (waiting for Claude, a failed read, Reminders off, the list gone), the review and unfiled lines.
             .animation(.default, value: model.reading != nil)
             .animation(.default, value: model.statusLine)
-            .animation(.default, value: documents.filter { $0.status == .failed }.count)
+            .animation(.default, value: documents.map(\.status))
             .animation(.default, value: model.lastError)
+            .animation(.default, value: model.remindersAuthorized)
+            .animation(.default, value: model.remindersListGone)
+            .animation(.default, value: pending.count)
+            .animation(.default, value: looseDocuments.count)
             .animation(.default, value: courses.map(\.id))
             .animation(.default, value: binned)
             .navigationDestination(for: Route.self) { route in

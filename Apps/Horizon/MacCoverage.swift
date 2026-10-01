@@ -48,7 +48,14 @@ struct MacCoveragePage: View {
         }
         .background(Design.paper)
         .animation(.default, value: stories.map(\.id))
+        // A banner at the head of the page (the read, the sync's line, waiting for Claude, Reminders off) pushes the
+        // stories down animated, not in one frame.
         .animation(.default, value: model.reading != nil)
+        .animation(.default, value: model.statusLine)
+        .animation(.default, value: model.lastError)
+        .animation(.default, value: model.remindersAuthorized)
+        .animation(.default, value: model.remindersListGone)
+        .animation(.default, value: documents.map(\.status))
         .navigationTitle("Coverage")
     }
 }
