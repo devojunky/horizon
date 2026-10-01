@@ -70,6 +70,18 @@ struct StoreTests {
         #expect(orders == ["MA-UY 1124": 0, "ART-UY 101": 1])
     }
 
+    /// A store opened at a path (a copy, for testing) can never be the user's: opening one migrates it to the build's
+    /// schema, and an old build doing that to the user's store once cut fields out of it.
+    @Test func aScratchStoreIsNeverTheUsers() {
+        let folders = [URL(fileURLWithPath: "/Users/someone/Library/Application Support/Horizon", isDirectory: true)]
+        #expect(HorizonContainer.isUserStoreFolder(URL(fileURLWithPath: "/Users/someone/Library/Application Support/Horizon/Horizon.store"), folders: folders))
+        #expect(HorizonContainer.isUserStoreFolder(URL(fileURLWithPath: "/Users/someone/Library/Application Support/Scratch/../Horizon/Horizon.store"), folders: folders))   // however it is spelled
+        #expect(HorizonContainer.isUserStoreFolder(URL(fileURLWithPath: "/Users/someone/Library/Application Support/Horizon", isDirectory: true), folders: folders))
+        #expect(!HorizonContainer.isUserStoreFolder(URL(fileURLWithPath: "/Users/someone/Library/Application Support/Horizon Scratch/Horizon.store"), folders: folders))   // a neighbour whose name starts the same
+        #expect(!HorizonContainer.isUserStoreFolder(URL(fileURLWithPath: "/tmp/scratch/Horizon.store"), folders: folders))
+        #expect(HorizonContainer.userStoreFolders.contains { $0.path.hasSuffix("Application Support/Horizon") })
+    }
+
     @Test func aDocumentFiledUnderACourseReadsAsThatCourse() async throws {
         let store = try Fixture.store()
         try await Fixture.ingest(Fixture.calculus(), into: store)

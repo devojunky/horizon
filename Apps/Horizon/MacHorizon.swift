@@ -167,6 +167,7 @@ struct ItemTable: View {
     var mark: (UUID, Bool) -> Void
     var edit: (UUID) -> Void
     var delete: (Set<UUID>) -> Void
+    @FocusState private var focused: Bool
 
     var body: some View {
         Table(rows, selection: $selection, sortOrder: $sortOrder) {
@@ -199,6 +200,7 @@ struct ItemTable: View {
         .tableStyle(.inset(alternatesRowBackgrounds: true))
         .scrollContentBackground(.hidden)
         .scrollEdgeEffectStyle(.soft, for: .top)   // the table sits under the page's head, not the toolbar: no hard band up there
+        .takesKeyboard($focused, hasRows: !rows.isEmpty)
         .opacity(rows.isEmpty ? 0.001 : 1)   // kept in the layout (its height), but an empty table's header says nothing
         .overlay(alignment: .top) {
             if rows.isEmpty { Text(emptyText).foregroundStyle(.secondary).padding(.top, 14).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Design.margin) }
@@ -218,7 +220,7 @@ struct ItemTable: View {
         .onDeleteCommand { delete(visibleSelection) }
         .onChange(of: rows.map(\.id)) { _, ids in selection.formIntersection(ids) }   // a row that left the table (a filter, Show Done, another period) leaves the selection too, so nothing unseen is acted on
         .focusedSceneValue(\.selectedItem, visibleSelection.count == 1 ? rows.first { visibleSelection.contains($0.id) }.map { row in
-            SelectedItem(id: row.id, done: row.done, mark: { mark(row.id, $0) })   // Item ▸ Mark Done, the way a click on the ring does it
+            SelectedItem(id: row.id, done: row.done, mark: { mark(row.id, $0) }, delete: { delete([row.id]) })   // Item ▸ Mark Done, the way a click on the ring does it; ⌘⌫ as Delete does
         } : nil)
     }
 

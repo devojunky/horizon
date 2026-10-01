@@ -393,3 +393,15 @@ Dated log. Newest first.
   - The View menu had no Show/Hide Sidebar or toolbar commands.
   - The Mac app has no Reminders access at the moment. Coverage's banner says so and was there before, but it sat above the list and out of sight; it now shows at the top. Access is the owner's to grant in System Settings, and nothing was changed there.
 - **The phone is unchanged.** The iPhone's Coverage, course page, Review and strip are as they were (checked in the simulator), and their Mac branches have moved into Mac views of their own.
+
+## 2026-10-01 · The Mac by keyboard
+
+- **The owner's brief.** With an item selected on a page such as Review, the arrow keys moved through the sidebar, not the list. Review should need the pointer only to edit, Confirm and Discard should have shortcuts, and the buttons should show them.
+- **The keyboard follows the pointer.** A page chosen with the pointer or the menu bar now gives its list the keyboard as it appears, so ↑ and ↓ go through its rows, as Finder's files do after a click in its sidebar. A page with no list (Coverage, Now) or an empty one gives the keyboard to the sidebar instead, so the arrows always move something. Walking the sidebar with the arrow keys keeps the keyboard there, as in Mail, and Tab goes into the page.
+- **Review by keyboard.** ↑ ↓ go through the items, ⌘↩ confirms, ⌘⌫ discards, Return opens the item to edit, and Escape closes the editor. The next item comes up by itself after each.
+- **The keys on the buttons (the owner's call).** The HIG leaves shortcuts to the menus, and the Item menu still lists them. Review's buttons now also show theirs ("Confirm ⌘↩", "Edit… ↩", "Discard ⌘⌫"), set a step quieter than the title, so the keys are learned where the work is done. VoiceOver hears the titles alone, since the menu bar already tells it the shortcuts.
+- **⌘⌫ means the selection (chosen here; reversible).** As in Mail and Finder, ⌘⌫ acts on what is selected in the page: Review's items are discarded, an item selected in a table is deleted. Delete Course gave up the shortcut. It is still in the Course menu and the course's own menu, and the Delete key deletes a course selected in the sidebar.
+- **Found in passing.**
+  - Escape never closed an editor on the Mac. The field that has the keyboard keeps Escape from the Cancel button, and an editor's first field always has the keyboard. It now works in every editor.
+  - A course's page kept a deleted item on screen, on the Mac and on the iPhone, until something else redrew the page. The page now reads its items and documents the way the other pages do.
+- **Testing on a copy.** On Sep 28 a test launch opened an old build of the app (from Sep 4), which converted the store to its own older layout and lost what that layout had no place for. Course and document deletions came undone and the documents' titles went. The app now has a test mode that opens a copy of a store and can never open the real one. That mode never touches Reminders and reads nothing. Every test of the app on real data runs that way, launched from the current build by its full path.

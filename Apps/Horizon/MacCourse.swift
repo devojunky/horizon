@@ -20,9 +20,19 @@ struct MacCoursePage: View {
     @State private var preview: URL?     // the document being looked at, in Quick Look
     @State private var lingering = Lingering()
     @AppStorage("courseShowsDone") private var showsDone = false
+    // Through queries, not the course's relationships: the store saves from a context of its own, and only a query
+    // redraws for that (read through the relationship, an item deleted stayed in the table).
+    @Query private var obligations: [Obligation]
+    @Query private var files: [SourceDocument]
 
-    private var obligations: [Obligation] { (course.obligations ?? []).filter { $0.deletedAt == nil } }
-    private var documents: [SourceDocument] { (course.documents ?? []).filter { $0.deletedAt == nil }.sorted { $0.queuedAt > $1.queuedAt } }
+    init(course: Course) {
+        self.course = course
+        let id = course.id
+        _obligations = Query(filter: #Predicate<Obligation> { $0.deletedAt == nil && $0.course?.id == id })
+        _files = Query(filter: #Predicate<SourceDocument> { $0.deletedAt == nil && $0.course?.id == id })
+    }
+
+    private var documents: [SourceDocument] { files.sorted { $0.queuedAt > $1.queuedAt } }
     private var story: CourseCoverage {
         Coverage.assess(course: CourseSnapshot(course), obligations: obligations.map(ObligationSnapshot.init), documents: documents.map(DocumentSnapshot.init))
     }

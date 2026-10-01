@@ -31,6 +31,31 @@ public enum HorizonContainer {
         let schema = Schema(versionedSchema: HorizonSchemaV1.self)
         return try ModelContainer(for: schema, migrationPlan: HorizonMigrationPlan.self, configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)])
     }
+
+    /// A store in a file of its own, for tools that open a copy of one (the app's DEBUG `--scratch-store`). Never the
+    /// user's: a path in a folder their store can live in is refused before anything is opened. Opening a store
+    /// migrates it to this build's schema, so the user's is only ever opened by `shared()`.
+    public static func at(_ url: URL) throws -> ModelContainer {
+        guard !isUserStoreFolder(url, folders: userStoreFolders) else { throw CocoaError(.fileWriteNoPermission, userInfo: [NSFilePathErrorKey: url.path]) }
+        let schema = Schema(versionedSchema: HorizonSchemaV1.self)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        return try ModelContainer(for: schema, migrationPlan: HorizonMigrationPlan.self, configurations: [ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none)])
+    }
+
+    /// Where the user's store can be: the App Group's container, or Application Support when a build has no App Group.
+    static var userStoreFolders: [URL] {
+        [FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Identifiers.appGroup),
+         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("Horizon", isDirectory: true)].compactMap { $0 }
+    }
+
+    /// Whether `url` is in (or is) one of `folders`, symbolic links resolved.
+    static func isUserStoreFolder(_ url: URL, folders: [URL]) -> Bool {
+        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+        return folders.contains { folder in
+            let base = folder.standardizedFileURL.resolvingSymlinksInPath().path
+            return path == base || path.hasPrefix(base.hasSuffix("/") ? base : base + "/")
+        }
+    }
 }
 
 /// Source files live on disk in the App Group container, keyed by content hash; the store keeps only metadata.

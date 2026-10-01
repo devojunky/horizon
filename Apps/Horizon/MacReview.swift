@@ -10,6 +10,7 @@ import HorizonCore
 /// in one go; Open Document shows the file an item came from, to check it against.
 struct MacReviewPage: View {
     @Environment(AppModel.self) private var model
+    @FocusState private var tableFocused: Bool
     @Query(sort: \Obligation.due) private var obligations: [Obligation]
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
     @State private var selection: Set<UUID> = []
@@ -37,6 +38,7 @@ struct MacReviewPage: View {
                         .padding(.horizontal, Design.margin)
                     Spacer(minLength: 0)
                 }
+                .keyboardStaysInSidebar()
             } else {
                 HStack(alignment: .top, spacing: 0) {
                     VStack(alignment: .leading, spacing: 0) {
@@ -62,11 +64,11 @@ struct MacReviewPage: View {
                 Button { confirm(chosenIDs) } label: { Label("Confirm", systemImage: "checkmark") }
                     .help("Confirm the selection as it was read (⌘↩)").disabled(chosen.isEmpty)
                 Button { editing = chosen.first } label: { Label("Edit", systemImage: "pencil") }
-                    .help("Fix the selected item").disabled(chosen.count != 1)
+                    .help("Fix the selected item (↩)").disabled(chosen.count != 1)
                 Button { if let chosenDocument { preview = model.previewFile(for: chosenDocument) } } label: { Label("Open Document", systemImage: "doc.text.magnifyingglass") }
                     .help("Open the document the item was read from").disabled(chosenDocument == nil)
                 Button { discard(chosenIDs) } label: { Label("Discard", systemImage: "trash") }
-                    .help("Discard the selection: it was never an item").disabled(chosen.isEmpty)
+                    .help("Discard the selection: it was never an item (⌘⌫)").disabled(chosen.isEmpty)
             }
         }
         .focusedSceneValue(\.reviewActions, chosen.isEmpty ? nil : ReviewActions(count: chosen.count, confirm: { confirm(chosenIDs) }, discard: { discard(chosenIDs) }))
@@ -106,6 +108,7 @@ struct MacReviewPage: View {
         .tableStyle(.inset(alternatesRowBackgrounds: true))
         .scrollContentBackground(.hidden)
         .scrollEdgeEffectStyle(.soft, for: .top)   // under the page's line, not the toolbar
+        .takesKeyboard($tableFocused, hasRows: true)   // ↑ and ↓ go through the items, ⌘↩ and ⌘⌫ act on them: the pointer is needed only to edit
         .contextMenu(forSelectionType: UUID.self) { ids in
             if !ids.isEmpty {
                 Button(ids.count == 1 ? "Confirm" : "Confirm \(ids.count) Items") { confirm(ids) }
@@ -211,12 +214,28 @@ private struct ReviewDetail: View {
         Text(text).foregroundStyle(.secondary).gridColumnAlignment(.leading)
     }
 
+    /// Each with the keys that do it from the table (the Item menu's, and Return for the table's own Edit), so the
+    /// keyboard is learned where the buttons are.
     private func actions(several: Bool) -> some View {
         HStack(spacing: 10) {
-            Button(several ? "Confirm All" : "Confirm", action: confirm).buttonStyle(.borderedProminent)
-            if !several { Button("Edit…", action: edit) }
+            Button(action: confirm) { ShortcutLabel(several ? "Confirm All" : "Confirm", keys: "⌘↩") }.buttonStyle(.borderedProminent)
+            if !several { Button(action: edit) { ShortcutLabel("Edit…", keys: "↩") } }
             Spacer(minLength: 0)
-            Button(several ? "Discard All" : "Discard", role: .destructive, action: discard)
+            Button(role: .destructive, action: discard) { ShortcutLabel(several ? "Discard All" : "Discard", keys: "⌘⌫") }
+        }
+    }
+}
+
+/// A button's title with its keyboard shortcut after it, set as the menu bar sets it and a step quieter than the
+/// title. VoiceOver hears the title alone: the menu bar already tells it the shortcut.
+private struct ShortcutLabel: View {
+    let title: String
+    let keys: String
+    init(_ title: String, keys: String) { self.title = title; self.keys = keys }
+    var body: some View {
+        HStack(spacing: 5) {
+            Text(title)
+            Text(keys).foregroundStyle(.secondary).accessibilityHidden(true)
         }
     }
 }

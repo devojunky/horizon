@@ -17,7 +17,7 @@ final class AppModel {
     let sync: SyncCoordinator
     /// Where the documents' files are kept, each under its hash.
     let storage: DocumentStorage
-    private let reminders = EventKitReminderStore()
+    private let reminders: any ReminderStore
 
     var remindersAuthorized: Bool?
     /// The Horizon list this device wrote to is not in Reminders (deleted, or its account signed out). Nothing is written
@@ -142,14 +142,34 @@ final class AppModel {
         #endif
     }()
 
+    /// DEBUG `--scratch-store <dir>`: the app on a copy of a store (`dir/Horizon.store`, copied there first) with its
+    /// files in `dir/Documents`, and nothing leaves it: nothing is read, Reminders is never reached, the inbox folder
+    /// is not watched. Every run of the app on real data for testing goes this way, never on the user's own store
+    /// (`HorizonContainer.at` refuses theirs). Nil in a release build.
+    static let scratchStore: URL? = {
+        #if DEBUG
+        guard let i = CommandLine.arguments.firstIndex(of: "--scratch-store"), i + 1 < CommandLine.arguments.count else { return nil }
+        return URL(fileURLWithPath: CommandLine.arguments[i + 1], isDirectory: true)
+        #else
+        return nil
+        #endif
+    }()
+
     init(container: ModelContainer) {
         self.container = container
         store = HorizonStore(modelContainer: container)
-        sync = SyncCoordinator(store: store, reminders: reminders, seen: DefaultsSeenIDs(), deviceName: Self.deviceName)
+        if let scratch = Self.scratchStore {
+            reminders = NoReminders()
+            sync = SyncCoordinator(store: store, reminders: reminders, seen: InMemorySeenIDs(), deviceName: Self.deviceName)
+            storage = DocumentStorage(root: scratch.appendingPathComponent("Documents", isDirectory: true))
+        } else {
+            reminders = EventKitReminderStore()
+            sync = SyncCoordinator(store: store, reminders: reminders, seen: DefaultsSeenIDs(), deviceName: Self.deviceName)
+            storage = DocumentStorage.appGroup() ?? .temporary()
+        }
         var options = IngestOptions()
         options.log = { message in Task { @MainActor in AppModel.log(message) } }
         let box = ProgressBox()
-        storage = DocumentStorage.appGroup() ?? .temporary()
         coordinator = IngestCoordinator(store: store, storage: storage, sync: sync, options: options, deviceName: Self.deviceName,
                                         progress: { p in Task { @MainActor in box.model?.apply(p) } })
         box.model = self
@@ -311,7 +331,7 @@ final class AppModel {
     /// that arrives during a run makes it run once more afterwards.
     func drainAndSync() async {
         #if DEBUG
-        if demoing { return }
+        if demoing || Self.scratchStore != nil { return }   // a scratch store reads nothing and syncs nothing
         #endif
         guard !busy else { rerun = true; return }
         busy = true
@@ -699,4 +719,17 @@ final class AppModel {
         catch { lastError = error.localizedDescription }
         await drainAndSync()
     }
+}
+
+/// Reminders for a scratch store (`AppModel.scratchStore`): never reached. Access reads as off and nothing can be
+/// fetched or written, so no sync of a copy of someone's store can touch their lists.
+struct NoReminders: ReminderStore {
+    struct Off: LocalizedError { var errorDescription: String? { "Reminders is off for a scratch store." } }
+    func requestAccess() async throws -> Bool { false }
+    func fetchHorizonList() async throws -> HorizonList? { throw Off() }
+    func ensureHorizonList() async throws { throw Off() }
+    func create(_ draft: ReminderDraft) async throws -> ReminderItem { throw Off() }
+    func update(externalID: String, with draft: ReminderDraft) async throws -> ReminderItem? { throw Off() }
+    func setCompleted(externalID: String, _ completed: Bool, at date: Date?) async throws -> Bool { throw Off() }
+    func remove(externalID: String) async throws { throw Off() }
 }

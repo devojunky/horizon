@@ -13,7 +13,7 @@ struct HorizonApp: App {
 
     init() {
         let container: ModelContainer
-        do { container = try HorizonContainer.shared() }
+        do { container = try AppModel.scratchStore.map { try HorizonContainer.at($0.appendingPathComponent("Horizon.store")) } ?? HorizonContainer.shared() }
         catch {
             // Only a misconfigured build gets here; stay usable (nothing persists) and say so in the log.
             Logger(subsystem: Identifiers.bundlePrefix, category: "store").error("shared store failed: \(error.localizedDescription, privacy: .public); using an in-memory store")
@@ -68,7 +68,7 @@ struct HorizonApp: App {
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .EKEventStoreChanged)) { _ in Task { await model.drainAndSync() } }
                 #if os(macOS)
-                .task { await WatchedFolder.start(model: model) }
+                .task { if AppModel.scratchStore == nil { await WatchedFolder.start(model: model) } }
                 #if DEBUG
                 .task { await WindowSnapshot.writeIfAsked() }
                 #endif

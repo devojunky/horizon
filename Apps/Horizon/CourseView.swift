@@ -17,11 +17,22 @@ struct CourseView: View {
     @State private var preview: URL?     // the document being looked at, in Quick Look
     @State private var lingering = Lingering()
     @Environment(\.dismiss) private var dismiss
+    // The course's items and documents come through queries, not its relationships: the store saves from a context of
+    // its own, and only a query redraws for that (read through the relationship, an item deleted stayed on the page).
+    @Query private var items: [Obligation]
+    @Query private var files: [SourceDocument]
+
+    init(course: Course) {
+        self.course = course
+        let id = course.id
+        _items = Query(filter: #Predicate<Obligation> { $0.deletedAt == nil && $0.course?.id == id })
+        _files = Query(filter: #Predicate<SourceDocument> { $0.deletedAt == nil && $0.course?.id == id })
+    }
 
     /// Every document on file for the course, newest first: what its items, its grade table and its policies came from.
     /// They sit at the foot of the page, after the policies and before what is done.
-    private var documents: [SourceDocument] { (course.documents ?? []).filter { $0.deletedAt == nil }.sorted { $0.queuedAt > $1.queuedAt } }
-    private var obligations: [Obligation] { (course.obligations ?? []).filter { $0.deletedAt == nil }.sorted { ($0.due ?? .distantFuture) < ($1.due ?? .distantFuture) } }
+    private var documents: [SourceDocument] { files.sorted { $0.queuedAt > $1.queuedAt } }
+    private var obligations: [Obligation] { items.sorted { ($0.due ?? .distantFuture) < ($1.due ?? .distantFuture) } }
     /// What is still to do, in date order; an item just checked off stays here a moment, crossed off (`Lingering`).
     private var toDo: [Obligation] { obligations.filter { $0.completedAt == nil || lingering.contains($0.id) } }
     /// What is done, in date order, at the foot of the page.

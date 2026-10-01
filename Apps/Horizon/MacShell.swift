@@ -25,8 +25,15 @@ import AppKit
     var page: Page? { if case .page(let page) = destination { page } else { nil } }
     /// The course whose page is shown: the Course menu acts on it, and a document added here is filed under it.
     var course: UUID? { if case .course(let id) = destination { id } else { nil } }
-    func show(_ page: Page) { destination = .page(page) }
-    func show(course id: UUID) { destination = .course(id) }
+    func show(_ page: Page) { destination = .page(page); focusesPage = true }
+    func show(course id: UUID) { destination = .course(id); focusesPage = true }
+    /// Whether the page shown next takes the keyboard, so the arrow keys move through its list: yes when it was
+    /// chosen with the pointer or the menu bar, no while the sidebar is walked with the arrow keys (they go on
+    /// through the sidebar, and Tab goes into the page).
+    var focusesPage = true
+    /// Asks the sidebar for the keyboard (`keyboardToSidebar`): the page chosen has no rows to move through.
+    private(set) var sidebarKeyboardAsked = 0
+    func keyboardToSidebar() { sidebarKeyboardAsked += 1 }
 
     var importing = false
     var addingItem = false
@@ -38,12 +45,43 @@ import AppKit
     var confirmingReplan = false
 }
 
+/// Where the keyboard goes as a page appears, when the page was chosen with the pointer or the menu bar
+/// (`MacNavigation.focusesPage`): to its list, so the arrow keys move through the rows, or, when it has no list or
+/// the list no rows, to the sidebar (a click on a sidebar row leaves the keyboard where it was, and the list that had
+/// it may have gone with the last page), so the arrows always move something.
+private struct PageKeyboard: ViewModifier {
+    var list: FocusState<Bool>.Binding?
+    var hasRows: Bool
+    @Environment(MacNavigation.self) private var nav
+    func body(content: Content) -> some View {
+        let page = nav.destination   // the page this belongs to, as it appears
+        content.task {
+            guard nav.focusesPage else { return }
+            do { try await Task.sleep(for: .milliseconds(10)) } catch { return }   // once it is in the window
+            guard nav.destination == page else { return }   // a page already gone (one passed through at launch) says nothing
+            if let list, hasRows { list.wrappedValue = true } else { nav.keyboardToSidebar() }
+        }
+    }
+}
+
+extension View {
+    /// A page's list, which takes the keyboard as the page appears when it has rows (`PageKeyboard`).
+    func takesKeyboard(_ focus: FocusState<Bool>.Binding, hasRows: Bool) -> some View {
+        focused(focus).modifier(PageKeyboard(list: focus, hasRows: hasRows))
+    }
+
+    /// A page with no list: the keyboard goes to the sidebar as it appears (`PageKeyboard`).
+    func keyboardStaysInSidebar() -> some View { modifier(PageKeyboard(list: nil, hasRows: false)) }
+}
+
 /// The item selected in a table of items, for the menu bar's Item commands.
 struct SelectedItem: Equatable {
     var id: UUID
     var done: Bool
     /// Checks it off, or back on, the way its page does (a row just checked lingers where it was for a moment).
     var mark: (Bool) -> Void
+    /// Deletes it, the way the Delete key does.
+    var delete: () -> Void
     static func == (a: SelectedItem, b: SelectedItem) -> Bool { a.id == b.id && a.done == b.done }
 }
 
@@ -76,6 +114,7 @@ struct MacRootView: View {
             Sidebar(nav: nav)
         } detail: {
             detail
+                .environment(nav)   // a page asks it whether to take the keyboard as it appears
                 .toolbar {
                     if shownCourse != nil { ToolbarSpacer(.flexible, placement: .primaryAction) }   // a course's page keeps its title off the toolbar: this holds the buttons at the trailing edge, where every other page has them
                     ToolbarItemGroup(placement: .primaryAction) {   // both are File menu commands as well
@@ -131,14 +170,14 @@ struct MacRootView: View {
 
     @ViewBuilder private var detail: some View {
         switch nav.destination {
-        case .page(.coverage): MacCoveragePage(nav: nav)
+        case .page(.coverage): MacCoveragePage(nav: nav).keyboardStaysInSidebar()
         case .page(.horizon): MacHorizonPage()
-        case .page(.now): NowView()
+        case .page(.now): NowView().keyboardStaysInSidebar()
         case .page(.review): MacReviewPage()
         case .page(.documents): DocumentsTable()
         case .page(.recentlyDeleted): RecentlyDeletedTable()
         case .course:
-            if let shownCourse { MacCoursePage(course: shownCourse).id(shownCourse.id) } else { MacCoveragePage(nav: nav) }
+            if let shownCourse { MacCoursePage(course: shownCourse).id(shownCourse.id) } else { MacCoveragePage(nav: nav).keyboardStaysInSidebar() }
         }
     }
 }
@@ -148,6 +187,7 @@ struct MacRootView: View {
 private struct Sidebar: View {
     @Bindable var nav: MacNavigation
     @Environment(AppModel.self) private var model
+    @FocusState private var focused: Bool
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }) private var courses: [Course]
     @Query(filter: #Predicate<Obligation> { $0.deletedAt == nil }) private var obligations: [Obligation]
     @Query(filter: #Predicate<SourceDocument> { $0.deletedAt == nil }) private var documents: [SourceDocument]
@@ -170,7 +210,11 @@ private struct Sidebar: View {
     }
 
     var body: some View {
-        List(selection: Binding(get: { Optional(nav.destination) }, set: { if let chosen = $0 { nav.destination = chosen } })) {
+        List(selection: Binding(get: { Optional(nav.destination) }, set: { chosen in
+            guard let chosen else { return }
+            nav.focusesPage = NSApp.currentEvent?.type != .keyDown   // an arrow key in the sidebar keeps the keyboard there
+            nav.destination = chosen
+        })) {
             Section {
                 row(.coverage)
                 row(.horizon)
@@ -200,6 +244,8 @@ private struct Sidebar: View {
             }
         }
         .listStyle(.sidebar)
+        .focused($focused)
+        .onChange(of: nav.sidebarKeyboardAsked) { focused = true }   // the page chosen has nothing to move through
         .onDeleteCommand { if let id = nav.course { Task { await model.deleteCourse(id) } } }   // to Recently Deleted: no dialog
         .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 320)
     }
@@ -227,6 +273,7 @@ private struct SidebarIcon: View {
 /// Documents as a table: sortable, alternating rows, a context menu and the Delete key on the selection.
 struct DocumentsTable: View {
     @Environment(AppModel.self) private var model
+    @FocusState private var focused: Bool
     @Query(filter: #Predicate<SourceDocument> { $0.deletedAt == nil }) private var documents: [SourceDocument]
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
     @State private var selection: Set<UUID> = []
@@ -278,6 +325,7 @@ struct DocumentsTable: View {
             .width(min: 200, ideal: 300)
         }
         .tableStyle(.inset(alternatesRowBackgrounds: true))
+        .takesKeyboard($focused, hasRows: !documents.isEmpty)
         .confirmationDialog("Read on this Mac instead?", isPresented: Binding(get: { !confirmDevice.isEmpty }, set: { if !$0 { confirmDevice = [] } }), titleVisibility: .visible) {
             Button(confirmDevice.count == 1 ? "Read on This Mac" : "Read \(confirmDevice.count) on This Mac") {
                 let ids = confirmDevice.map(\.id)
@@ -375,6 +423,7 @@ extension SourceDocument {
 /// only Delete Now asks, since it cannot be undone. Double-clicking a row restores it.
 struct RecentlyDeletedTable: View {
     @Environment(AppModel.self) private var model
+    @FocusState private var focused: Bool
     @Query(filter: #Predicate<Course> { $0.deletedAt != nil && $0.erasedAt == nil }) private var courses: [Course]
     @Query(filter: #Predicate<SourceDocument> { $0.deletedAt != nil }) private var deletedDocuments: [SourceDocument]
     @State private var selection: Set<UUID> = []
@@ -394,6 +443,7 @@ struct RecentlyDeletedTable: View {
             TableColumn("Gone in") { entry in Text(remaining(entry)).monospacedDigit() }.width(min: 80, ideal: 100)
         }
         .tableStyle(.inset(alternatesRowBackgrounds: true))
+        .takesKeyboard($focused, hasRows: !entries.isEmpty)
         .contextMenu(forSelectionType: UUID.self) { ids in
             Button("Restore") { restore(ids) }
             Button("Delete Now…", role: .destructive) { erasing = chosen(ids) }
@@ -499,7 +549,7 @@ struct HorizonCommands: Commands {
         CommandMenu("Course") {   // the course whose page is showing
             Button("Edit Course…") { nav?.editingCourse = nav?.course }.keyboardShortcut("e").disabled(nav?.course == nil)
             Button("Delete Course") { if let id = nav?.course { Task { await model.deleteCourse(id) } } }
-                .keyboardShortcut(.delete, modifiers: .command).disabled(nav?.course == nil)
+                .disabled(nav?.course == nil)   // ⌘⌫ deletes what is selected in the page, as in Mail; the course goes from here, its menu, or Delete in the sidebar
         }
         CommandMenu("Item") {   // the item selected in a table (a course's items, Horizon's), and those selected in Review
             Button(item?.done == true ? "Mark Not Done" : "Mark Done") { if let item { item.mark(!item.done) } }
@@ -507,8 +557,11 @@ struct HorizonCommands: Commands {
             Divider()
             Button(review.map { $0.count == 1 ? "Confirm" : "Confirm \($0.count) Items" } ?? "Confirm") { review?.confirm() }
                 .keyboardShortcut(.return, modifiers: .command).disabled(review == nil)
-            Button(review.map { $0.count == 1 ? "Discard" : "Discard \($0.count) Items" } ?? "Discard") { review?.discard() }
-                .disabled(review == nil)
+            // ⌘⌫ acts on the selection in the page: Review's items are discarded, a table's item deleted.
+            Button(review.map { $0.count == 1 ? "Discard" : "Discard \($0.count) Items" } ?? (item == nil ? "Discard" : "Delete Item")) {
+                if let review { review.discard() } else { item?.delete() }
+            }
+            .keyboardShortcut(.delete, modifiers: .command).disabled(review == nil && item == nil)
         }
         CommandMenu("Plan") {
             Button(model.plan == nil ? "Plan Today" : "Plan Again") {

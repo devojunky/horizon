@@ -32,9 +32,58 @@ struct EditorChrome: ViewModifier {
                 .padding(.horizontal, 20).padding(.vertical, 14)
                 .background(.bar)
             }
+            .modifier(EscapeCancels(cancel: cancel))
         #endif
     }
 }
+
+#if os(macOS)
+/// Escape cancels the sheet from anywhere in it. A text or date field keeps the key for itself (a text field's editor
+/// takes it for word completion), so Cancel's own shortcut never hears it while one has the keyboard, and in an editor
+/// one always does: the first field takes it as the sheet opens. Only this sheet's window is watched (a popover or an
+/// alert over it has its own Escape), and a composition in progress keeps its Escape, which cancels the marked text.
+private struct EscapeCancels: ViewModifier {
+    let cancel: () -> Void
+    @State private var window: NSWindow?
+    @State private var monitor: Any?
+
+    func body(content: Content) -> some View {
+        content
+            .background(WindowFinder { window = $0 })
+            .onAppear {
+                monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                    guard event.keyCode == 53, event.modifierFlags.isDisjoint(with: [.command, .option, .control, .shift]),   // Escape alone
+                          let window, event.window === window,
+                          !((window.firstResponder as? NSTextView)?.hasMarkedText() ?? false) else { return event }
+                    cancel()
+                    return nil
+                }
+            }
+            .onDisappear {
+                if let monitor { NSEvent.removeMonitor(monitor) }
+                monitor = nil
+            }
+    }
+}
+
+/// Reports the window a view is put in.
+private struct WindowFinder: NSViewRepresentable {
+    let found: (NSWindow?) -> Void
+    func makeNSView(context: Context) -> NSView { Probe(found: found) }
+    func updateNSView(_ view: NSView, context: Context) {}
+
+    final class Probe: NSView {
+        let found: (NSWindow?) -> Void
+        init(found: @escaping (NSWindow?) -> Void) { self.found = found; super.init(frame: .zero) }
+        required init?(coder: NSCoder) { nil }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            let window = window
+            DispatchQueue.main.async { self.found(window) }   // outside the view update that put it there
+        }
+    }
+}
+#endif
 
 extension View {
     /// A text field's title is its placeholder on iOS and its form label on macOS; beside a `LabeledContent` label
