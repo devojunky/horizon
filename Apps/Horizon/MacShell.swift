@@ -37,6 +37,9 @@ import AppKit
 
     var importing = false
     var addingItem = false
+    /// The course an item is being added to from its own menu (its row in the sidebar, its story); else the one whose
+    /// page is showing.
+    var addingItemTo: UUID?
     var addingCourse = false
     /// The course being edited (Course ▸ Edit Course…, or the menu on its story or its row in the sidebar).
     var editingCourse: UUID?
@@ -68,6 +71,14 @@ private struct PageKeyboard: ViewModifier {
 }
 
 extension View {
+    /// A table on the page: its rows on the paper, parted by the inset style's hairlines, and its header on the paper
+    /// too (`PaperTableHeader`). The system's stripes are white and grey, and over the paper they read as a sheet of
+    /// another colour laid on it.
+    func paperTable() -> some View {
+        tableStyle(.inset).alternatingRowBackgrounds(.disabled).scrollContentBackground(.hidden)
+            .background(PaperTableHeader())
+    }
+
     /// A page's list, which takes the keyboard as the page appears when it has rows (`PageKeyboard`).
     func takesKeyboard(_ focus: FocusState<Bool>.Binding, hasRows: Bool) -> some View {
         focused(focus).modifier(PageKeyboard(list: focus, hasRows: hasRows))
@@ -181,11 +192,13 @@ struct MacRootView: View {
         .overlay { if dropping { DropVeil(course: shownCourse?.displayName).transition(.opacity) } }
         .animation(.snappy, value: dropping)
         .frame(minWidth: 980, minHeight: 620)
-        .fileImporter(isPresented: $nav.importing, allowedContentTypes: ImportMenu.readable, allowsMultipleSelection: true) { result in
+        .fileImporter(isPresented: $nav.importing, allowedContentTypes: ImportMenu<EmptyView>.readable, allowsMultipleSelection: true) { result in
             let course = shownCourse?.id
             if case .success(let urls) = result { Task { await model.importFiles(urls, courseID: course) } }
         }
-        .sheet(isPresented: $nav.addingItem) { ObligationEditor(mode: .manual, courses: courses, preferredCourse: shownCourse?.id) }   // added on a course's page: that course
+        .sheet(isPresented: $nav.addingItem, onDismiss: { nav.addingItemTo = nil }) {   // added from a course's menu or on its page: that course
+            ObligationEditor(mode: .manual, courses: courses, preferredCourse: nav.addingItemTo ?? shownCourse?.id)
+        }
         .sheet(item: $linkedItem) { ObligationEditor(mode: .edit($0), courses: courses) }
         .sheet(isPresented: $nav.addingCourse) { CourseEditor(course: nil) }
         .sheet(isPresented: Binding(get: { editedCourse != nil }, set: { if !$0 { nav.editingCourse = nil } })) { if let editedCourse { CourseEditor(course: editedCourse) } }
@@ -300,7 +313,9 @@ private struct Sidebar: View {
                         Label { Text(course.displayName) } icon: { SidebarIcon(symbol: "book.closed") }
                             .tag(MacNavigation.Destination.course(course.id))
                             .contextMenu {
+                                Button("Add Item…") { nav.addingItemTo = course.id; nav.addingItem = true }
                                 Button("Edit Course…") { nav.editingCourse = course.id }
+                                Divider()
                                 Button("Delete Course", role: .destructive) { Task { await model.deleteCourse(course.id) } }
                             }
                     }
@@ -429,7 +444,7 @@ struct DocumentsTable: View {
             }
             .width(min: 80, ideal: 100)
         }
-        .tableStyle(.inset(alternatesRowBackgrounds: true))
+        .paperTable()
         .takesKeyboard($focused, hasRows: true)
         .animation(.default, value: documents.map(\.id))   // rows come and go as a Mac table's do
         .contextMenu(forSelectionType: UUID.self) { ids in
@@ -460,7 +475,6 @@ struct DocumentsTable: View {
             return .handled
         }
         .focusedValue(\.documentActions, actions)
-        .scrollContentBackground(.hidden)   // the page every other one sits on; the rows' stripes lie on it
     }
 
     /// The File menu's share of the context menu, for the selection.
@@ -587,7 +601,7 @@ struct RecentlyDeletedTable: View {
             TableColumn("Deleted", value: \.deletedAt) { entry in Text(entry.deletedAt.formatted(.relative(presentation: .named))).lineLimit(1) }.width(min: 90, ideal: 110)
             TableColumn("Gone in", value: \.expiry) { entry in Text(remaining(entry)).monospacedDigit() }.width(min: 60, ideal: 70)
         }
-        .tableStyle(.inset(alternatesRowBackgrounds: true))
+        .paperTable()
         .takesKeyboard($focused, hasRows: true)
         .animation(.default, value: entries.map(\.id))   // restored and erased rows leave as a Mac table's do
         .contextMenu(forSelectionType: UUID.self) { ids in
@@ -598,7 +612,6 @@ struct RecentlyDeletedTable: View {
         }
         .onDeleteCommand { erasing = chosen(selection) }
         .focusedValue(\.binActions, chosen(selection).isEmpty ? nil : BinActions(ids: selection, restore: { restore(selection) }, erase: { erasing = chosen(selection) }))
-        .scrollContentBackground(.hidden)
     }
 
     private var eraseTitle: String {
@@ -832,6 +845,49 @@ enum WindowSnapshot {
               let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
         view.cacheDisplay(in: view.bounds, to: rep)
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+    }
+}
+#endif
+
+
+#if os(macOS)
+/// A table's header on the paper. AppKit pins the header over a band of its hard scroll edge (a view of its own in the
+/// header's banner, which lightens what is under it: a white strip across the cream), and nothing public changes it:
+/// SwiftUI's `scrollEdgeEffectStyle` and `scrollEdgeEffectHidden` do not reach a table's scroll view, and AppKit's edge
+/// styles are for title bar accessories. So the header's clip view is given the paper, opaque (rows scroll under it
+/// unseen), and the band is hidden. Found by looking, at the table this sits behind; if the views are not there (a
+/// later system), nothing is changed and the band is back.
+struct PaperTableHeader: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { Dresser() }
+    func updateNSView(_ view: NSView, context: Context) { (view as? Dresser)?.dress() }
+
+    final class Dresser: NSView {
+        private weak var header: NSClipView?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            DispatchQueue.main.async { [weak self] in self?.dress() }   // the table's own views are made after this one
+        }
+        override func layout() { super.layout(); dress() }
+
+        func dress() {
+            if header?.window == nil { header = find() }
+            guard let header else { return }
+            if !header.drawsBackground { header.drawsBackground = true }
+            header.backgroundColor = NSColor(Design.paper)
+            for band in Self.views(in: header) where !band.isHidden && String(describing: type(of: band)).contains("HardPocket") { band.isHidden = true }
+        }
+
+        /// The clip view holding the header of the table this sits behind (its scroll view covers this view's middle).
+        private func find() -> NSClipView? {
+            guard let window, let content = window.contentView else { return nil }
+            let middle = convert(CGPoint(x: bounds.midX, y: bounds.midY), to: nil)
+            let scroll = Self.views(in: content).lazy.compactMap { $0 as? NSScrollView }
+                .first { $0.documentView is NSTableView && $0.convert($0.bounds, to: nil).contains(middle) }
+            return scroll.flatMap { Self.views(in: $0).first { $0 is NSTableHeaderView }?.superview as? NSClipView }
+        }
+
+        private static func views(in view: NSView) -> [NSView] { [view] + view.subviews.flatMap(views) }
     }
 }
 #endif

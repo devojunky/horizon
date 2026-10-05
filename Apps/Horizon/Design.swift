@@ -68,8 +68,10 @@ enum Design {
     }
 
     /// The masthead: serif titles in every navigation bar (iOS), sized with the user's text size like the system's own
-    /// (a page title never smaller than the words under it). Called at launch and again when the text size changes, on
-    /// the main actor like every appearance proxy; a bar made after a change takes the new size.
+    /// (a page title never smaller than the words under it). Called at launch, whenever the app becomes active, and when
+    /// the text size changes, on the main actor like every appearance proxy. The proxy reaches only bars made after it
+    /// is set, so the bars already on screen are given the fonts too: on an iPhone 16 Pro Max the first tab's bar came
+    /// up in the system font while the tabs opened later had the serif, which the simulator never showed.
     @MainActor static func installAppearance() {
         #if canImport(UIKit)
         func serif(_ size: CGFloat, _ weight: UIFont.Weight, _ style: UIFont.TextStyle, largest: CGFloat) -> UIFont {
@@ -77,9 +79,17 @@ enum Design {
             let font = base.fontDescriptor.withDesign(.serif).map { UIFont(descriptor: $0, size: size) } ?? base
             return UIFontMetrics(forTextStyle: style).scaledFont(for: font, maximumPointSize: largest)
         }
+        let large = serif(34, .bold, .largeTitle, largest: 58), inline = serif(17, .semibold, .headline, largest: 30)
         let bar = UINavigationBar.appearance()
-        bar.largeTitleTextAttributes = [.font: serif(34, .bold, .largeTitle, largest: 58)]
-        bar.titleTextAttributes = [.font: serif(17, .semibold, .headline, largest: 30)]
+        bar.largeTitleTextAttributes = [.font: large]
+        bar.titleTextAttributes = [.font: inline]
+        func bars(in view: UIView) -> [UINavigationBar] { (view as? UINavigationBar).map { [$0] } ?? view.subviews.flatMap(bars) }
+        for window in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).flatMap(\.windows) {
+            for bar in bars(in: window) {
+                bar.largeTitleTextAttributes = (bar.largeTitleTextAttributes ?? [:]).merging([.font: large]) { $1 }
+                bar.titleTextAttributes = (bar.titleTextAttributes ?? [:]).merging([.font: inline]) { $1 }
+            }
+        }
         if !observingSize {
             observingSize = true
             NotificationCenter.default.addObserver(forName: UIContentSizeCategory.didChangeNotification, object: nil, queue: .main) { _ in

@@ -13,8 +13,14 @@ struct CourseView: View {
     let course: Course
     @State private var editing: Obligation?
     @State private var editingCourse = false
+    @State private var addingItem = false
     @State private var preview: URL?     // the document being looked at, in Quick Look
     @State private var lingering = Lingering()
+    /// The masthead's name has gone under the navigation bar, which then shows it (`nameHeight`: how far the page
+    /// scrolls before it has).
+    @State private var nameUnderBar = false
+    @State private var nameHeight: CGFloat = 40
+    @State private var pageWidth: CGFloat = 0   // the bar's width, for the room a name has centred in it
     @Environment(\.dismiss) private var dismiss
     // The course's items and documents come through queries, not its relationships: the store saves from a context of
     // its own, and only a query redraws for that (read through the relationship, an item deleted stayed on the page).
@@ -44,6 +50,7 @@ struct CourseView: View {
             let detail = [course.code == course.displayName ? nil : course.code, course.term, course.instructor].compactMap { $0 }.filter { !$0.isEmpty }
             VStack(alignment: .leading, spacing: 6) {
                 Text(course.displayName).display().fixedSize(horizontal: false, vertical: true).accessibilityAddTraits(.isHeader)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { nameHeight = $0 }
                 if !detail.isEmpty { Text(detail.map(DocumentsView.figure).joined(separator: DocumentsView.separator)).foregroundStyle(.secondary) }
             }
             .listRowSeparator(.hidden)
@@ -59,7 +66,7 @@ struct CourseView: View {
             }
             PageSection("Items") {
                 ForEach(toDo) { row($0) }
-                if obligations.isEmpty { Text("No items yet. Add a document with the button above, or an item by hand from Coverage's More menu.").foregroundStyle(.secondary) }
+                if obligations.isEmpty { Text("No items yet. Add a document, or an item by hand, from the More menu above.").foregroundStyle(.secondary) }
                 else if toDo.isEmpty { Text("Everything on file is done.").foregroundStyle(.secondary) }
             }
             .onPaper()
@@ -103,14 +110,23 @@ struct CourseView: View {
         .paper()
         .animation(.default, value: toDo.map(\.id))
         .animation(.default, value: documents.map(\.id))   // a document deleted here leaves its row animated
-        .navigationTitle(course.displayName)   // for the system and VoiceOver; the masthead shows it
+        // The bar names the course once the masthead's name has scrolled under it (a large title's way), and not before:
+        // two copies of the name would say it twice.
+        .onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y + $0.contentInsets.top > nameHeight + 4 } action: { _, under in nameUnderBar = under }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
+        .navigationTitle(course.displayName)   // for the back button's menu and the system; the bar shows `BarName`
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar(removing: .title)             // a second, cut-off copy of the masthead in the bar would say it twice
         .toolbar {
-            ToolbarItem(placement: .primaryAction) { ImportMenu(courseID: course.id) }
-            ToolbarItem(placement: .primaryAction) { Button("Edit") { editingCourse = true } }
+            ToolbarItem(placement: .principal) { BarName(course: course, shown: nameUnderBar, room: pageWidth > 0 ? pageWidth - 2 * BarName.buttons : .infinity) }
+            ToolbarItem(placement: .primaryAction) {
+                ImportMenu(courseID: course.id) {   // one button, so the name has the bar's middle
+                    Button { addingItem = true } label: { Label("Add Item…", systemImage: "square.and.pencil") }
+                    Button { editingCourse = true } label: { Label("Edit Course…", systemImage: "pencil") }
+                }
+            }
         }
         .sheet(item: $editing) { ObligationEditor(mode: .edit($0), courses: courses) }
+        .sheet(isPresented: $addingItem) { ObligationEditor(mode: .manual, courses: courses, preferredCourse: course.id) }   // added here: this course
         .sheet(isPresented: $editingCourse) { CourseEditor(course: course) }
         .quickLookPreview($preview)
         .onChange(of: course.deletedAt) { _, gone in if gone != nil { dismiss() } }
@@ -120,6 +136,7 @@ struct CourseView: View {
                 Task { try? await Task.sleep(for: .seconds(2)); lingering.mark(first.id, done: true); await model.setCompleted(first.id, true) }
             }
             if MainTabs.debugFlag("--open-course-editor") { editingCourse = true }
+            if MainTabs.debugFlag("--add-item") { addingItem = true }
         }
     }
 
@@ -138,6 +155,33 @@ struct CourseView: View {
 
     private func label(_ kind: PolicyKind) -> String {
         switch kind { case .lateWork: "Late work"; case .makeupExam: "Makeup exams"; case .attendance: "Attendance"; case .dropRule: "Drop rule"; case .extraCredit: "Extra credit"; case .other: "Policy" }
+    }
+}
+
+/// The course's name in the navigation bar, set as the bar sets a title, shown once the masthead's has scrolled away.
+/// The bar centres a title only when it clears the buttons on both sides, and otherwise sets it against the back
+/// button; so the name gets the room it has centred, and one too long for that gives way to the code (only then cut).
+private struct BarName: View {
+    let course: Course
+    let shown: Bool
+    /// The width the bar has for it centred: the bar's, less a button's room on either side.
+    let room: CGFloat
+    /// What a button takes from the bar's edge on either side (the back button, the More menu: its glass, the bar's
+    /// margin, and the gap the bar keeps before a title). Toolbar items measure only themselves, so it is counted.
+    static let buttons: CGFloat = 80
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            Text(course.displayName)
+            if !course.code.isEmpty, course.code != course.displayName { Text(course.code) }
+            Text(course.displayName).truncationMode(.tail)
+        }
+        .lineLimit(1)
+        .frame(maxWidth: max(room, 0))
+        .font(.system(.headline, design: .serif))
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)   // the bar's own title stops at about this size
+        .opacity(shown ? 1 : 0)
+        .animation(.easeInOut(duration: 0.2), value: shown)
+        .accessibilityHidden(!shown)   // the masthead is the page's heading while it shows
     }
 }
 #endif

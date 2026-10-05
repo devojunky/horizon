@@ -34,7 +34,13 @@ struct HorizonApp: App {
         if CommandLine.arguments.contains("--read-with-claude") { model.readingRoute = .claude }
         #endif
         _model = State(initialValue: model)
+        #if DEBUG
+        // `--appearance-late`: the bars made before the serif is installed, as on the owner's iPhone, to see that
+        // becoming active puts it right.
+        if !CommandLine.arguments.contains("--appearance-late") { Design.installAppearance() }
+        #else
         Design.installAppearance()
+        #endif
         #if os(iOS)
         BackgroundIngest.register(model: model)
         ActivityRefresh.register(model: model)
@@ -87,6 +93,7 @@ struct HorizonApp: App {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { model.appBecameActive() }
             #if os(iOS)
+            if phase == .active { Design.installAppearance() }   // bars made before it was installed take the serif too
             if phase == .background { model.appEnteredBackground() }
             #endif
         }

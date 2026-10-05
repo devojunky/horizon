@@ -7,10 +7,13 @@ import UIKit
 #endif
 
 /// Where documents come from inside the app: Files, the photo library, and (on iPhone/iPad) the document camera.
-/// Each source ends the same way: temporary files handed to `AppModel.importFiles`.
-struct ImportMenu: View {
+/// Each source ends the same way: temporary files handed to `AppModel.importFiles`. Given more of a page's actions, it
+/// is that page's More menu, the sources first under "Add Document" (iOS's course page: one button in the bar leaves
+/// its title the room to sit centred).
+struct ImportMenu<More: View>: View {
     /// Files what is imported under this course (the course page); nil lets the parser find the course.
     var courseID: UUID? = nil
+    private let more: More?
     @Environment(AppModel.self) private var model
     @State private var files = false
     @State private var choosingPhotos = false
@@ -19,22 +22,24 @@ struct ImportMenu: View {
     @State private var scanFailed = false
 
     #if os(macOS)
-    static let readable: [UTType] = [.pdf, .image, .plainText, UTType("org.openxmlformats.wordprocessingml.document")].compactMap { $0 }
+    static var readable: [UTType] { [.pdf, .image, .plainText, UTType("org.openxmlformats.wordprocessingml.document")].compactMap { $0 } }
     #else
-    static let readable: [UTType] = [.pdf, .image, .plainText]   // Word is read on a Mac only (AppKit's converter): not offered here
+    static var readable: [UTType] { [.pdf, .image, .plainText] }   // Word is read on a Mac only (AppKit's converter): not offered here
     #endif
+
+    init(courseID: UUID? = nil) where More == EmptyView { self.courseID = courseID; more = nil }
+    init(courseID: UUID? = nil, @ViewBuilder more: () -> More) { self.courseID = courseID; self.more = more() }
 
     var body: some View {
         Menu {
-            Button { files = true } label: { Label("Files…", systemImage: "folder") }
-            Button { choosingPhotos = true } label: { Label("Photo Library…", systemImage: "photo.on.rectangle") }
-            #if os(iOS)
-            if VNDocumentCameraViewController.isSupported {
-                Button { scanFailed = false; scanning = true } label: { Label("Scan with Camera", systemImage: "doc.viewfinder") }
+            if let more {
+                Section("Add Document") { sources }
+                Section { more }
+            } else {
+                sources
             }
-            #endif
         } label: {
-            Label("Add Document", systemImage: "doc.badge.plus")
+            if more == nil { Label("Add Document", systemImage: "doc.badge.plus") } else { Label("More", systemImage: "ellipsis.circle") }
         }
         .fileImporter(isPresented: $files, allowedContentTypes: Self.readable, allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { Task { await model.importFiles(urls, courseID: courseID) } }
@@ -68,6 +73,16 @@ struct ImportMenu: View {
                 }
             } failed: { scanFailed = true }
             .ignoresSafeArea()
+        }
+        #endif
+    }
+
+    @ViewBuilder private var sources: some View {
+        Button { files = true } label: { Label("Files…", systemImage: "folder") }
+        Button { choosingPhotos = true } label: { Label("Photo Library…", systemImage: "photo.on.rectangle") }
+        #if os(iOS)
+        if VNDocumentCameraViewController.isSupported {
+            Button { scanFailed = false; scanning = true } label: { Label("Scan with Camera", systemImage: "doc.viewfinder") }
         }
         #endif
     }

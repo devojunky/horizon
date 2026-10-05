@@ -214,8 +214,7 @@ struct ItemTable: View {
                 .width(min: 46, ideal: 50, max: 80)
                 .alignment(.trailing)   // the header over its figures
             }
-            .tableStyle(.inset(alternatesRowBackgrounds: true))
-            .scrollContentBackground(.hidden)
+            .paperTable()
             .takesKeyboard($focused, hasRows: !rows.isEmpty)
             .opacity(rows.isEmpty ? 0.001 : 1)   // kept in the layout (its height), but an empty table's header says nothing
             .overlay(alignment: .top) {

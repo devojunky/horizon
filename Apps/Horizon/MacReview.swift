@@ -130,8 +130,7 @@ struct MacReviewPage: View {
             .width(min: 46, ideal: 50, max: 80)
             .alignment(.trailing)
         }
-        .tableStyle(.inset(alternatesRowBackgrounds: true))
-        .scrollContentBackground(.hidden)
+        .paperTable()
         .takesKeyboard($tableFocused, hasRows: true)   // ↑ and ↓ go through the items, ⌘↩ and ⌘⌫ act on them: the pointer is needed only to edit
         .animation(.default, value: rows.map(\.id))   // a confirmed or discarded row leaves as a Mac table's rows do, the rest closing up
         .contextMenu(forSelectionType: UUID.self) { ids in

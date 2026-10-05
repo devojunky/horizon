@@ -78,6 +78,26 @@ extension AnyTransition {
 }
 
 #if os(iOS)
+/// The page's height as it is at rest, with the large title showing. The strip is sized for that and keeps it: as the
+/// title folds into the bar on a scroll the page grows by the title's height, and a strip sized for the page as it
+/// stands grew with it, so its bands stretched under the finger, and after an animated scroll (a week chosen, the
+/// list revealed) they stretched only once it was over, in one jump. The largest top inset seen at a width is the
+/// title's (a pull past the top does not move it), kept per width so a turn to landscape starts again.
+private struct RestingPage {
+    struct Inset: Equatable { var width: CGFloat; var top: CGFloat }
+    private var width: CGFloat = -1
+    private var top: CGFloat = 0
+
+    mutating func note(_ inset: Inset) {
+        if inset.width != width { width = inset.width; top = inset.top } else { top = max(top, inset.top) }
+    }
+
+    /// The height the page has with its title showing: what it has now, less what the folded title has given it.
+    func height(of geo: GeometryProxy) -> CGFloat {
+        geo.size.height - max(0, (geo.size.width == width ? top : geo.safeAreaInsets.top) - geo.safeAreaInsets.top)
+    }
+}
+
 /// Where things sit in the strip. Top to bottom: an axis of two tiers (a month's name where it begins; under it each
 /// bar's own date, so nothing is ever drawn over anything), one row per band (what a roomy band has to spare, then
 /// its name's line seated on its cells, then a gap), and a foot for "Today". Left to right: bars of one width, a week
@@ -244,7 +264,8 @@ struct HorizonStripView: View {
     @State private var chosen: DateInterval?         // the week (from the overview) or the day (from its bar) whose work the list shows
     @State private var editing: Obligation?
     @State private var lingering = Lingering()       // just checked off under "Coming up": crossed off for a moment before it leaves, so a slip can be undone
-    @State private var listHeadY: CGFloat = 0        // where the list begins on the screen, to know when a chosen period's items are under the fold
+    @State private var listHeadY: CGFloat?           // where the list begins on the screen, to know when a chosen period's items are under the fold (nil: never laid out, so far below it)
+    @State private var resting = RestingPage()       // the page's height with the large title showing: what the strip is sized for
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .caption2) private var labelHeight: CGFloat = 16
     /// A band's name grows with the text size as far as the first accessibility size (`bandLabels` stops there), so
@@ -309,7 +330,7 @@ struct HorizonStripView: View {
         let _ = rows.ids = listed.map(\.id)
         PageStack {
             GeometryReader { geo in
-                let g = geometry(in: geo.size, data: data)
+                let g = geometry(in: CGSize(width: geo.size.width, height: resting.height(of: geo)), data: data)
                 let contentWidth = CGFloat(data.periods.count) * g.barWidth + g.inset * 2
                 ScrollViewReader { page in
                     List {
@@ -377,6 +398,7 @@ struct HorizonStripView: View {
                         .background(Design.paper)
                     }
                 }
+                .onChange(of: RestingPage.Inset(width: geo.size.width, top: geo.safeAreaInsets.top), initial: true) { _, inset in resting.note(inset) }
                 .onChange(of: !data.periods.isEmpty && geo.size.width > 0, initial: true) { _, ready in   // once there is a term and a real layout (the first pass is zero wide)
                     guard ready, !placed else { return }
                     placed = true
@@ -592,7 +614,7 @@ struct HorizonStripView: View {
     /// A tap has chosen a bar: if the head of its list is under the fold, the page moves just far enough to show its
     /// first rows (HIG: scroll automatically only as much as necessary).
     private func reveal(_ page: ScrollViewProxy, viewportBottom: CGFloat) {
-        guard listHeadY + listHead > viewportBottom + 8 else { return }
+        guard (listHeadY ?? .infinity) + listHead > viewportBottom + 8 else { return }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(80))   // once the list holds the period's items
             let ids = rows.ids

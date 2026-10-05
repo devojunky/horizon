@@ -36,6 +36,7 @@ struct MacCoveragePage: View {
                                   open: { nav.show(course: story.course.id) })
                             .contextMenu {
                                 Button("Open") { nav.show(course: story.course.id) }
+                                Button("Add Item…") { nav.addingItemTo = story.course.id; nav.addingItem = true }
                                 Button("Edit Course…") { nav.editingCourse = story.course.id }
                                 Divider()
                                 Button("Delete Course", role: .destructive) { Task { await model.deleteCourse(story.course.id) } }
