@@ -110,18 +110,21 @@ public struct DocumentSnapshot: Sendable, Identifiable, Equatable {
     public var deletedAt: Date?
     /// The user has said this document may be read by the device model instead of Claude.
     public var readOnDevice: Bool
+    /// The failure is the file's own: a retry would fail the same way (offer no Retry).
+    public var failureIsPermanent: Bool
 
     public init(id: UUID = UUID(), filename: String, sha256: String, kind: String, status: DocumentStatus, queuedAt: Date, ingestedAt: Date? = nil,
-                deviceName: String, failure: String? = nil, platform: Platform? = nil, courseID: UUID? = nil, deletedAt: Date? = nil, readOnDevice: Bool = false, title: String? = nil) {
+                deviceName: String, failure: String? = nil, platform: Platform? = nil, courseID: UUID? = nil, deletedAt: Date? = nil, readOnDevice: Bool = false, title: String? = nil,
+                failureIsPermanent: Bool = false) {
         self.id = id; self.filename = filename; self.title = title; self.sha256 = sha256; self.kind = kind; self.status = status; self.queuedAt = queuedAt
         self.ingestedAt = ingestedAt; self.deviceName = deviceName; self.failure = failure; self.platform = platform; self.courseID = courseID; self.deletedAt = deletedAt
-        self.readOnDevice = readOnDevice
+        self.readOnDevice = readOnDevice; self.failureIsPermanent = failureIsPermanent
     }
 
     public init(_ d: SourceDocument) {
         id = d.id; filename = d.filename; title = d.title; sha256 = d.sha256; kind = d.kind; status = d.status; queuedAt = d.queuedAt
         ingestedAt = d.ingestedAt; deviceName = d.deviceName; failure = d.failure; platform = d.platform; courseID = d.course?.id; deletedAt = d.deletedAt
-        readOnDevice = d.readOnDevice
+        readOnDevice = d.readOnDevice; failureIsPermanent = d.failureIsPermanent
     }
 
     /// What the app calls the document: its title once it has one, else its file's name without the clutter.
@@ -160,4 +163,7 @@ public struct IngestSummary: Sendable, Equatable {
     public var unchanged = 0
     public var pendingReview = 0
     public var warnings: [String] = []
+    /// The document, or the course it belongs to, went to the bin while it was read: nothing was folded in, and the
+    /// document waits in the bin with its checkpoint, to be read again from there if it is restored.
+    public var binned = false
 }

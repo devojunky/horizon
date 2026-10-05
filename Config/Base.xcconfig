@@ -1,6 +1,7 @@
 // Shared build settings. Local.xcconfig (git-ignored) may set DEVELOPMENT_TEAM.
 #include? "Local.xcconfig"
-// iOS entitlements. Private Cloud Compute was dropped (Claude reads; DECISIONS 2026-09-14); nothing needs setting here now.
-HORIZON_IOS_ENTITLEMENTS = Apps/Horizon/Horizon.entitlements
+// One version for the app and its extensions (App Store validation refuses a mismatch); raise the build for every upload.
+MARKETING_VERSION = 1.0
+CURRENT_PROJECT_VERSION = 1
 SWIFT_VERSION = 6.0
 SWIFT_STRICT_CONCURRENCY = complete

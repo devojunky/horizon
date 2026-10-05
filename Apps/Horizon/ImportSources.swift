@@ -18,7 +18,11 @@ struct ImportMenu: View {
     @State private var scanning = false
     @State private var scanFailed = false
 
+    #if os(macOS)
     static let readable: [UTType] = [.pdf, .image, .plainText, UTType("org.openxmlformats.wordprocessingml.document")].compactMap { $0 }
+    #else
+    static let readable: [UTType] = [.pdf, .image, .plainText]   // Word is read on a Mac only (AppKit's converter): not offered here
+    #endif
 
     var body: some View {
         Menu {
@@ -50,7 +54,7 @@ struct ImportMenu: View {
                 photos = []
                 await model.importFiles(urls, courseID: courseID)
                 for url in urls { try? FileManager.default.removeItem(at: url) }   // the app keeps its own copy
-                if unreadable > 0 { model.lastError = unreadable == 1 ? "One photo could not be read" : "\(unreadable) photos could not be read" }
+                if unreadable > 0 { model.lastError = unreadable == 1 ? "One photo could not be read." : "\(unreadable) photos could not be read." }
             }
         }
         #if os(iOS)
@@ -60,7 +64,7 @@ struct ImportMenu: View {
                 if let url {
                     Task { await model.importFiles([url], courseID: courseID); try? FileManager.default.removeItem(at: url) }
                 } else if scanFailed {
-                    model.lastError = "The scan could not be saved"
+                    model.lastError = "The scan could not be saved."
                 }
             } failed: { scanFailed = true }
             .ignoresSafeArea()
@@ -75,7 +79,7 @@ struct ImportMenu: View {
 
 #if os(iOS)
 /// VisionKit's document scanner: multi-page, auto-cropped. Pages become one image-only PDF, which the normalizer
-/// treats like any scanned document (Vision OCR text for the guards, the image itself for the model).
+/// treats like any scanned document (each page a picture, which Claude transcribes first so the guards have text to check).
 struct DocumentCamera: UIViewControllerRepresentable {
     let completion: (URL?) -> Void
     var failed: () -> Void = {}

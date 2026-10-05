@@ -24,7 +24,7 @@ enum IngestInstructions {
     A chunk with no course content yields empty lists.
     """
 
-    /// `pictures`: how many of the chunk's pages are attached as images (Claude), labelled "page N" by their number.
+    /// `pictures`: how many of the chunk's pages are attached as images (Claude), each after a line naming it ("Page 3").
     /// `forClaude`: the reply begins with an outline (`ClaudeSchemas`), so the ask says what it is for.
     static func prompt(chunk: String, chunkIndex: Int, chunkCount: Int, document: String, context: RollingContext, pictures: Int = 0, forClaude: Bool = false) -> String {
         var lines = ["Document: \(document). Chunk \(chunkIndex + 1) of \(chunkCount)."]
@@ -43,13 +43,17 @@ enum IngestInstructions {
     /// and the list that follows holds to the names, one for one. Key order is the schema's; the API enforces it.
     static let outlineAsk = "Begin with the outline: the name of every graded or required item with its own date or explicit TBD, in document order, and the counts of grade rows, policy sentences and breaks. Then the parts in order: the course, the grade rows, the obligations (following the outline one for one, with the same names), the policies, the breaks."
 
-    /// `withOCRTool`: the device model may call the system's text tool on the picture; Claude reads it directly and transcribes it.
-    static func imagePrompt(imageIndex: Int, imageCount: Int, document: String, context: RollingContext, withOCRTool: Bool) -> String {
-        var lines = ["Document: \(document). Image \(imageIndex + 1) of \(imageCount), attached with label \"\(Extractor.imageLabel)\"." + (withOCRTool ? " Call getText on it if the text is dense or tabular." : "")]
+    /// `forClaude`: Claude reads the picture (after a line naming its page) and transcribes it first, then outlines its
+    /// facts (`ClaudeSchemas.pageReading`). The device model sees it labelled "page", and `withOCRTool` may call the
+    /// system's text tool on it; its schema has no transcript, so it is never asked for one.
+    static func imagePrompt(imageIndex: Int, imageCount: Int, page: Int, document: String, context: RollingContext, forClaude: Bool, withOCRTool: Bool) -> String {
+        let attached = forClaude ? "Image \(imageIndex + 1) of \(imageCount), page \(page + 1), attached."
+            : "Image \(imageIndex + 1) of \(imageCount), attached with label \"\(Extractor.imageLabel)\"." + (withOCRTool ? " Call getText on it if the text is dense or tabular." : "")
+        var lines = ["Document: \(document). " + attached]
         if let course = context.courseLine { lines.append("Course: \(course).") }
         if let term = context.termLine { lines.append("Term: \(term).") }
         lines.append("Extract every fact shown in the attached image, including the course code and title if a header shows them. In an assignment table the deadline is the Due column; Released and Late Due columns are not deadlines.")
-        if !withOCRTool { lines.append("Transcribe the picture first. Then " + Self.outlineAsk.replacingOccurrences(of: "Begin with", with: "begin the facts with")) }
+        if forClaude { lines.append("Transcribe the picture first. Then " + Self.outlineAsk.replacingOccurrences(of: "Begin with", with: "begin the facts with")) }
         return lines.joined(separator: "\n")
     }
 }

@@ -107,7 +107,8 @@ public struct ParsedObligation: Codable, Sendable, Identifiable {
     public var flags: [ParseFlag]
     /// Percentage points of the final grade: component weight ÷ expected item count.
     public var pointsAtStake: Double?
-    /// 0-based page of the source document the item was read from.
+    /// 0-based page where the part of the document the item was read from begins: the item's own page for a picture or
+    /// a part of one page, the first page of a chunk of several (every page of a PDF Claude read whole is page 0).
     public var sourcePage: Int
 
     public init(id: UUID = UUID(), title: String, platform: Platform = .syllabusOnly, componentName: String? = nil, dateAsWritten: String = "",
@@ -126,7 +127,7 @@ public enum ObligationStatus: String, Codable, Sendable {
 public enum ParseFlag: String, Codable, Sendable {
     case dateNotInSource      // neither the copied wording nor the resolved date appears in the document text
     case conflictingDate      // the same item appears twice with different dates
-    case dateAmbiguous        // the item's row lists several dates and the chosen one is the first, e.g. a session or release date
+    case dateAmbiguous        // the wording or the item's row does not settle the day: several days printed and none chosen, a span of days, a week without its day, or the row's first date (a session or release date)
     case dateDisagreement     // model's ISO date and the deterministic re-parse of dateAsWritten differ
     case dateUnresolved       // a date was written but could not be resolved
     case titleNotInSource     // the document never prints this name and no line carrying the date labels it

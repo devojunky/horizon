@@ -24,6 +24,10 @@ struct ReadingProgressTests {
         let order: [ReadProgress.Stage] = [.sizing, .course, .grading, .obligations, .policies, .breaks]
         let starts = order.map { ReadingProgress.band($0).lowerBound }
         #expect(starts == starts.sorted() && ReadingProgress.band(.transcribing).upperBound <= ReadingProgress.band(.course).upperBound)
+        // A picture is transcribed, then outlined: the bar, held where the transcript left it, still has room to creep.
+        let transcribed = ReadingProgress.mark(ReadProgress(stage: .transcribing))
+        #expect(ReadingProgress.mark(ReadProgress(stage: .sizing)) > transcribed)
+        #expect(ReadingProgress.mark(ReadProgress(stage: .sizing, done: 3)) > transcribed)
     }
 
     @Test func theCaptionNamesTheStageAndTheCount() {

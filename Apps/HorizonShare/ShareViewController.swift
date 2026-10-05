@@ -43,23 +43,34 @@ struct ShareView: View {
             let container = try HorizonContainer.shared()
             let store = HorizonStore(modelContainer: container)
             let coordinator = IngestCoordinator(store: store, storage: DocumentStorage.appGroup() ?? .temporary(), sync: nil, deviceName: UIDevice.current.name)
-            var count = 0
+            var count = 0, word = 0, failed = 0
             for item in context?.inputItems as? [NSExtensionItem] ?? [] {
                 for provider in item.attachments ?? [] {
-                    if let url = try await Self.file(from: provider) {
-                        _ = try await coordinator.enqueue(fileURL: url)
-                        count += 1
-                    }
+                    if Self.word.contains(where: { provider.hasItemConformingToTypeIdentifier($0) }) { word += 1; continue }
+                    do {   // one file that will not come does not stop the others
+                        if let url = try await Self.file(from: provider) {
+                            _ = try await coordinator.enqueue(fileURL: url)
+                            count += 1
+                        }
+                    } catch { failed += 1 }
                 }
             }
-            message = count == 0 ? "Nothing Horizon can read was shared." : "Queued \(count == 1 ? "1 document" : "\(count) documents"). Open Horizon to parse it into Reminders."
+            var lines = [count == 0 ? (word + failed == 0 ? "Nothing Horizon can read was shared." : nil)
+                         : count == 1 ? "Added to Horizon, which reads it the next time it opens."
+                         : "Added \(count) documents to Horizon, which reads them the next time it opens."]
+            if word > 0 { lines.append("Word documents can only be read on a Mac. Save \(word == 1 ? "it" : "them") as a PDF and share that instead.") }
+            if failed > 0 { lines.append(failed == 1 ? "One file could not be added." : "\(failed) files could not be added.") }
+            message = lines.compactMap { $0 }.joined(separator: " ")
         } catch {
             message = "Could not add this: \(error.localizedDescription)"
         }
         done = true
     }
 
-    static let readable: [UTType] = [.pdf, .image, .plainText, UTType("org.openxmlformats.wordprocessingml.document")].compactMap { $0 }
+    /// What the app reads on iOS. A Word document is read on a Mac only (the system's converter is AppKit's), so it is
+    /// turned away here with the reason, not queued for a read that cannot succeed.
+    static let readable: [UTType] = [.pdf, .image, .plainText]
+    static let word = ["org.openxmlformats.wordprocessingml.document", "com.microsoft.word.doc"]
 
     /// PDFs, images, text and readable files become a temporary file the coordinator can copy in. Anything else is skipped.
     /// Each kind is asked for the way it is held: a file the host points at comes as its URL (its own name kept), text as
@@ -77,7 +88,9 @@ struct ShareView: View {
                 return copy
             case .plainText:
                 guard let data = try await load({ provider.loadDataRepresentation(forTypeIdentifier: type.identifier, completionHandler: $0) }) else { continue }
-                let copy = temp.appendingPathComponent("shared-\(UUID().uuidString).txt")
+                // A text file shared from Files keeps its name (the device model has nothing better to call it).
+                let named = provider.suggestedName.map { $0.components(separatedBy: CharacterSet(charactersIn: "/:\\")).joined(separator: "-") }.flatMap { $0.isEmpty ? nil : $0 }
+                let copy = temp.appendingPathComponent(named.map { $0.lowercased().hasSuffix(".txt") ? $0 : $0 + ".txt" } ?? "shared-\(UUID().uuidString).txt")
                 try text(in: data).write(to: copy)
                 return copy
             default:

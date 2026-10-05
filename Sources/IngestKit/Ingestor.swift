@@ -61,20 +61,25 @@ public struct KnownComponent: Sendable, Equatable {
     }
 }
 
-/// Points of the final grade one item is worth: the component's weight over how many of it there are (a stated count,
-/// else the rhythm over the term, else what is on file). Shared by the parser and the store, which recomputes per course.
+/// Points of the final grade one item is worth: the component's weight over how many of it count (a stated count, else
+/// the rhythm over the term, else what is on file, less the lowest scores dropped: ten quizzes for 20% with the lowest
+/// two dropped are 2.5 points each). Shared by the parser and the store, which recomputes per course.
 public enum PointsAtStake {
-    public static func perItem(weight: Double, expectedCount: Int?, cadence: Cadence?, termStart: Date?, termEnd: Date?, onFile: Int) -> Double? {
+    public static func perItem(weight: Double, expectedCount: Int?, dropLowest: Int? = nil, cadence: Cadence?, termStart: Date?, termEnd: Date?, onFile: Int) -> Double? {
         let expected = expectedCount ?? impliedCount(cadence, termStart: termStart, termEnd: termEnd) ?? onFile
-        guard expected > 0 else { return nil }
-        return (weight * 100 / Double(expected) * 100).rounded() / 100
+        let dropped = max(0, dropLowest ?? 0)
+        let counted = expected > dropped ? expected - dropped : expected   // a drop rule that would leave nothing is no rule
+        guard counted > 0 else { return nil }
+        return (weight * 100 / Double(counted) * 100).rounded() / 100
     }
 
+    /// How many of a rhythm the term holds, its first day and its last both counted: a weekly item once a week from the
+    /// first day (Wednesday 2 September to Monday 14 December holds 15 Wednesdays, not 14), a biweekly one every other.
     public static func impliedCount(_ cadence: Cadence?, termStart: Date?, termEnd: Date?) -> Int? {
         guard let cadence else { return nil }
         if cadence == .once { return 1 }
         guard let termStart, let termEnd, termEnd > termStart else { return nil }
-        let weeks = max(1, Int(termEnd.timeIntervalSince(termStart) / (7 * 86400)))
+        let weeks = Int(termEnd.timeIntervalSince(termStart) / (7 * 86400)) + 1
         return cadence == .weekly ? weeks : max(1, weeks / 2)
     }
 }
@@ -149,7 +154,8 @@ public actor Ingestor {
         await naming?.value
         warnings += await extractor.warnings
         guard !outcomes.isEmpty else { throw IngestError.extractionFailed(warnings.joined(separator: "; ")) }
-        let result = Merger.merge(outcomes: outcomes, document: document, route: extractor.route, options: options, warnings: warnings)
+        var result = Merger.merge(outcomes: outcomes, document: document, route: extractor.route, options: options, warnings: warnings)
+        result.usage.calls += await extractor.unkept   // calls that left nothing to keep were spent too
         completed = true
         options.progress(.finished(obligations: result.obligations.count))
         return result

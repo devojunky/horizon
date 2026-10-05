@@ -97,6 +97,10 @@ public enum Scoring {
                     notes.append("date: \(want.title) expected \(d) got \(got.due ?? "nil") (\(got.status.map { "\($0)" } ?? "?"))")
                     if got.status == nil || got.status == .ready { readyErrors += 1 }
                 }
+            } else if let invented = got.due {
+                // The document gives no date and the parser does: a date made up, and shipped unless it waits for review.
+                notes.append("date: \(want.title) expected TBD got \(invented) (\(got.status.map { "\($0)" } ?? "?"))")
+                if got.status == nil || got.status == .ready { readyErrors += 1 }
             }
             if let p = want.platform {
                 platformed += 1

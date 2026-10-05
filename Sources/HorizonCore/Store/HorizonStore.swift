@@ -15,16 +15,25 @@ public actor HorizonStore {
     public func ingest(_ result: IngestResult, documentID: UUID, calendar: Calendar = .current) throws -> IngestSummary {
         var summary = IngestSummary(warnings: result.warnings)
         guard let document = try fetchDocument(id: documentID) else { throw StoreError.missingDocument }
+        // Deleted while it was read (on its own, or with its course): nothing comes back from the bin and nothing is
+        // folded in. The document waits there with its checkpoint, so a restore reads it again from the parts read.
+        if document.deletedAt != nil { summary.binned = true; return summary }
         // A document filed under a course by the user stays there; its facts apply only if it names no other course.
         let course: Course?
         if let hinted = document.course {
+            if wentAfterQueueing(hinted, document) { return try setAside(document, with: hinted, summary) }
             let named = result.course?.code.map(Normalize.collapseWhitespace) ?? ""
             if named.isEmpty || Normalize.key(named) == Normalize.key(hinted.code) { applyFacts(from: result, to: hinted) }
             else { summary.warnings.append("The document names \(named); filed under \(hinted.displayName) as asked") }
             revive(hinted)
             course = hinted
+        } else if let named = try upsertCourse(from: result) {
+            if wentAfterQueueing(named, document) { return try setAside(document, with: named, summary) }
+            revive(named)   // a document naming a deleted course brings it back (shared after the deletion: see above)
+            applyFacts(from: result, to: named)
+            course = named
         } else {
-            course = try upsertCourse(from: result)
+            course = nil
         }
         summary.courseCode = course?.code
         document.course = course
@@ -49,16 +58,27 @@ public actor HorizonStore {
             }
         }
 
-        // Candidates: this course's rows, or the course-less rows when the document names no course. Each is matched once.
-        // Tombstones the user made stay matched (deleted stays deleted); rows retired with a deleted course or document
-        // are out of the running, so a document read again brings its items back as new rows.
-        var pool = try (course.map { $0.obligations ?? [] } ?? fetchObligations().filter { $0.course == nil })
-            .filter { $0.deletedAt == nil || !Self.retired($0) }
+        // Candidates: this course's rows, and those read from its documents that the user has since moved to another
+        // course; or the course-less rows when the document names no course. Each is matched once. Tombstones the user
+        // made stay matched (deleted stays deleted); rows retired with a deleted course or document are out of the
+        // running, so a document read again brings its items back as new rows.
+        var pool: [Obligation]
+        if let course {
+            let own = course.obligations ?? []
+            let moved = (course.documents ?? []).flatMap { $0.obligations ?? [] }.filter { $0.course?.id != course.id }
+            pool = own + moved.filter { item in !own.contains { $0.id == item.id } }
+        } else {
+            pool = try fetchObligations().filter { $0.course == nil }
+        }
+        pool = pool.filter { $0.deletedAt == nil || !Self.retired($0) }
+        var elsewhere: [Course] = []
         for parsed in result.obligations {
             if let index = Self.match(parsed, in: pool, calendar: calendar) {
                 let existing = pool.remove(at: index)
                 if existing.deletedAt != nil { summary.unchanged += 1; continue }   // deleted in Reminders stays deleted
-                let changes = apply(parsed, to: existing, document: document, calendar: calendar)
+                let ownCourse = existing.course?.id == course?.id
+                if !ownCourse, let other = existing.course, !elsewhere.contains(where: { $0.id == other.id }) { elsewhere.append(other) }
+                let changes = apply(parsed, to: existing, document: document, ownCourse: ownCourse, calendar: calendar)
                 if changes.isEmpty { summary.unchanged += 1 } else { summary.updated += 1 }
                 if existing.state == .pendingReview { summary.pendingReview += 1 }
             } else {
@@ -72,8 +92,28 @@ public actor HorizonStore {
                 if item.state == .pendingReview { summary.pendingReview += 1 }
             }
         }
-        if let course { recomputePoints(for: course) }
+        for affected in [course].compactMap({ $0 }) + elsewhere { recomputePoints(for: affected) }
         try modelContext.save()
+        return summary
+    }
+
+    /// The course went to the bin (or for good) after the document was queued: the user deleted it while the document
+    /// waited or was read, so the read must not bring it back. A document shared (or restored, or retried) after the
+    /// deletion is a fresh request, and does.
+    private func wentAfterQueueing(_ course: Course, _ document: SourceDocument) -> Bool {
+        guard let deletedAt = course.deletedAt else { return false }
+        return document.queuedAt < deletedAt
+    }
+
+    /// A read that finds its course deleted since the document was queued folds nothing in: the document goes with the
+    /// course, unread, its checkpoint kept. Under a course in the bin it sits under the course and comes back with it
+    /// (then read from its checkpoint); a course erased leaves it in the bin on its own, where a restore queues it again.
+    private func setAside(_ document: SourceDocument, with course: Course, _ summary: IngestSummary) throws -> IngestSummary {
+        if course.isBinned { document.course = course; document.deletedAt = course.deletedAt }
+        else { document.course = nil; document.deletedAt = Date() }
+        try modelContext.save()
+        var summary = summary
+        summary.binned = true
         return summary
     }
 
@@ -84,16 +124,33 @@ public actor HorizonStore {
     }
 
     /// Points at stake per item, over everything on file for the course (its documents together): weight over a stated
-    /// count, else the rhythm over the term, else what is on file.
+    /// count, else the rhythm over the term, else what is on file. Run whenever any of those changes: a read, an item
+    /// added, moved, deleted or restored, a grade table or term edited. A reminder showing the old figure ("Worth 1.5%",
+    /// its priority) is written again.
     private func recomputePoints(for course: Course) {
         let live = (course.obligations ?? []).filter { $0.deletedAt == nil }
         for component in course.gradeComponents {
             guard let weight = component.weight else { continue }
             let members = live.filter { $0.componentName.map(Normalize.key) == Normalize.key(component.name) }
-            let points = PointsAtStake.perItem(weight: weight, expectedCount: component.expectedCount, cadence: component.cadence,
+            let points = PointsAtStake.perItem(weight: weight, expectedCount: component.expectedCount, dropLowest: component.dropLowest, cadence: component.cadence,
                                                termStart: course.termStart, termEnd: course.termEnd, onFile: members.count)
-            for item in members where item.pointsAtStake != points { item.pointsAtStake = points; item.updatedAt = Date() }
+            for item in members where item.pointsAtStake != points {
+                item.pointsAtStake = points
+                item.updatedAt = Date()
+                if item.state == .projected { item.state = .readyToProject }
+            }
         }
+    }
+
+    /// Recomputes points for each course given once, nil skipped.
+    private func recomputePoints(for courses: [Course?]) {
+        var done: [UUID] = []
+        for case let course? in courses where !done.contains(course.id) { done.append(course.id); recomputePoints(for: course) }
+    }
+
+    /// "Updated N days ago" counts only documents still on file: the last read of one, nil when none is left.
+    private func refreshLastIngested(_ course: Course, excluding gone: UUID? = nil) {
+        course.lastIngested = (course.documents ?? []).filter { $0.id != gone && $0.deletedAt == nil && $0.status == .parsed }.compactMap(\.ingestedAt).max()
     }
 
     /// What the parser should already know when it reads a document filed under this course.
@@ -125,38 +182,40 @@ public actor HorizonStore {
         try modelContext.save()
     }
 
-    /// Same course when the code matches; a title that reads the same only when neither side has a code; else new.
+    /// The course a document names: the same course when the code matches; a title that reads the same only when
+    /// neither side has a code; else a new one. Nil when it names none. The caller revives and fills it.
     private func upsertCourse(from result: IngestResult) throws -> Course? {
         let parsed = result.course
         let code = parsed?.code.map(Normalize.collapseWhitespace) ?? ""
         let title = parsed?.title.map(Normalize.collapseWhitespace) ?? ""
         guard !code.isEmpty || !title.isEmpty else { return nil }
         let all = try modelContext.fetch(FetchDescriptor<Course>()).sorted { ($0.deletedAt == nil ? 0 : 1) < ($1.deletedAt == nil ? 0 : 1) }   // a live course before a tombstone with its code
-        let course = all.first { !code.isEmpty && Normalize.key($0.code) == Normalize.key(code) }
+        return all.first { !code.isEmpty && Normalize.key($0.code) == Normalize.key(code) }
             ?? all.first { (code.isEmpty || $0.code.isEmpty) && !title.isEmpty && Normalize.similarity($0.title, title) >= 0.6 }
             ?? { let c = Course(code: code, title: title); modelContext.insert(c); return c }()
-        revive(course)   // a document naming a deleted course brings it back
-        applyFacts(from: result, to: course)
-        return course
     }
 
     /// A document naming a course in the bin (or erased) brings it back for a fresh start: every tombstone it holds
     /// is retired, so the read creates new rows rather than matching what was once deleted. Its other documents stay
-    /// in the bin, restorable on their own.
+    /// in the bin, restorable on their own. Its silence counts from now: it has only just come back.
     private func revive(_ course: Course) {
         guard course.deletedAt != nil else { return }
         course.deletedAt = nil
         course.erasedAt = nil
+        course.createdAt = Date()
         for item in course.obligations ?? [] where item.deletedAt != nil { item.retiredWithSource = true }
     }
 
-    /// A document shared again while in the bin is read afresh: back on file, queued, its tombstones retired.
+    /// A document shared again while in the bin is read afresh: back on file, queued as a new request, its tombstones
+    /// retired.
     private func revive(_ document: SourceDocument) {
         guard document.deletedAt != nil else { return }
         document.deletedAt = nil
         document.status = .queued
         document.failure = nil
+        document.failureIsPermanent = false
         document.checkpoint = nil
+        document.queuedAt = Date()
         for item in document.obligations ?? [] where item.deletedAt != nil { item.retiredWithSource = true }
     }
 
@@ -208,26 +267,29 @@ public actor HorizonStore {
 
     /// Index of the row a parsed item is: the same title on the same day; else the same title when exactly one side is
     /// undated (a TBD resolving, or a date withdrawn); else a similar title on the same day; else the one row with the
-    /// same title (its date moved: the re-ingest diff case).
+    /// same title (its date moved: the re-ingest diff case). A row is known by its document's word on it (the current
+    /// source's), not by what the user has made of it: renamed or moved in the app or in Reminders, it is still the item.
     static func match(_ parsed: ParsedObligation, in pool: [Obligation], calendar: Calendar) -> Int? {
         let key = Normalize.key(parsed.title)
-        func sameDay(_ o: Obligation) -> Bool {
-            switch (o.due, parsed.due) {
+        let words = pool.map { $0.documentWords.last.map { (title: $0.title, due: $0.due) } ?? (title: $0.title, due: $0.due) }
+        func sameDay(_ i: Int) -> Bool {
+            switch (words[i].due, parsed.due) {
             case (nil, nil): true
             case (let a?, let b?): calendar.isDate(a, inSameDayAs: b)
             default: false
             }
         }
-        let exact = pool.indices.filter { Normalize.key(pool[$0].title) == key }
-        if let i = exact.first(where: { sameDay(pool[$0]) }) { return i }
-        if let i = exact.first(where: { (pool[$0].due == nil) != (parsed.due == nil) }) { return i }
-        if let i = pool.indices.first(where: { sameDay(pool[$0]) && Normalize.similarity(pool[$0].title, parsed.title) >= 0.5 }) { return i }
+        let exact = pool.indices.filter { Normalize.key(words[$0].title) == key }
+        if let i = exact.first(where: sameDay) { return i }
+        if let i = exact.first(where: { (words[$0].due == nil) != (parsed.due == nil) }) { return i }
+        if let i = pool.indices.first(where: { sameDay($0) && Normalize.similarity(words[$0].title, parsed.title) >= 0.5 }) { return i }
         return exact.count == 1 ? exact[0] : nil
     }
 
     /// Writes document-owned fields, honouring overrides. Returns the names of fields that changed. A document that
-    /// disagrees with a hand edit does not win, but the disagreement is recorded so the row can show it.
-    private func apply(_ parsed: ParsedObligation, to item: Obligation, document: SourceDocument, calendar: Calendar, isNew: Bool = false) -> [String] {
+    /// disagrees with a hand edit does not win, but the disagreement is recorded so the row can show it. A row the user
+    /// moved to another course (`ownCourse` false) keeps its grade row and points: those are its new course's.
+    private func apply(_ parsed: ParsedObligation, to item: Obligation, document: SourceDocument, ownCourse: Bool = true, calendar: Calendar, isNew: Bool = false) -> [String] {
         var changed: [String] = []
         var conflicts: [String] = []
         let overrides = Set(item.userOverrides)
@@ -258,14 +320,20 @@ public actor HorizonStore {
             if overrides.contains(.platform) { conflicts.append("platform \(parsed.platform.rawValue)") }
             else { if !isNew { changed.append("platform → \(parsed.platform.rawValue)") }; item.platform = parsed.platform }
         }
-        if let name = parsed.componentName, item.componentName != name, !overrides.contains(.componentName) { item.componentName = name }
-        item.pointsAtStake = parsed.pointsAtStake ?? item.pointsAtStake
+        if ownCourse, let name = parsed.componentName, item.componentName != name, !overrides.contains(.componentName) { item.componentName = name }
+        if ownCourse { item.pointsAtStake = parsed.pointsAtStake ?? item.pointsAtStake }   // a weighted row's share is then worked out over the course
         item.confidence = parsed.confidence
         item.flags = parsed.flags.map(\.rawValue)
         item.dateAsWritten = parsed.dateAsWritten
         item.sourcePage = parsed.sourcePage
         let previous = item.sourceDocument.flatMap { $0.filename == document.filename ? nil : $0.displayName }   // another document fed it before; the same file reissued is not another
-        item.sourceDocument = document
+        // The document's word on the item, kept whatever the overrides (what a later read matches on, and what the item
+        // goes back to if a later source is deleted). Only a document's own row takes it as its source: one the user made,
+        // here or in Reminders, is never the document's to take with it when it goes.
+        item.documentWords.removeAll { $0.document == document.id }
+        item.documentWords.append(DocumentWord(document: document.id, title: parsed.title, due: parsed.due, dueHasTime: parsed.dueHasTime))
+        if item.documentWords.count > 8 { item.documentWords.removeFirst(item.documentWords.count - 8) }
+        if item.origin == .document { item.sourceDocument = document }
         item.updatedAt = Date()
         if isNew {
             item.state = switch parsed.status { case .ready: .readyToProject; case .needsReview: .pendingReview; case .awaitingDate: .awaitingDate }
@@ -290,21 +358,36 @@ public actor HorizonStore {
     // MARK: Documents
 
     /// Records a document by content hash. The same file again is the same record; a failed one is queued again.
-    public func enqueueDocument(filename: String, sha256: String, kind: String, deviceName: String, courseID: UUID? = nil) throws -> DocumentSnapshot {
+    /// `refusal`: the file is of a kind Horizon cannot read, said in the user's words; it is recorded as failed for good
+    /// (no Retry), never queued.
+    public func enqueueDocument(filename: String, sha256: String, kind: String, deviceName: String, courseID: UUID? = nil, refusal: String? = nil) throws -> DocumentSnapshot {
         let course = try courseID.flatMap { try fetchCourse(id: $0) }
         if let existing = try fetchDocuments().first(where: { $0.sha256 == sha256 }) {
             revive(existing)   // shared again from the bin: a fresh read
-            if existing.status == .failed || existing.status == .cancelled { existing.status = .queued; existing.failure = nil }
+            if let refusal { existing.status = .failed; existing.failure = refusal; existing.failureIsPermanent = true }
+            else if existing.status == .failed || existing.status == .cancelled { requeue(existing) }
             if let course, existing.course == nil { existing.course = course }
             try modelContext.save()
             return snapshot(existing)
         }
         let doc = SourceDocument(filename: filename, sha256: sha256, kind: kind, deviceName: deviceName)
         doc.course = course   // the user's word on where it belongs; the parser learns the course from it
+        if let refusal { doc.status = .failed; doc.failure = refusal; doc.failureIsPermanent = true }
         modelContext.insert(doc)
         try modelContext.save()
         return snapshot(doc)
     }
+
+    /// A document failed or cancelled, queued again by the user (shared again, Retry): a new request, counted from now.
+    private func requeue(_ document: SourceDocument) {
+        document.status = .queued
+        document.failure = nil
+        document.failureIsPermanent = false
+        document.queuedAt = Date()
+    }
+
+    /// One document as it is now, the bin included.
+    public func document(id: UUID) throws -> DocumentSnapshot? { try fetchDocument(id: id).map(snapshot) }
 
     public func queuedDocuments() throws -> [DocumentSnapshot] {
         try fetchDocuments().filter { $0.deletedAt == nil && ($0.status == .queued || $0.status == .awaitingCloudParse) }.map(snapshot)
@@ -319,24 +402,68 @@ public actor HorizonStore {
     // MARK: Recently Deleted
 
     /// Puts a document in the bin: it leaves Documents and the items it is the source of go with it (soft-deleted, so
-    /// their reminders go on the next sync); an item another document has since fed stays. The file stays until the
-    /// document is erased or the bin expires; sharing the same file again meanwhile reads it afresh.
+    /// their reminders go on the next sync); an item another document has since fed stays. An item this document took
+    /// over from an earlier one still on file (a schedule update moving a syllabus's date) goes back to that document
+    /// and its word on it, not into the bin. The file stays until the document is erased or the bin expires; sharing
+    /// the same file again meanwhile reads it afresh.
     public func deleteDocument(id: UUID) throws {
         guard let doc = try fetchDocument(id: id), doc.deletedAt == nil else { return }
         let now = Date()
         doc.deletedAt = now
-        for item in doc.obligations ?? [] where item.deletedAt == nil { retire(item, at: now) }
-        if let course = doc.course { recomputePoints(for: course) }
+        var courses = [doc.course]
+        for item in doc.obligations ?? [] where item.deletedAt == nil {
+            courses.append(item.course)
+            if item.origin != .document { item.sourceDocument = nil }   // the user's own row: never the document's to take
+            else if let earlier = try earlierSource(of: item, besides: doc) { fallBack(item, to: earlier.document, word: earlier.word, from: doc) }
+            else { retire(item, at: now) }
+        }
+        if let course = doc.course { refreshLastIngested(course) }
+        recomputePoints(for: courses)
         try modelContext.save()
     }
 
-    /// Back from the bin with the items that went with it, and its course if that is in the bin too.
+    /// The latest other document still on file that listed the item, with its word on it.
+    private func earlierSource(of item: Obligation, besides doc: SourceDocument) throws -> (document: SourceDocument, word: DocumentWord)? {
+        for word in item.documentWords.reversed() where word.document != doc.id {
+            if let earlier = try fetchDocument(id: word.document), earlier.deletedAt == nil { return (earlier, word) }
+        }
+        return nil
+    }
+
+    /// The item goes back to an earlier document's word on it, except where the user's edits stand. A title or date
+    /// that moves back is a change the user may be relying on, so it goes to review saying why, as a re-read's would.
+    private func fallBack(_ item: Obligation, to earlier: SourceDocument, word: DocumentWord, from gone: SourceDocument) {
+        item.documentWords.removeAll { $0.document == gone.id }
+        item.sourceDocument = earlier
+        let overrides = Set(item.userOverrides)
+        var changed: [String] = []
+        if item.title != word.title, !overrides.contains(.title) { changed.append("title \(item.title) → \(word.title)"); item.title = word.title }
+        let same: Bool = switch (item.due, word.due) {
+            case (nil, nil): true
+            case (let a?, let b?): abs(a.timeIntervalSince(b)) < 60
+            default: false
+        }
+        if !same || item.dueHasTime != word.dueHasTime, !overrides.contains(.due) {
+            changed.append("due \(item.due.map(Self.short) ?? "TBD") → \(word.due.map(Self.short) ?? "TBD")")
+            if let old = item.due, word.due != nil { item.conflictingDate = old }
+            item.due = word.due; item.dueHasTime = word.dueHasTime
+        }
+        item.updatedAt = Date()
+        guard !changed.isEmpty else { return }
+        item.changeNote = "\(gone.displayName) was deleted; \(earlier.displayName) says " + changed.joined(separator: "; ")
+        item.state = item.due == nil ? .awaitingDate : .pendingReview
+    }
+
+    /// Back from the bin with the items that went with it, and its course if that is in the bin too. A document that
+    /// was never read to the end (deleted while it waited or was read) goes back in the queue as a new request, and is
+    /// read from its checkpoint.
     public func restoreDocument(id: UUID) throws {
         guard let doc = try fetchDocument(id: id), let deletedAt = doc.deletedAt else { return }
         if let course = doc.course, course.deletedAt != nil { restore(course) }
         doc.deletedAt = nil
+        if doc.status == .queued || doc.status == .awaitingCloudParse { doc.queuedAt = Date() }
         restore(doc.obligations ?? [], deletedAt: deletedAt, in: doc.course)
-        if let course = doc.course { recomputePoints(for: course) }
+        if let course = doc.course { refreshLastIngested(course); recomputePoints(for: course) }
         try modelContext.save()
     }
 
@@ -346,8 +473,9 @@ public actor HorizonStore {
         guard let doc = try fetchDocument(id: id) else { return nil }
         let record = snapshot(doc)
         let now = Date()
-        for item in doc.obligations ?? [] { retire(item, at: now) }
+        for item in doc.obligations ?? [] where item.origin == .document { retire(item, at: now) }
         let course = doc.course
+        if let course { refreshLastIngested(course, excluding: doc.id) }
         modelContext.delete(doc)
         if let course { recomputePoints(for: course) }
         try modelContext.save()
@@ -359,8 +487,7 @@ public actor HorizonStore {
     public func deleteCourse(id: UUID) throws {
         guard let course = try fetchCourse(id: id), course.deletedAt == nil else { return }
         let now = Date()
-        course.deletedAt = now
-        course.sortOrder = nil
+        course.deletedAt = now   // its place in the user's order is kept, for a restore
         for item in course.obligations ?? [] where item.deletedAt == nil { retire(item, at: now) }
         for document in course.documents ?? [] where document.deletedAt == nil { document.deletedAt = now }
         try modelContext.save()
@@ -412,11 +539,14 @@ public actor HorizonStore {
         course.deletedAt = nil
         for document in course.documents ?? [] where Bin.wentWith(document.deletedAt, deletedAt) { document.deletedAt = nil }
         restore(course.obligations ?? [], deletedAt: deletedAt, in: course)
+        refreshLastIngested(course)
         recomputePoints(for: course)
     }
 
     /// The items a deletion took come back live; a tombstone from before stays one; an item the course has since gained
-    /// again (a re-read while this sat in the bin) is not doubled. A restored item that had a reminder gets one again.
+    /// again (a re-read while this sat in the bin) is not doubled. A restored item that had a reminder gets one again,
+    /// checked if it was: the deletion took the checked reminder, and Reminders, which owns completion, would otherwise
+    /// hand back the new one's unchecked state.
     private func restore(_ items: [Obligation], deletedAt: Date, in course: Course?, calendar: Calendar = .current) {
         let live = (course?.obligations ?? []).filter { $0.deletedAt == nil }
         let now = Date()
@@ -430,12 +560,17 @@ public actor HorizonStore {
             item.retiredWithSource = false
             item.updatedAt = now
             if item.state == .projected { item.state = .readyToProject }   // its reminder went with the deletion
+            if item.completedAt != nil { item.completionPending = true }
         }
     }
 
-    public func markDocument(id: UUID, status: DocumentStatus, failure: String? = nil) throws {
+    /// `permanent`: a failure that is the file's own (`IngestCoordinator.isPermanent`), so no Retry is offered. A failed
+    /// or cancelled document queued again (the user's Retry) is a new request, counted from now.
+    public func markDocument(id: UUID, status: DocumentStatus, failure: String? = nil, permanent: Bool = false) throws {
         guard let doc = try fetchDocument(id: id) else { return }
+        if status == .queued, doc.status == .failed || doc.status == .cancelled { doc.queuedAt = Date() }
         doc.status = status; doc.failure = failure
+        doc.failureIsPermanent = status == .failed && permanent
         try modelContext.save()
     }
 
@@ -447,7 +582,7 @@ public actor HorizonStore {
     public func readOnDevice(id: UUID) throws {
         guard let doc = try fetchDocument(id: id) else { return }
         doc.readOnDevice = true
-        doc.status = .queued; doc.failure = nil; doc.checkpoint = nil
+        doc.status = .queued; doc.failure = nil; doc.failureIsPermanent = false; doc.checkpoint = nil
         try modelContext.save()
     }
 
@@ -520,9 +655,10 @@ public actor HorizonStore {
         try fetchObligations().filter { $0.deletedAt == nil && $0.completionPending }.map(snapshot)
     }
 
-    /// The check is in Reminders now: from here on Reminders' word on it wins again.
-    public func completionProjected(id: UUID) throws {
-        guard let item = try fetchObligation(id: id) else { return }
+    /// The check is in Reminders now: from here on Reminders' word on it wins again. `done` is what was written; an
+    /// item checked or unchecked again while it was being written keeps its mark pending, and the next pass writes that.
+    public func completionProjected(id: UUID, wrote done: Bool) throws {
+        guard let item = try fetchObligation(id: id), (item.completedAt != nil) == done else { return }
         item.completionPending = false
         try modelContext.save()
     }
@@ -562,13 +698,21 @@ public actor HorizonStore {
         try modelContext.save()
     }
 
+    /// The reminder now says `title`, `due` and `notes`: recorded as written whatever the row says now, so a hand edit in
+    /// Reminders is still told from ours. The row counts as projected only if it still says the same: one a re-read sent
+    /// to review, or the user edited, while its reminder was being written stays as it is, and its own pass writes it.
     public func markProjected(id: UUID, externalID: String?, title: String, due: Date?, notes: String?) throws {
         guard let item = try fetchObligation(id: id) else { return }
         if let externalID { item.ekExternalID = externalID }
         item.projectedTitle = title
         item.projectedDue = due
         item.projectedNotes = notes
-        item.state = .projected
+        let sameDue: Bool = switch (item.due, due) {
+            case (nil, nil): true
+            case (let a?, let b?): abs(a.timeIntervalSince(b)) < 60
+            default: false
+        }
+        if item.state == .readyToProject, sameDue, ObligationSnapshot(item).reminderTitle == title, item.notes == notes { item.state = .projected }
         item.updatedAt = Date()
         try modelContext.save()
     }
@@ -576,26 +720,31 @@ public actor HorizonStore {
     /// The review queue's one-tap confirm, also the manual editor's save: hand edits become overrides.
     public func confirm(id: UUID, edits: ObligationEdits = ObligationEdits()) throws {
         guard let item = try fetchObligation(id: id) else { return }
+        let before = item.course
         applyEdits(edits, to: item)
         item.changeNote = nil
         item.conflictingDate = nil
         item.state = item.due == nil ? .awaitingDate : .readyToProject
         item.updatedAt = Date()
+        recomputePoints(for: [before, item.course])   // a grade row or course changed: both shares are worked out again
         try modelContext.save()
     }
 
-    public func addManual(title: String, due: Date?, dueHasTime: Bool, courseID: UUID?, componentName: String?, notes: String?, deviceName: String) throws -> ObligationSnapshot {
+    public func addManual(title: String, due: Date?, dueHasTime: Bool, courseID: UUID?, componentName: String?, platform: Platform = .syllabusOnly,
+                          notes: String?, deviceName: String) throws -> ObligationSnapshot {
         let item = Obligation(title: title)
         item.origin = .manual
         item.createdOn = deviceName
         item.confidence = 1
         item.due = due; item.dueHasTime = dueHasTime
         item.componentName = componentName
+        item.platform = platform
         item.notes = notes
-        item.userOverrides = [.title, .due, .componentName, .notes]
+        item.userOverrides = [.title, .due, .componentName, .notes] + (platform == .syllabusOnly ? [] : [.platform])
         item.course = try courseID.flatMap { try fetchCourse(id: $0) }
         item.state = due == nil ? .awaitingDate : .readyToProject
         modelContext.insert(item)
+        recomputePoints(for: [item.course])
         try modelContext.save()
         return snapshot(item)
     }
@@ -613,6 +762,7 @@ public actor HorizonStore {
     public func updateCourse(id: UUID, edits: CourseEdits) throws {
         guard let course = try fetchCourse(id: id) else { return }
         Self.apply(edits, to: course)
+        recomputePoints(for: course)   // weights, counts and the term's dates set the points at stake
         try modelContext.save()
     }
 
@@ -647,10 +797,26 @@ public actor HorizonStore {
         try modelContext.save()
     }
 
+    /// The user's own deletion of one item. An item already deleted keeps its stamp (a stale action must not move it
+    /// out of the deletion that took it, `Bin.wentWith`).
     public func softDelete(id: UUID) throws {
-        guard let item = try fetchObligation(id: id) else { return }
+        guard let item = try fetchObligation(id: id), item.deletedAt == nil else { return }
         item.deletedAt = Date()
         item.updatedAt = Date()
+        recomputePoints(for: [item.course])   // the rest of its grade row share what is on file
+        try modelContext.save()
+    }
+
+    /// The user's own deletion of one item, undone (⌘Z, a shake): live again as it was. Its reminder went (or goes) with
+    /// the deletion, so one that had it is queued for a new one, checked if it was checked; an item in review or waiting
+    /// for a date stays so. An item that went with its course or document comes back only with them (Recently Deleted).
+    public func undelete(id: UUID) throws {
+        guard let item = try fetchObligation(id: id), item.deletedAt != nil, !item.retiredWithSource else { return }
+        item.deletedAt = nil
+        item.updatedAt = Date()
+        if item.state == .projected { item.state = .readyToProject }
+        if item.completedAt != nil { item.completionPending = true }
+        recomputePoints(for: [item.course])
         try modelContext.save()
     }
 
@@ -679,7 +845,10 @@ public actor HorizonStore {
 
     // MARK: Reconciliation (SPEC §4.4)
 
-    public func applyReconciliation(_ changes: [ReconcileChange]) throws {
+    /// `since`: when the snapshot the changes were worked out from was read. A check made in the app since (pending) and
+    /// a row the app has changed since keep the app's word over the snapshot's; the next pass compares again.
+    public func applyReconciliation(_ changes: [ReconcileChange], since: Date? = nil) throws {
+        var courses: [Course?] = []
         for change in changes {
             switch change {
             case .importUnattributed(let item):
@@ -693,14 +862,15 @@ public actor HorizonStore {
                 ob.completedAt = item.completionDate
                 ob.notes = ReminderDraft.userText(in: item.notes).nilIfEmpty
                 ob.projectedNotes = ob.notes
+                ob.userOverrides = [.title, .due, .notes]   // the user's own words: a document naming the same thing does not rewrite them
                 modelContext.insert(ob)
             case .deletedInReminders(let id):
-                if let ob = try fetchObligation(id: id) { ob.deletedAt = Date(); ob.ekExternalID = nil; ob.updatedAt = Date() }
+                if let ob = try fetchObligation(id: id), ob.deletedAt == nil { ob.deletedAt = Date(); ob.ekExternalID = nil; ob.updatedAt = Date(); courses.append(ob.course) }
             case .completion(let id, let date):
-                if let ob = try fetchObligation(id: id) { ob.completedAt = date }
+                if let ob = try fetchObligation(id: id), !ob.completionPending { ob.completedAt = date }
             case .userEdited(let id, let title, let due, let hasTime, let notes):
-                if let ob = try fetchObligation(id: id) {
-                    if let title { ob.title = title; ob.projectedTitle = title; ob.userOverrides.appendIfMissing(.title) }
+                if let ob = try fetchObligation(id: id), since.map({ ob.updatedAt <= $0 }) ?? true {
+                    if let title { ob.title = title; ob.projectedTitle = ObligationSnapshot(ob).reminderTitle; ob.userOverrides.appendIfMissing(.title) }   // as the reminder now reads, course and all
                     if let due { ob.due = due; ob.dueHasTime = hasTime; ob.projectedDue = due; ob.userOverrides.appendIfMissing(.due) }
                     if let notes { ob.notes = notes.nilIfEmpty; ob.projectedNotes = notes.nilIfEmpty; ob.userOverrides.appendIfMissing(.notes) }
                     ob.updatedAt = Date()
@@ -709,7 +879,44 @@ public actor HorizonStore {
                 if let ob = try fetchObligation(id: id) { ob.ekExternalID = externalID }
             }
         }
+        recomputePoints(for: courses)
         try modelContext.save()
+    }
+
+    // MARK: Days
+
+    /// Date-only dates are days, stored as an instant in the zone they were read in (an item's 23:59, a term's midnight).
+    /// When the device's time zone changes each is moved to the same time of day in the new zone, so the day stays the
+    /// day: in the app, in what the projector writes, and in what the reconciler compares (an EventKit date-only due
+    /// comes back at 23:59 in the zone the device is in now, and the old instant would read as a hand edit). Timed
+    /// dates are instants and stay. Returns how many rows moved. Run through `DayAnchor`.
+    @discardableResult
+    public func reanchorDays(from old: TimeZone, to new: TimeZone) throws -> Int {
+        guard old.identifier != new.identifier else { return 0 }
+        var from = Calendar(identifier: .gregorian); from.timeZone = old
+        var to = Calendar(identifier: .gregorian); to.timeZone = new
+        func move(_ date: Date) -> Date { to.date(from: from.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)) ?? date }
+        var moved = 0
+        for item in try fetchObligations() {
+            var touched = false
+            if !item.dueHasTime {
+                if let due = item.due { item.due = move(due); touched = true }
+                if let due = item.projectedDue { item.projectedDue = move(due) }
+                if let other = item.conflictingDate { item.conflictingDate = move(other) }
+            }
+            if item.documentWords.contains(where: { !$0.dueHasTime && $0.due != nil }) {
+                item.documentWords = item.documentWords.map { word in var word = word; if !word.dueHasTime, let due = word.due { word.due = move(due) }; return word }
+                touched = true
+            }
+            if touched { moved += 1 }
+        }
+        for course in try fetchCourses() {
+            if let start = course.termStart { course.termStart = move(start) }
+            if let end = course.termEnd { course.termEnd = move(end) }
+            if !course.noClassDates.isEmpty { course.noClassDates = course.noClassDates.map { ClosedDateRange(start: move($0.start), end: move($0.end), label: $0.label) } }
+        }
+        try modelContext.save()
+        return moved
     }
 
     // MARK: Courses
@@ -749,6 +956,22 @@ public actor HorizonStore {
 }
 
 public enum StoreError: Error { case missingDocument }
+
+/// The time zone the store's days are anchored in, kept in the App Group's defaults. Run `settle` at launch and on
+/// `.NSSystemTimeZoneDidChange`, before a sync: when the zone has changed since, the days move with it
+/// (`HorizonStore.reanchorDays`), so a date-only item is still due on its day and Reminders' copy of it does not read as
+/// a hand edit. The first run only records the zone.
+public enum DayAnchor {
+    static let key = "dayAnchorZone"
+
+    public static func settle(_ store: HorizonStore, suite: String = Identifiers.appGroup, zone: TimeZone = .current) async throws {
+        let defaults = UserDefaults(suiteName: suite) ?? .standard
+        if let recorded = defaults.string(forKey: key).flatMap(TimeZone.init(identifier:)), recorded.identifier != zone.identifier {
+            try await store.reanchorDays(from: recorded, to: zone)
+        }
+        defaults.set(zone.identifier, forKey: key)
+    }
+}
 
 extension Array where Element: Equatable {
     mutating func appendIfMissing(_ element: Element) { if !contains(element) { append(element) } }

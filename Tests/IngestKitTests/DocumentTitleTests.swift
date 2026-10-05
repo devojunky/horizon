@@ -31,9 +31,9 @@ struct DocumentTitleTests {
         #expect(DocumentName.accept("This document is the syllabus for Calculus II, which covers integration techniques and series", source: source, filename: "s.pdf") == nil)   // a sentence
     }
 
-    @Test func theOpeningIsAPageOfWordsAndAPictureHasNone() throws {
+    @Test func theOpeningIsAPageOfWordsAndAPictureHasNone() {
         let text = (1...200).map { "Line \($0) of the syllabus for Calculus II.   " }.joined(separator: "\n\n\n")
-        let document = try DocumentNormalizer.normalize(text: text, name: "calc.txt")
+        let document = DocumentNormalizer.normalize(text: text, name: "calc.txt")
         let opening = DocumentName.opening(of: document)
         #expect(opening.count <= 1500 && opening.hasPrefix("Line 1 of the syllabus for Calculus II.\nLine 2"))
     }

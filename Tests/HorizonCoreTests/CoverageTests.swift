@@ -5,6 +5,8 @@ import IngestKit
 
 struct CoverageTests {
     let now = Fixture.day(9, 21, hour: 12, minute: 0)   // Monday, September 21, 2026
+    /// A grade table with nothing to check: no rhythm, no count.
+    static let exams = [GradeComponent(name: "Exams", weight: 0.5)]
     func course(_ code: String, components: [GradeComponent] = [], platforms: [String] = [], lastIngested: Date? = nil, createdAt: Date? = nil) -> CourseSnapshot {
         CourseSnapshot(code: code, title: code, termStart: Fixture.day(9, 2), termEnd: Fixture.day(12, 14), gradeComponents: components, platforms: platforms,
                        lastIngested: lastIngested, createdAt: createdAt)
@@ -28,7 +30,8 @@ struct CoverageTests {
         let queued = DocumentSnapshot(id: UUID(), filename: "b.pdf", sha256: "b", kind: "pdf", status: .queued, queuedAt: now, ingestedAt: now, deviceName: "A", platform: nil, courseID: empty.id)
         let read = Coverage.assess(course: empty, obligations: [], documents: [parsed, queued], now: now, calendar: Fixture.calendar)
         #expect(read.daysSinceUpdate == 7 && read.updatedLine == "Updated 7 days ago" && read.daysSilent == nil)
-        #expect(read.headline == "PHIL-UA 1 has nothing due in the next two weeks." && read.suspicion == 0)   // something was read: not "nothing on file"
+        #expect(!read.nothingOnFile && read.noGradeTable)                    // something was read: not "nothing on file", but no grade table either
+        #expect(read.headline == "PHIL-UA 1 has no grade table to check its items against." && abs(read.suspicion - 0.3) < 1e-9)
         #expect(Coverage.assess(course: course("PHIL-UA 1", lastIngested: now), obligations: [], documents: [], now: now, calendar: Fixture.calendar).updatedLine == "Updated today")
     }
 
@@ -71,7 +74,7 @@ struct CoverageTests {
 
     @Test func silenceCountsFromTheLastCompletionAndACheckResetsIt() {
         // In the app since Sep 7; last checked something off on Sep 12; a reading fell due on Sep 15 and is still open.
-        let bio = course("BIO-UA 11", lastIngested: Fixture.day(9, 20), createdAt: Fixture.day(9, 7))
+        let bio = course("BIO-UA 11", components: Self.exams, lastIngested: Fixture.day(9, 20), createdAt: Fixture.day(9, 7))
         let checked = obligation("Lab Report 0", due: Fixture.day(9, 11), course: bio, completedAt: Fixture.day(9, 12, hour: 20, minute: 0))
         let overdue = obligation("Reading 1", due: Fixture.day(9, 15), course: bio)
         let ahead = [obligation("Lab Report 1", due: Fixture.day(9, 25), course: bio), obligation("Exam 1", due: Fixture.day(10, 2), course: bio),
@@ -96,7 +99,7 @@ struct CoverageTests {
         #expect(neverChecked.daysSilent == 14 && neverChecked.isSilent)
         #expect(!assess([beforeArrival] + ahead).isSilent)
         // Under a week is not silence yet, whatever fell due.
-        let newer = course("BIO-UA 11", createdAt: Fixture.day(9, 16))
+        let newer = course("BIO-UA 11", components: Self.exams, createdAt: Fixture.day(9, 16))
         let recent = assess([obligation("Reading 2", due: Fixture.day(9, 18), course: newer)], newer)
         #expect(recent.daysSilent == 5 && !recent.isSilent && recent.headline == "BIO-UA 11 has nothing due in the next two weeks.")
         // A deleted item's check does not count.
@@ -167,11 +170,39 @@ struct CoverageTests {
         #expect(PlatformGap(platform: .myLab, components: ["Pearson MyLab Readings", "Lab Reports"]).finding(listing: true) == "MyLab (Pearson MyLab Readings, Lab Reports): nothing read yet.")
         #expect(CadenceGap(component: "Essays", cadence: nil, expectedInWindow: 0, onFileInWindow: 0, onFileTotal: 1, expectedTotal: 4).finding == "Essays: 1 of 4 on file.")
         // Silence the page says is a finding, and the figures leave it out; nothing flagged reads as covered (the view).
-        let bio = course("BIO-UA 11", lastIngested: Fixture.day(9, 21), createdAt: Fixture.day(9, 7))
+        let bio = course("BIO-UA 11", components: Self.exams, lastIngested: Fixture.day(9, 21), createdAt: Fixture.day(9, 7))
         let silent = Coverage.assess(course: bio, obligations: [obligation("Reading 1", due: Fixture.day(9, 15), course: bio)], documents: [], now: now, calendar: Fixture.calendar)
         #expect(silent.findings == ["Silent for 14 days while work fell due."] && silent.facts == ["Nothing due in the next two weeks", "Updated today"])
         let empty = Coverage.assess(course: course("PHIL-UA 1"), obligations: [], documents: [], now: now, calendar: Fixture.calendar)
         #expect(empty.findings == ["Nothing on file."] && empty.facts == ["Nothing due in the next two weeks"])
+        // VoiceOver's sentence says every finding the page shows, in its order.
+        #expect(c.headline == "MA-UY 1124's syllabus implies weekly homework; none on file for the next two weeks, its syllabus implies weekly quizzes; only 1 of 2 on file for the next two weeks, "
+                + "its homework is on WebAssign, from which nothing has ever been read and its weekly quizzes are on Gradescope, from which nothing has ever been read.")
+    }
+
+    @Test func aCourseWithNoGradeTableIsNotCalledCovered() {
+        // Items on file and no grade table: nothing to check them against, so it says so and is not ranked the safest.
+        let bare = course("HIST-UA 9", lastIngested: now, createdAt: Fixture.day(9, 14))
+        let items = [obligation("Paper 1", due: Fixture.day(9, 28), course: bare)]
+        let c = Coverage.assess(course: bare, obligations: items, documents: [], now: now, calendar: Fixture.calendar)
+        #expect(c.noGradeTable && c.findings == ["No grade table on file, so there is nothing to check its items against."])
+        #expect(c.headline == "HIST-UA 9 has no grade table to check its items against." && abs(c.suspicion - 0.3) < 1e-9)
+        let tabled = course("HIST-UA 9", components: Self.exams, lastIngested: now, createdAt: Fixture.day(9, 14))
+        let covered = Coverage.assess(course: tabled, obligations: items.map { var o = $0; o.courseID = tabled.id; return o }, documents: [], now: now, calendar: Fixture.calendar)
+        #expect(!covered.noGradeTable && covered.findings.isEmpty && covered.suspicion < c.suspicion)
+        // An empty course is "Nothing on file", said once.
+        #expect(Coverage.assess(course: course("PHIL-UA 1"), obligations: [], documents: [], now: now, calendar: Fixture.calendar).findings == ["Nothing on file."])
+    }
+
+    @Test func theTermsLastDayIsStillTheTerm() {
+        // The term ends Dec 8 (stored at its midnight). On its last afternoon the rhythm still rules, and expects nothing
+        // more; only from the day after is the term over and the whole count checked.
+        let quizzes = [GradeComponent(name: "Quizzes", weight: 0.2, expectedCount: 12, cadence: .weekly)]
+        let bio = CourseSnapshot(code: "BIO-UA 11", title: "BIO-UA 11", termStart: Fixture.day(9, 2, hour: 0, minute: 0), termEnd: Fixture.day(12, 8, hour: 0, minute: 0),
+                                 gradeComponents: quizzes, lastIngested: now)
+        let one = [obligation("Quiz 12", due: Fixture.day(12, 4), course: bio, component: "Quizzes")]
+        #expect(Coverage.assess(course: bio, obligations: one, documents: [], now: Fixture.day(12, 8, hour: 15, minute: 0), calendar: Fixture.calendar).cadenceGaps.isEmpty)
+        #expect(Coverage.assess(course: bio, obligations: one, documents: [], now: Fixture.day(12, 9, hour: 9, minute: 0), calendar: Fixture.calendar).cadenceGaps.map(\.onFileTotal) == [1])
     }
 
     @Test func coursesSortBySuspicionNotName() async throws {

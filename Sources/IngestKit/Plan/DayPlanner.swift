@@ -2,10 +2,10 @@ import Foundation
 import FoundationModels
 
 // SPEC §6.3 "Now": one button, a disposable plan for today. The calendar's events are hard stops, except those the model
-// reads as time the student set aside to study (a study session, library time), which it may fill with work of their
-// kind without crossing their edges; the free time is filled with what matters most first, with a reason on every
-// block. The model proposes; the planner keeps it inside the free time and the study events, and falls back to a
-// deterministic plan when the model is unavailable or unusable.
+// reads as coursework time, which the student set aside for their courses (a study session, library time) and which it
+// may fill with work of their kind without crossing their edges; the free time is filled with what matters most first,
+// with a reason on every block. The model proposes; the planner keeps it inside the free time and the coursework time,
+// and falls back to a deterministic plan when the model is unavailable or unusable.
 
 public struct PlanBusy: Sendable, Equatable, Codable {
     public var title: String
@@ -62,12 +62,17 @@ public struct PlanHours: Sendable, Equatable, Codable {
 
     /// A block's hours on `day`'s plan, from times of day: the small hours are the night after (the next date), the rest
     /// the day's own; an end at or before its start is the next day's when that is within six hours (a block across
-    /// midnight). Nil for one that still ends before it starts.
-    public static func span(from start: (hour: Int, minute: Int), to end: (hour: Int, minute: Int), on day: Date, calendar: Calendar) -> DateInterval? {
+    /// midnight). Nil for one that still ends before it starts. The hour the clocks go back through comes twice (1 AM on
+    /// the first Sunday of November): a time of it already gone by `now` the first time round is the second.
+    public static func span(from start: (hour: Int, minute: Int), to end: (hour: Int, minute: Int), on day: Date, calendar: Calendar, now: Date? = nil) -> DateInterval? {
         let midnight = calendar.startOfDay(for: day)
         func place(_ t: (hour: Int, minute: Int)) -> Date? {
-            let base = t.hour < nightEnds ? calendar.date(byAdding: .day, value: 1, to: midnight) : midnight
-            return base.flatMap { calendar.date(bySettingHour: t.hour, minute: t.minute, second: 0, of: $0) }
+            guard let base = t.hour < nightEnds ? calendar.date(byAdding: .day, value: 1, to: midnight) : midnight,
+                  let first = calendar.date(bySettingHour: t.hour, minute: t.minute, second: 0, of: base) else { return nil }
+            if let now, first < now,
+               let second = calendar.date(bySettingHour: t.hour, minute: t.minute, second: 0, of: base, matchingPolicy: .nextTime, repeatedTimePolicy: .last, direction: .forward),
+               second > first { return second }
+            return first
         }
         guard let from = place(start), var to = place(end) else { return nil }
         if to <= from, let next = calendar.date(byAdding: .day, value: 1, to: to), next.timeIntervalSince(from) <= 6 * 3600 { to = next }
@@ -155,7 +160,10 @@ public struct DayPlan: Sendable, Equatable, Codable, Identifiable {
         let next = pending.first { $0.start > now && $0.id != current?.id }
         return (current, next)
     }
-    public var doneCount: Int { blocks.filter(\.isDone).count }
+    /// The day's work as "x of y done" counts it: work and study blocks, not meals, rests or the calendar's events
+    /// (with those in the total, "All done" waited on a lunch nobody marks).
+    public var workBlocks: [PlanBlock] { blocks.filter(\.asksWhenOver) }
+    public var doneCount: Int { workBlocks.filter(\.isDone).count }
 
     /// Until when the plan for `day` is kept: through its night (to the latest end a night can have, 4 AM), and while a
     /// block of it is still on or asking. Then it goes, and the next plan starts from nothing.
@@ -164,7 +172,7 @@ public struct DayPlan: Sendable, Equatable, Codable, Identifiable {
         return ([night] + blocks.map { $0.end.addingTimeInterval(Self.answerWindow) }).max() ?? night
     }
 
-    /// How long the question at the end of a work block ("finished?") stands. Unanswered by then, the block is taken as
+    /// How long the question at the end of a work or study block ("finished?") stands. Unanswered by then, the block is taken as
     /// not finished: nothing is recorded (not done is where every block starts), and the question goes.
     public static let answerWindow: TimeInterval = 15 * 60
 
@@ -173,7 +181,7 @@ public struct DayPlan: Sendable, Equatable, Codable, Identifiable {
         block.asksWhenOver ? block.end.addingTimeInterval(answerWindow) : nil
     }
 
-    /// The block whose end is asking "finished?" at `now`: a work block that is over, neither done nor set aside, its
+    /// The block whose end is asking "finished?" at `now`: a work or study block that is over, neither done nor set aside, its
     /// question not yet timed out. When two ended close together, the later one: the earlier is taken as not finished.
     public func awaitingAnswer(at now: Date) -> PlanBlock? {
         blocks.filter { block in
@@ -244,7 +252,7 @@ public actor DayPlanner {
     hard stops and coursework time keeps its hours.
     """
 
-    /// The calendar step's instructions: study time is the student's own time for coursework; everything else stays put.
+    /// The calendar step's instructions: coursework time is the student's own time for their courses; everything else stays put.
     public static let calendarInstructions = """
     You read one student's calendar for today. For each event, in order, give its use and its course. \
     Use coursework for time the student set aside to work on their courses, alone or with classmates: a study session, \
@@ -274,15 +282,15 @@ public actor DayPlanner {
     }
 
     /// The calendar's events still to come today, in time order: what the calendar step labels, and the numbering (from
-    /// 1) that study events are known by.
+    /// 1) that coursework time is known by.
     public static func events(in input: PlanInput) -> [PlanBusy] {
         input.busy.filter { $0.end > input.now && $0.end > $0.start }.sorted { $0.start < $1.start }
     }
 
-    /// Where blocks may go once the model has said which events are study time (`open`, their numbers): the day's free
-    /// time with only the other events as hard stops, and each study event whole (the student chose its hours, even
-    /// outside the day's), cut at every study event's edges so that no block crosses one. A window inside a study event
-    /// carries its number.
+    /// Where blocks may go once the model has said which events are coursework time (`open`, their numbers): the day's
+    /// free time with only the other events as hard stops, and each coursework event whole (the student chose its hours,
+    /// even outside the day's), cut at every coursework event's edges so that no block crosses one. A window inside a
+    /// coursework event carries its number.
     struct Window: Equatable { var interval: DateInterval; var event: Int? }
 
     static func windows(in input: PlanInput, open: Set<Int>) -> [Window] {
@@ -412,8 +420,8 @@ public actor DayPlanner {
     struct Tokens: Sendable { var input = 0, cached = 0, output = 0, reasoning = 0 }
 
     /// The device model, or Claude when asked for (a failure there falls back to the device: the plan is a small task
-    /// and today's); a device without a model plans with Claude when it is configured. Every route streams, and
-    /// `report` sees the complete blocks so far.
+    /// and today's); a device without a model plans with Claude only when it was given Claude, which the app does only
+    /// when the user turned it on. Every route streams, and `report` sees the complete blocks so far.
     private func respond(_ prompt: String, route: IngestOptions.RoutePolicy, claude: ClaudeConfiguration?, report: Reporter) async throws -> (PlanDraft, Tokens, ModelRoute) {
         let device = SystemLanguageModel.default
         var useClaude = route == .claude
@@ -501,14 +509,16 @@ public actor DayPlanner {
         return time
     }
 
-    /// The model's labels, matched to the events: by title said back (a small model can drop or repeat one), else by
+    /// The model's labels, matched to the events: by title said back (a small model can drop or repeat one), the entry's
+    /// own place first when its event has that title (two "Study group"s: the second label is the second event's), else by
     /// place; a course named as in the list is kept, anything else (any, a course nobody has) means any course.
     static func coursework(in reading: CalendarReading, events: [PlanBusy], courses: [String]) -> CourseworkTime {
         var time = CourseworkTime()
         for (i, entry) in reading.events.enumerated() where entry.use == "coursework" {
             let key = Normalize.key(entry.title)
             let number: Int
-            if let match = events.indices.first(where: { Normalize.key(events[$0].title) == key && !time.open.contains($0 + 1) }) { number = match + 1 }
+            if i < events.count, Normalize.key(events[i].title) == key, !time.open.contains(i + 1) { number = i + 1 }
+            else if let match = events.indices.first(where: { Normalize.key(events[$0].title) == key && !time.open.contains($0 + 1) }) { number = match + 1 }
             else if reading.events.count == events.count, !time.open.contains(i + 1) { number = i + 1 }
             else { continue }
             time.open.insert(number)
@@ -533,14 +543,14 @@ public actor DayPlanner {
         Tokens(input: usage.input.totalTokenCount, cached: usage.input.cachedTokenCount, output: usage.output.totalTokenCount, reasoning: usage.output.reasoningTokenCount)
     }
 
-    /// The day as the model reads it: the fixed events, the study time the calendar sets aside (read in the step before),
+    /// The day as the model reads it: the fixed events, the coursework time the calendar sets aside (read in the step before),
     /// the free gaps around all of them, and the obligations with their dates in plain words ("in 3 days", not "due in 3
     /// days": a test is not due, and the model decides which is which) and the grade row each counts toward.
     static func prompt(for input: PlanInput, gaps: [DateInterval], open: Set<Int> = [], courses: [Int: String] = [:], ranked: [PlanObligation]) -> String {
         let calendar = input.calendar
         func clock(_ d: Date) -> String { let c = calendar.dateComponents([.hour, .minute], from: d); return String(format: "%02d:%02d", c.hour ?? 0, c.minute ?? 0) }
         let afterMidnight = !calendar.isDate(input.now, inSameDayAs: input.date)
-        var lines = ["Today is \(input.date.formatted(.dateTime.weekday(.wide).month(.wide).day())). It is \(clock(input.now)) now\(afterMidnight ? ", after midnight" : "")."]
+        var lines = ["Today is \(input.date.formatted(Self.english(.dateTime.weekday(.wide).month(.wide).day(), calendar: calendar))). It is \(clock(input.now)) now\(afterMidnight ? ", after midnight" : "")."]
         if input.hours.end > 24, let close = input.hours.closes(on: input.date, calendar: calendar) {   // so that 00:30 reads as later tonight, not this morning
             lines.append("The student is working late: the day runs past midnight, until \(clock(close)).")
         }
@@ -565,12 +575,12 @@ public actor DayPlanner {
         lines.append(gaps.isEmpty ? "Free gaps to fill: none." : "Free gaps to fill:")
         for g in gaps { lines.append("- \(clock(g.start))–\(clock(g.end))") }
         if ranked.isEmpty { lines.append("Obligations: none coming up.") } else {
-            lines.append("Obligations, with the day each is due or happens, nearest first:")
+            lines.append("Obligations, with the day each falls on, nearest first:")
             for o in ranked {
                 let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: input.date), to: calendar.startOfDay(for: o.due)).day ?? 0
-                let when = days == 0 ? "today" : days == 1 ? "tomorrow" : "in \(days) days, \(o.due.formatted(.dateTime.weekday(.wide)))"
+                let when = days == 0 ? "today" : days == 1 ? "tomorrow" : "in \(days) days, \(Self.weekday(o.due, calendar: calendar))"
                 let about = [o.course, o.component.map { "counts toward \($0)" }].compactMap { $0 }.joined(separator: ", ")
-                let worth = o.points.map { " · \($0.formatted(.number.precision(.fractionLength(0...1))))% of the grade" } ?? ""
+                let worth = o.points.map { " · \(Self.percent($0))% of the grade" } ?? ""
                 lines.append("- \(o.title)\(about.isEmpty ? "" : " (\(about))") · \(when)\(worth)")
             }
         }
@@ -584,16 +594,19 @@ public actor DayPlanner {
 
     // MARK: Deterministic side
 
-    /// Blocks that lie inside the free time or a study event the model named, in order, without overlaps; times the model
-    /// wrote past a window's edges are clipped to the window the block starts in, so no block crosses a hard stop or the
-    /// edge of a study event. A block in a study event says so (`within`).
+    /// Blocks that lie inside the free time or coursework time the model named, in order, without overlaps; times the
+    /// model wrote past a window's edges are clipped to the window the block starts in, so no block crosses a hard stop or
+    /// the edge of a coursework event. A block in coursework time says so (`within`). What a small model gets wrong is
+    /// repaired here (CLAUDE.md, the day plan): an event's name for a title, a meal beside a meal on the calendar, a title
+    /// that is only a kind of work, a block shorter or longer than one, a rest after a rest, a reason about another item.
     static func validate(_ draft: PlanDraft, input: PlanInput, ranked: [PlanObligation], open: Set<Int> = [], courses: [Int: String] = [:]) -> [PlanBlock] {
         let calendar = input.calendar
         /// "HH:mm" as hours and minutes; the day it falls on is `PlanHours.span`'s to say ("00:30" is tonight, after midnight).
         func time(_ text: String) -> (hour: Int, minute: Int)? {
             let parts = text.trimmingCharacters(in: .whitespaces).split(separator: ":")
-            guard parts.count == 2, let h = Int(parts[0]), let m = Int(parts[1]), (0...23).contains(h), (0...59).contains(m) else { return nil }
-            return (h, m)
+            guard parts.count == 2, let h = Int(parts[0]), let m = Int(parts[1]), (0...59).contains(m) else { return nil }
+            if h == 24, m == 0 { return (0, 0) }   // "24:00" is midnight, which `span` puts at the night's start
+            return (0...23).contains(h) ? (h, m) : nil
         }
         let events = Self.events(in: input)
         let windows = Self.windows(in: input, open: open)
@@ -601,17 +614,26 @@ public actor DayPlanner {
         var cursor = Date.distantPast
         var perItem: [String: Int] = [:]
         for b in draft.blocks {
-            guard let opening = time(b.start), let closing = time(b.end), let span = PlanHours.span(from: opening, to: closing, on: input.date, calendar: calendar) else { continue }
+            guard let opening = time(b.start), let closing = time(b.end), let span = PlanHours.span(from: opening, to: closing, on: input.date, calendar: calendar, now: input.now) else { continue }
             var start = span.start, end = span.end
             let from = max(start, cursor)
-            // The window the block starts in (or the first after that it reaches): a block that runs past a study event's
+            // The window the block starts in (or the first after that it reaches): a block that runs past a coursework event's
             // end stops there, one begun before it starts after its end is dropped with the rest of the overrun.
-            guard let window = windows.first(where: { $0.interval.end > from && $0.interval.start < end }) else { continue }   // must touch free time or a study event
+            guard let window = windows.first(where: { $0.interval.end > from && $0.interval.start < end }) else { continue }   // must touch free time or coursework time
             start = max(from, window.interval.start); end = min(end, window.interval.end)
-            guard end.timeIntervalSince(start) >= 15 * 60 else { continue }
             let kind: PlanBlock.Kind = switch b.kind { case "meal": .meal; case "rest": .rest; case "study": .study; default: .work }
+            if kind == .work || kind == .study {
+                // A block is 25 to 90 minutes: one written shorter is lengthened where its window allows, else dropped; one
+                // written longer stops at 90. Cut short by a window's edge or the block before, a remnant of 15 stays.
+                if span.duration < 25 * 60 { end = max(end, min(start.addingTimeInterval(25 * 60), window.interval.end)) }
+                end = min(end, start.addingTimeInterval(90 * 60))
+                guard end.timeIntervalSince(start) >= (span.duration < 25 * 60 ? 25 : 15) * 60 else { continue }
+            } else {
+                guard end.timeIntervalSince(start) >= 15 * 60 else { continue }
+            }
             if kind == .rest { end = min(end, start.addingTimeInterval(20 * 60)) }   // a rest is a breather, not a block
-            if kind == .meal, events.contains(where: { Self.isMeal($0.title) && $0.end <= start.addingTimeInterval(60) && start.timeIntervalSince($0.end) < 3 * 3600 }) { continue }   // lunch with a friend was the meal
+            if kind == .rest, let last = blocks.last, last.kind == .rest, start.timeIntervalSince(last.end) < 5 * 60 { continue }   // one breather, not two in a row
+            if kind == .meal, input.busy.contains(where: { Self.isMeal($0.title) && Self.isBeside(start, end, meal: $0) }) { continue }   // lunch with a friend was the meal
             // "HW 1 (Calculus II)" is the obligation "HW 1"; the longest obligation title the draft's title contains wins.
             var own = Normalize.collapseWhitespace(b.title)
             var matched: PlanObligation?
@@ -621,14 +643,20 @@ public actor DayPlanner {
             // kind, not yet planned twice); failing that, it is the event's time, named plainly.
             let ownKey = Normalize.key(own)
             let echoed = events.first { ownKey == Normalize.key($0.title) || ownKey.hasPrefix(Normalize.key($0.title) + " for ") }
+            let course = window.event.flatMap { courses[$0] }
             if let echoed, kind == .work || kind == .study {
-                let course = window.event.flatMap { courses[$0] }
                 let fits = ranked.filter { (course == nil || $0.course == course) && perItem[Normalize.key($0.title), default: 0] < 2 }
                 if let named = Self.item(mentionedIn: b.reason, ranked: fits) ?? fits.first(where: { Self.looksHeld($0) == (kind == .study) }) ?? fits.first {
                     matched = named; own = named.title
                 } else {
                     own = echoed.title
                 }
+            } else if kind == .work || kind == .study, input.instructions == nil, Self.bareKinds.contains(ownKey) {
+                // "Work", "Study": a kind of time, not a thing to do. With nothing the student asked for to explain it, it is
+                // the nearest obligation not yet planned that fits where it sits (its kind first), or nothing.
+                let unplanned = ranked.filter { (course == nil || $0.course == course) && perItem[Normalize.key($0.title), default: 0] == 0 }
+                guard let next = unplanned.first(where: { Self.looksHeld($0) == (kind == .study) }) ?? unplanned.first else { continue }
+                matched = next; own = next.title
             } else {
                 matched = Self.item(in: own, ranked: ranked)
             }
@@ -636,6 +664,12 @@ public actor DayPlanner {
             // Coursework time for one course holds that course's obligations only: the calendar step said what it is for.
             if let number = window.event, let course = courses[number], let matched, matched.course != course { continue }
             var reason = Normalize.collapseWhitespace(b.reason)
+            // A reason about another item ("Essay 2 is due tomorrow." on a block that became HW 4), or about none for a block
+            // that was only a kind of time, is replaced by this one's facts.
+            if let matched, kind == .work || kind == .study, Self.item(mentionedIn: reason, ranked: [matched]) == nil,
+               Self.bareKinds.contains(ownKey) || Self.item(mentionedIn: reason, ranked: ranked) != nil {
+                reason = kind == .study ? Self.studyReason(for: matched, input: input) : Self.workReason(for: matched, input: input)
+            }
             if kind == .study, let matched {   // studied for, not done
                 title = Self.studyTitle(own, for: matched)
                 if Self.saysDue(reason) { reason = Self.studyReason(for: matched, input: input) }   // never "due": the facts, and what the time is for
@@ -654,7 +688,17 @@ public actor DayPlanner {
         return blocks
     }
 
-    /// Whether a calendar event is a meal ("Lunch with Sam"): the plan then needs no meal of its own right after it.
+    /// A block's own words that only say what kind of time it is.
+    static let bareKinds: Set<String> = ["work", "study", "studying", "homework", "coursework", "study time", "work time", "focus", "focus time", "deep work"]
+
+    /// Whether a meal from `start` to `end` sits beside a meal on the calendar: right after it (within three hours of its
+    /// end: lunch with a friend was the meal), or ending within the hour before it starts (dinner with family at six).
+    static func isBeside(_ start: Date, _ end: Date, meal: PlanBusy) -> Bool {
+        (meal.end <= start.addingTimeInterval(60) && start.timeIntervalSince(meal.end) < 3 * 3600)
+            || (meal.start >= end.addingTimeInterval(-60) && meal.start.timeIntervalSince(end) < 3600)
+    }
+
+    /// Whether a calendar event is a meal ("Lunch with Sam"): the plan then needs no meal of its own beside it.
     static func isMeal(_ title: String) -> Bool {
         !Set(Normalize.key(title).split(separator: " ").map(String.init)).isDisjoint(with: ["breakfast", "brunch", "lunch", "dinner", "supper", "meal"])
     }
@@ -697,23 +741,46 @@ public actor DayPlanner {
         return first.prefix(1).uppercased() + first.dropFirst() + (framing.count == 2 ? " for " : " ") + item.title
     }
 
-    /// Whether a sentence speaks of a deadline or of finishing: wrong for something that is studied for.
+    /// Whether a sentence speaks of a deadline or of finishing: wrong for something that is studied for. Phrases, not
+    /// loose words: "have the formula sheet on hand" is no hand-in, and finishing a review is still studying.
     static func saysDue(_ reason: String) -> Bool {
-        let words = Set(Normalize.key(reason).split(separator: " ").map(String.init))
-        return !words.isDisjoint(with: ["due", "finish", "finished", "submit", "submitted", "complete", "completed", "deadline", "hand"])
+        let key = (" " + Normalize.key(reason) + " ")
+            .replacingOccurrences(of: #" finish(es|ed|ing)? (reviewing|studying|revising|practising|practicing|going over|working through) "#, with: " ", options: .regularExpression)
+        return key.range(of: #" (due|deadlines?|submit\w*|submission|turn(s|ed|ing)? in|hand(s|ed|ing)? in|finish\w*|complet(e|es|ed|ing|ion)) "#, options: .regularExpression) != nil
     }
 
     /// The reason for a study block when the model's spoke of a deadline: when it happens and what it is worth.
     static func studyReason(for item: PlanObligation, input: PlanInput) -> String {
         let calendar = input.calendar
         let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: input.date), to: calendar.startOfDay(for: item.due)).day ?? 0
-        let when = days <= 0 ? "Today" : days == 1 ? "Tomorrow" : "In \(days) days (\(item.due.formatted(.dateTime.weekday(.wide))))"
-        let worth = item.points.map { ", worth \($0.formatted(.number.precision(.fractionLength(0...1))))% of the grade" } ?? ""
+        let when = days <= 0 ? "Today" : days == 1 ? "Tomorrow" : "In \(days) days (\(Self.weekday(item.due, calendar: calendar)))"
+        let worth = item.points.map { ", worth \(Self.percent($0))% of the grade" } ?? ""
         return "\(when)\(worth): time to review for it."
     }
 
-    /// The calendar's events as blocks, so the plan reads as one sequence: every hard stop, and each study event the plan
-    /// left empty. A study event the plan filled is shown by the blocks in it, each naming it; its hours are the same.
+    /// The reason for a work block when the model's was about something else: when it is due and what it is worth.
+    static func workReason(for item: PlanObligation, input: PlanInput) -> String {
+        let calendar = input.calendar
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: input.date), to: calendar.startOfDay(for: item.due)).day ?? 0
+        let when = days <= 0 ? "Due today" : days == 1 ? "Due tomorrow" : "Due in \(days) days (\(Self.weekday(item.due, calendar: calendar)))"
+        let worth = item.points.map { ", worth \(Self.percent($0))% of the grade" } ?? ""
+        return "\(when)\(worth)."
+    }
+
+    /// Dates in the prompt and the reasons: in English, on the plan's own calendar and time zone, whatever the device's
+    /// language and the process's zone ("Thursday", never "jeudi", nor Friday because the Mac is set to Tokyo).
+    static func english(_ style: Date.FormatStyle, calendar: Calendar) -> Date.FormatStyle {
+        var style = style
+        var english = calendar; english.locale = Locale(identifier: "en_US_POSIX")
+        style.locale = english.locale!; style.calendar = english; style.timeZone = calendar.timeZone
+        return style
+    }
+    static func weekday(_ date: Date, calendar: Calendar) -> String { date.formatted(english(.dateTime.weekday(.wide), calendar: calendar)) }
+    /// "1.5", "20": points of the grade, with a point for the decimal whatever the region.
+    static func percent(_ points: Double) -> String { points.formatted(.number.precision(.fractionLength(0...1)).locale(Locale(identifier: "en_US_POSIX"))) }
+
+    /// The calendar's events as blocks, so the plan reads as one sequence: every hard stop, and each coursework event the
+    /// plan left empty. One the plan filled is shown by the blocks in it, each naming it; its hours are the same.
     static func fixedBlocks(_ input: PlanInput, open: Set<Int>, planned: [PlanBlock]) -> [PlanBlock] {
         events(in: input).enumerated().compactMap { i, e in
             if open.contains(i + 1), planned.contains(where: { $0.start < e.end && $0.end > e.start }) { return nil }
@@ -738,13 +805,17 @@ public actor DayPlanner {
                 let hour = calendar.component(.hour, from: cursor)
                 if !ate, (12...13).contains(hour) || (18...19).contains(hour) {
                     let end = min(cursor.addingTimeInterval(40 * 60), gap.end)
-                    blocks.append(PlanBlock(start: cursor, end: end, title: "Eat", reason: "Nothing good gets done hungry.", kind: .meal))
-                    cursor = end; ate = true; continue
+                    ate = true
+                    // A meal on the calendar just before or after is the meal (lunch with a friend): none of the plan's own.
+                    if !input.busy.contains(where: { Self.isMeal($0.title) && Self.isBeside(cursor, end, meal: $0) }) {
+                        blocks.append(PlanBlock(start: cursor, end: end, title: "Eat", reason: "Nothing good gets done hungry.", kind: .meal))
+                        cursor = end; continue
+                    }
                 }
                 guard let next = queue.first else { break }
                 let end = min(cursor.addingTimeInterval(50 * 60), gap.end)
                 let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: input.date), to: calendar.startOfDay(for: next.due)).day ?? 0
-                let worth = next.points.map { ", worth \($0.formatted(.number.precision(.fractionLength(0...1))))% of the grade" } ?? ""
+                let worth = next.points.map { ", worth \(Self.percent($0))% of the grade" } ?? ""
                 if Self.looksHeld(next) {   // studied for, never "due"
                     let when = days == 0 ? "Today" : days == 1 ? "Tomorrow" : "In \(days) days"
                     blocks.append(PlanBlock(start: cursor, end: end, title: "Study for \(next.title)", reason: "\(when)\(worth).", kind: .study))
@@ -760,9 +831,14 @@ public actor DayPlanner {
     }
 
     /// The plan by the numbers' guess at an item that happens at a set time and is studied for rather than done: its title
-    /// or grade row names a test. With a model, the model decides; this is only for the plan made without one.
+    /// or grade row names a test (not a quiz: many are online, and due), and its title names nothing made or read for one
+    /// ("Exam review worksheet", "Test-taking strategies reading", "Final paper" are handed in). With a model, the model
+    /// decides; this is only for the plan made without one, and for which item a bare "Study" block stands for.
     static func looksHeld(_ item: PlanObligation) -> Bool {
-        let words = Set(Normalize.key([item.title, item.component ?? ""].joined(separator: " ")).split(separator: " ").map(String.init))
-        return !words.isDisjoint(with: ["exam", "exams", "test", "tests", "midterm", "midterms"])   // not "quiz": many are online, and due
+        func words(_ s: String) -> Set<String> { Set(Normalize.key(s).split(separator: " ").map(String.init)) }
+        let held: Set<String> = ["exam", "exams", "test", "tests", "midterm", "midterms", "final", "finals"]
+        let made: Set<String> = ["worksheet", "worksheets", "reading", "readings", "report", "reports", "paper", "papers", "essay", "essays", "project", "projects",
+                                 "sheet", "assignment", "assignments", "homework", "hw", "draft", "proposal", "portfolio", "reflection", "lab", "labs", "writeup"]
+        return !words(item.title + " " + (item.component ?? "")).isDisjoint(with: held) && words(item.title).isDisjoint(with: made)
     }
 }

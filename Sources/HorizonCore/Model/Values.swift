@@ -20,6 +20,16 @@ public struct GradeComponent: Codable, Sendable, Equatable {
     }
 }
 
+/// One document's word on an item: the title and date it prints, kept on the row (`Obligation.documentWords`) whatever
+/// the user's edits. New fields must be optional: rows written before them still decode.
+public struct DocumentWord: Codable, Sendable, Equatable {
+    public var document: UUID
+    public var title: String
+    public var due: Date?
+    public var dueHasTime: Bool
+    public init(document: UUID, title: String, due: Date?, dueHasTime: Bool) { self.document = document; self.title = title; self.due = due; self.dueHasTime = dueHasTime }
+}
+
 public struct ClosedDateRange: Codable, Sendable, Equatable {
     public var start: Date
     public var end: Date

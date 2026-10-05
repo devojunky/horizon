@@ -1,6 +1,7 @@
 // Renders Evals/Fixtures/*/source.md into that fixture's source document.
 // The "render" key in expected.json picks the format: pdf (text layer) | scanned (image-only pdf) | png | docx | txt.
 // Run: swift Scripts/make-fixtures.swift
+// Fixtures with no source.md (16-19, the user's real documents) are kept as given and skipped.
 import AppKit
 import CoreText
 import UniformTypeIdentifiers

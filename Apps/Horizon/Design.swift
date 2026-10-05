@@ -11,6 +11,10 @@ import AppKit
 enum Design {
     static let accent = Color(red: 1.0, green: 0.68, blue: 0.26)
     static let accentSoft = accent.opacity(0.16)
+    /// The accent for words: on light paper the orange itself reads at about 1.7:1, so text in it is set in a deeper
+    /// amber (4.7:1, HIG's 4.5:1 for text); at night the orange already reads at about 10:1 and stays. Marks, rings,
+    /// fills and the tint keep `accent`.
+    static let accentInk = dynamic(light: (0.659, 0.353, 0.0), dark: (1.0, 0.68, 0.26), increased: (light: (0.55, 0.27, 0.0), dark: (1.0, 0.76, 0.42)))
     static let quiet = Color.secondary
     /// The page behind everything.
     static let paper = dynamic(light: (0.976, 0.965, 0.941), dark: (0.082, 0.078, 0.071))
@@ -36,39 +40,80 @@ enum Design {
         return Text("\(figure)\(sign)")
     }
 
-    static func due(_ date: Date?, hasTime: Bool) -> String {
+    /// `short`: without the weekday, for a row with no room for it ("Sep 2, 12:00 PM").
+    static func due(_ date: Date?, hasTime: Bool, short: Bool = false) -> String {
         guard let date else { return "Date TBA" }
+        if short { return hasTime ? date.formatted(.dateTime.month(.abbreviated).day().hour().minute()) : date.formatted(.dateTime.month(.abbreviated).day()) }
         return hasTime ? date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute())
                        : date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
     }
 
-    private static func dynamic(light: (Double, Double, Double), dark: (Double, Double, Double)) -> Color {
+    /// A colour with a light and a dark face, and optionally the faces Increase Contrast asks for.
+    private static func dynamic(light: (Double, Double, Double), dark: (Double, Double, Double),
+                                increased: (light: (Double, Double, Double), dark: (Double, Double, Double))? = nil) -> Color {
         #if canImport(UIKit)
         Color(uiColor: UIColor { trait in
-            trait.userInterfaceStyle == .dark ? UIColor(red: dark.0, green: dark.1, blue: dark.2, alpha: 1) : UIColor(red: light.0, green: light.1, blue: light.2, alpha: 1)
+            let high = trait.accessibilityContrast == .high
+            let c = trait.userInterfaceStyle == .dark ? (high ? increased?.dark : nil) ?? dark : (high ? increased?.light : nil) ?? light
+            return UIColor(red: c.0, green: c.1, blue: c.2, alpha: 1)
         })
         #else
         Color(nsColor: NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(red: dark.0, green: dark.1, blue: dark.2, alpha: 1) : NSColor(red: light.0, green: light.1, blue: light.2, alpha: 1)
+            let high = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+            let darkFace = appearance.bestMatch(from: [.darkAqua, .aqua, .accessibilityHighContrastDarkAqua, .accessibilityHighContrastAqua]).map { $0 == .darkAqua || $0 == .accessibilityHighContrastDarkAqua } ?? false
+            let c = darkFace ? (high ? increased?.dark : nil) ?? dark : (high ? increased?.light : nil) ?? light
+            return NSColor(red: c.0, green: c.1, blue: c.2, alpha: 1)
         })
         #endif
     }
 
-    /// The masthead: serif titles in every navigation bar (iOS). Called once at launch, on the main actor like every appearance proxy.
+    /// The masthead: serif titles in every navigation bar (iOS), sized with the user's text size like the system's own
+    /// (a page title never smaller than the words under it). Called at launch and again when the text size changes, on
+    /// the main actor like every appearance proxy; a bar made after a change takes the new size.
     @MainActor static func installAppearance() {
         #if canImport(UIKit)
-        func serif(_ size: CGFloat, _ weight: UIFont.Weight) -> UIFont {
+        func serif(_ size: CGFloat, _ weight: UIFont.Weight, _ style: UIFont.TextStyle, largest: CGFloat) -> UIFont {
             let base = UIFont.systemFont(ofSize: size, weight: weight)
-            return base.fontDescriptor.withDesign(.serif).map { UIFont(descriptor: $0, size: size) } ?? base
+            let font = base.fontDescriptor.withDesign(.serif).map { UIFont(descriptor: $0, size: size) } ?? base
+            return UIFontMetrics(forTextStyle: style).scaledFont(for: font, maximumPointSize: largest)
         }
         let bar = UINavigationBar.appearance()
-        bar.largeTitleTextAttributes = [.font: serif(34, .bold)]
-        bar.titleTextAttributes = [.font: serif(17, .semibold)]
+        bar.largeTitleTextAttributes = [.font: serif(34, .bold, .largeTitle, largest: 58)]
+        bar.titleTextAttributes = [.font: serif(17, .semibold, .headline, largest: 30)]
+        if !observingSize {
+            observingSize = true
+            NotificationCenter.default.addObserver(forName: UIContentSizeCategory.didChangeNotification, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { installAppearance() }
+            }
+        }
         #endif
     }
+    @MainActor private static var observingSize = false
+}
+
+/// A button's own frame, 9 points taller above and below and 3 wider either side: 44 from a small capsule, without
+/// reaching into a neighbour 10 points away.
+struct Reach: Shape {
+    func path(in rect: CGRect) -> Path { Path(rect.insetBy(dx: -3, dy: -9)) }
+}
+
+extension String {
+    /// A name opening a sentence, its first letter capitalised: a document's tidied file name ("sample syllabus") would
+    /// otherwise start the sentence in lower case.
+    var sentenceStart: String { prefix(1).uppercased() + dropFirst() }
 }
 
 extension View {
+    /// A small inline button (Retry, Try Again, Confirm) that is still a full control to hit: its capsule stays small
+    /// (about 27 points on iOS) and its hit region reaches the HIG's 44, above and below, so nothing on the page moves.
+    func reachable() -> some View {
+        #if os(iOS)
+        contentShape(.interaction, Reach())
+        #else
+        self
+        #endif
+    }
+
     /// Headline set like a magazine deck: serif, large, tight.
     func deck() -> some View { font(.system(.title2, design: .serif, weight: .semibold)) }
     /// The biggest line on a page.
@@ -140,7 +185,7 @@ struct Kicker: View {
     var accent = false
     init(_ text: String, accent: Bool = false) { self.text = text; self.accent = accent }
     var body: some View {
-        Text(text).font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(accent ? Design.accent : .secondary)
+        Text(text).font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(accent ? Design.accentInk : .secondary)
     }
 }
 

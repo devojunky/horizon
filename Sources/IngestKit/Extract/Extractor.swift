@@ -34,6 +34,10 @@ actor Extractor {
     static let imageLabel = "page"
     /// Pages attached as pictures to one Claude chunk, at most: a long document is read in more than one call.
     static let picturesPerChunk = 24
+    /// The longest edge a picture is sent at (`jpegData`), and the smaller one a request too large is tried again at
+    /// before the chunk is split.
+    static let pictureEdge = 1568
+    static let smallPictureEdge = 1024
 
     let route: ModelRoute
     let contextSize: Int
@@ -44,12 +48,16 @@ actor Extractor {
     /// Output tokens the model may produce per call. It stops here instead of overflowing the context.
     let outputBudgetTokens: Int
     private(set) var warnings: [String] = []
+    /// Calls that came back with nothing to keep (declined, cut before any item was whole, not the JSON asked for) were
+    /// paid for all the same: their usage, reported with the read's (`IngestResult.usage`).
+    private(set) var unkept: [UsageRecord] = []
     private let system: SystemLanguageModel?
     private let claude: ClaudeClient?
     private let log: @Sendable (String) -> Void
     private let progress: @Sendable (IngestEvent) -> Void
 
-    static func make(route: ModelRoute, claude configuration: ClaudeConfiguration? = nil, sampleText: String, log: @escaping @Sendable (String) -> Void,
+    /// `transport`: the network for Claude; tests script it.
+    static func make(route: ModelRoute, claude configuration: ClaudeConfiguration? = nil, transport: ClaudeTransport = .live, sampleText: String, log: @escaping @Sendable (String) -> Void,
                      progress: @escaping @Sendable (IngestEvent) -> Void = { _ in }) async throws -> Extractor {
         switch route {
         case .claude:
@@ -57,7 +65,7 @@ actor Extractor {
             guard let configuration, !configuration.apiKey.isEmpty else { throw IngestError.claudeUnavailable("no API key") }
             log("claude: \(configuration.model.rawValue), chunk budget 60000 tokens, \(picturesPerChunk) pictures per chunk")
             return Extractor(route: route, contextSize: 200_000, chunkBudgetTokens: 60_000, charsPerToken: 3.5, fixedOverheadTokens: 2_000,
-                             outputBudgetTokens: 16_000, system: nil, claude: ClaudeClient(configuration: configuration, log: log), log: log, progress: progress)
+                             outputBudgetTokens: 16_000, system: nil, claude: ClaudeClient(configuration: configuration, transport: transport, log: log), log: log, progress: progress)
         case .onDevice:
             let model = SystemLanguageModel.default
             switch model.availability {
@@ -100,6 +108,9 @@ actor Extractor {
         switch error {
         case ClaudeError.network(let why): return "no connection (\(why))"
         case ClaudeError.exhausted(_, let last) where last.hasPrefix("no connection"): return last
+        case ClaudeError.billing: return "the Anthropic account behind the key is out of credit; add credit in the Anthropic Console, then try again"
+        case ClaudeError.forbidden(let model):
+            return "Anthropic does not let this key use \(ClaudeModelChoice(rawValue: model)?.displayName ?? model); choose another model in Settings, or check the key's organization"
         case let error as ClaudeError: return error.localizedDescription
         default: return String(error.localizedDescription.prefix(200))
         }
@@ -112,8 +123,11 @@ actor Extractor {
     }
 
     /// Extract one text chunk. Splits and retries when the tokenizer disagrees with the estimate. `pictures` are the
-    /// chunk's pages as images (Claude only), so a table the text layer garbled is read as printed.
-    func extract(_ chunk: TextChunk, pictures: [NormalizedDocument.Picture] = [], context: RollingContext, document: String, chunkCount: Int, depth: Int = 0) async throws -> [ExtractionOutcome] {
+    /// chunk's pages as images (Claude only), so a table the text layer garbled is read as printed. A request too large
+    /// for Claude is tried once more with its pictures smaller (`smallPictureEdge`: the pictures are most of the bytes),
+    /// then split, each half sent with its own pages' pictures only.
+    func extract(_ chunk: TextChunk, pictures: [NormalizedDocument.Picture] = [], pictureEdge: Int = Extractor.pictureEdge, context: RollingContext, document: String,
+                 chunkCount: Int, depth: Int = 0) async throws -> [ExtractionOutcome] {
         let attached = Array(pictures.prefix(Self.picturesPerChunk))
         let prompt = IngestInstructions.prompt(chunk: chunk.text, chunkIndex: chunk.index, chunkCount: chunkCount, document: document, context: context, pictures: attached.count, forClaude: route == .claude)
         func split(_ why: String) async throws -> [ExtractionOutcome] {
@@ -123,7 +137,10 @@ actor Extractor {
             }
             log("chunk \(chunk.index): \(why), splitting")
             var out: [ExtractionOutcome] = []
-            for half in halves { out += try await extract(half, pictures: pictures, context: context, document: document, chunkCount: chunkCount, depth: depth + 1) }
+            for half in halves {
+                let own = pictures.filter { (half.firstPage...half.lastPage).contains($0.page) }
+                out += try await extract(half, pictures: own, pictureEdge: pictureEdge, context: context, document: document, chunkCount: chunkCount, depth: depth + 1)
+            }
             return out
         }
         if let system {
@@ -133,8 +150,12 @@ actor Extractor {
             if tokens + fixedOverheadTokens + expectedOutput > contextSize { return try await split("\(tokens) tokens plus ~\(expectedOutput) of output would overflow") }
         }
         do {
-            return try await respond(chunk: chunk.index, page: chunk.firstPage, kind: .text, tools: [], text: prompt, pictures: attached).map { [$0] } ?? []
+            return try await respond(chunk: chunk.index, page: chunk.firstPage, kind: .text, tools: [], text: prompt, pictures: attached, pictureEdge: pictureEdge).map { [$0] } ?? []
         } catch let error where Self.isContextOverflow(error) {
+            if route == .claude, !attached.isEmpty, pictureEdge > Self.smallPictureEdge {
+                log("chunk \(chunk.index): too large with its pictures; trying them at \(Self.smallPictureEdge) px")
+                return try await extract(chunk, pictures: pictures, pictureEdge: Self.smallPictureEdge, context: context, document: document, chunkCount: chunkCount, depth: depth)
+            }
             return try await split("context overflow")
         }
     }
@@ -142,7 +163,8 @@ actor Extractor {
     /// Extract one image page. A page too dense for the context is retried once at half size, then skipped with a warning.
     func extract(image: CGImage, orientation: CGImagePropertyOrientation?, page: Int, imageIndex: Int, imageCount: Int, position: Int, context: RollingContext, document: String) async throws -> ExtractionOutcome? {
         let tools = route == .onDevice ? ocrTools() : []
-        let text = IngestInstructions.imagePrompt(imageIndex: imageIndex, imageCount: imageCount, document: document, context: context, withOCRTool: !tools.isEmpty)
+        let text = IngestInstructions.imagePrompt(imageIndex: imageIndex, imageCount: imageCount, page: page, document: document, context: context,
+                                                  forClaude: route == .claude, withOCRTool: !tools.isEmpty)
         for attempt in 0..<2 {
             let candidate = attempt == 0 ? image : (Self.halved(image) ?? image)
             do {
@@ -172,13 +194,14 @@ actor Extractor {
     /// at the reserved budget; if the model runs out (a page of policies can do that) or the context overflows anyway,
     /// the complete items from the last snapshot are kept instead of retrying the chunk.
     /// Returns nil (with a warning) when the model declines or fails on this chunk alone.
-    private func respond(chunk: Int, page: Int, kind: ExtractionOutcome.Kind, tools: [any Tool], text: String, pictures: [NormalizedDocument.Picture]) async throws -> ExtractionOutcome? {
+    private func respond(chunk: Int, page: Int, kind: ExtractionOutcome.Kind, tools: [any Tool], text: String, pictures: [NormalizedDocument.Picture],
+                         pictureEdge: Int = Extractor.pictureEdge) async throws -> ExtractionOutcome? {
         let options = GenerationOptions(samplingMode: .greedy, maximumResponseTokens: outputBudgetTokens)
         try Task.checkCancellation()
         let start = ContinuousClock.now
         calls += 1
         let call = calls
-        if route == .claude { return try await respondClaude(chunk: chunk, page: page, kind: kind, call: call, text: text, pictures: pictures, start: start) }
+        if route == .claude { return try await respondClaude(chunk: chunk, page: page, kind: kind, call: call, text: text, pictures: pictures, pictureEdge: pictureEdge, start: start) }
         let prompt = Prompt {
             text
             for picture in pictures { Attachment(picture.image, orientation: picture.orientation).label(Self.imageLabel) }
@@ -215,6 +238,7 @@ actor Extractor {
             guard let snapshot = last, let salvaged = Self.salvage(snapshot.content) else {
                 if Self.isContextOverflow(error) { throw error }
                 warn("chunk \(chunk) (page \(page + 1)): output ran out before any item completed; skipped (streamed \(last?.content.obligations?.count ?? 0) obligations, \(last?.content.gradeComponents?.count ?? 0) components, \(last?.content.policies?.count ?? 0) policies)")
+                spent(chunk: chunk, kind: kind, usage: last?.usage, start: start, why: "cut before any item was whole")
                 return nil
             }
             warn("chunk \(chunk) (page \(page + 1)): output ran out; kept \(salvaged.obligations.count) complete item(s) of \(snapshot.content.obligations?.count ?? 0) streamed (\(snapshot.content.gradeComponents?.count ?? 0) components, \(snapshot.content.policies?.count ?? 0) policies)")
@@ -226,6 +250,7 @@ actor Extractor {
             throw IngestError.modelNotReady("rate limited until \(info.resetDate.map { "\($0)" } ?? "later")")   // the device model holds back apps in the background: the document waits, its checkpoint kept
         } catch {
             warn("chunk \(chunk) (page \(page + 1)): model \(Self.isSafetyStop(error) ? "declined" : "failed"): \(error.localizedDescription)")
+            spent(chunk: chunk, kind: kind, usage: last?.usage, start: start, why: Self.isSafetyStop(error) ? "declined" : "failed")
             return nil
         }
         return finish(chunk: chunk, kind: kind, page: page, extraction: extraction, transcript: nil, attempts: 1,
@@ -254,14 +279,18 @@ actor Extractor {
     /// it. A picture is transcribed first (`PageReading`), so the guards have text to check against. A request too
     /// large is a context overflow (the chunk splits); anything the client could not get past is `claudeUnavailable`,
     /// and the document waits.
-    private func respondClaude(chunk: Int, page: Int, kind: ExtractionOutcome.Kind, call: Int, text: String, pictures: [NormalizedDocument.Picture], start: ContinuousClock.Instant) async throws -> ExtractionOutcome? {
+    private func respondClaude(chunk: Int, page: Int, kind: ExtractionOutcome.Kind, call: Int, text: String, pictures: [NormalizedDocument.Picture],
+                               pictureEdge: Int, start: ContinuousClock.Instant) async throws -> ExtractionOutcome? {
         guard let claude else { throw IngestError.claudeUnavailable("no client") }
-        var images: [Data] = []
+        var images: [Data] = [], labels: [String] = []
         for picture in pictures {
-            guard let jpeg = Self.jpegData(picture.image, orientation: picture.orientation) else { warn("page \(picture.page + 1): the picture could not be encoded; skipped"); continue }
+            guard let jpeg = Self.jpegData(picture.image, orientation: picture.orientation, maxEdge: pictureEdge) else { warn("page \(picture.page + 1): the picture could not be encoded; skipped"); continue }
             images.append(jpeg)
+            labels.append("Page \(picture.page + 1)")   // the page number the prompt speaks of
         }
-        let request = ClaudeClient.Request(system: IngestInstructions.text, user: text, images: images, schema: kind == .image ? ClaudeSchemas.pageReading : ClaudeSchemas.extraction, maxOutputTokens: outputBudgetTokens)
+        // No thinking: reading is copying, and the whole output budget is the reply's (DECISIONS 2026-09-14).
+        let request = ClaudeClient.Request(system: IngestInstructions.text, user: text, images: images, imageLabels: labels,
+                                           schema: kind == .image ? ClaudeSchemas.pageReading : ClaudeSchemas.extraction, maxOutputTokens: outputBudgetTokens, thinking: .off)
         progress(.chunkStarted(index: chunk))
         lastShown = (-1, nil); lastProgress = nil
         progress(.progress(chunk: chunk, ReadProgress(stage: kind == .image ? .transcribing : .sizing)))
@@ -284,14 +313,18 @@ actor Extractor {
         }
         let extraction: ChunkExtraction
         var transcript: String?
+        func nothingKept(_ why: String) -> ExtractionOutcome? {
+            spent(chunk: chunk, kind: kind, attempts: completion.attempts, input: completion.inputTokens, cached: completion.cachedTokens, output: completion.outputTokens, start: start, why: why)
+            return nil
+        }
         if completion.stopReason == "max_tokens" {
             let salvaged: (String?, ChunkExtraction)? = kind == .image ? PageReadingJSON.salvage(completion.text).map { ($0.transcript, $0.facts) } : ExtractionJSON.salvage(completion.text).map { (nil, $0) }
-            guard let salvaged else { warn("chunk \(chunk) (page \(page + 1)): output ran out before any item completed; skipped"); return nil }
+            guard let salvaged else { warn("chunk \(chunk) (page \(page + 1)): output ran out before any item completed; skipped"); return nothingKept("cut before any item was whole") }
             warn("chunk \(chunk) (page \(page + 1)): output ran out; kept \(salvaged.1.obligations.count) complete item(s)")
             transcript = salvaged.0; extraction = salvaged.1
         } else if completion.stopReason == "refusal" {
             warn("chunk \(chunk) (page \(page + 1)): the model declined")
-            return nil
+            return nothingKept("declined")
         } else {
             do {
                 if kind == .image { let read = try PageReadingJSON.decode(completion.text); transcript = read.transcript; extraction = read.facts }
@@ -299,12 +332,24 @@ actor Extractor {
             } catch {
                 warn("chunk \(chunk) (page \(page + 1)): the reply was not the expected JSON; skipped")
                 log("    claude wrote (tail): \(completion.text.suffix(600))")
-                return nil
+                return nothingKept("not the JSON asked for")
             }
         }
         if extraction.obligations.isEmpty { log("    claude wrote (tail): \(completion.text.suffix(1200))") }   // a document with nothing due is rare: show what came back
         return finish(chunk: chunk, kind: kind, page: page, extraction: extraction, transcript: transcript, attempts: completion.attempts,
                       input: completion.inputTokens, cached: completion.cachedTokens, output: completion.outputTokens, reasoning: 0, start: start)
+    }
+
+    /// The record of a call that left nothing to keep, logged and kept for the read's usage (`unkept`).
+    private func spent(chunk: Int, kind: ExtractionOutcome.Kind, attempts: Int = 1, input: Int, cached: Int, output: Int, reasoning: Int = 0, start: ContinuousClock.Instant, why: String) {
+        let record = UsageRecord(step: kind == .text ? "text" : "image", chunk: chunk, route: route, inputTokens: input, cachedTokens: cached,
+                                 outputTokens: output, reasoningTokens: reasoning, durationMs: Int((ContinuousClock.now - start) / .milliseconds(1)))
+        log("chunk \(chunk) \(record.step) (\(route.rawValue)\(attempts > 1 ? ", \(attempts) attempts" : "")): nothing kept (\(why)); in \(record.inputTokens) out \(record.outputTokens) \(record.durationMs)ms")
+        unkept.append(record)
+    }
+    private func spent(chunk: Int, kind: ExtractionOutcome.Kind, usage: LanguageModelSession.Usage?, start: ContinuousClock.Instant, why: String) {
+        spent(chunk: chunk, kind: kind, input: usage?.input.totalTokenCount ?? 0, cached: usage?.input.cachedTokenCount ?? 0,
+              output: usage?.output.totalTokenCount ?? 0, reasoning: usage?.output.reasoningTokenCount ?? 0, start: start, why: why)
     }
 
     /// The record of a finished call, logged and reported.
@@ -324,13 +369,15 @@ actor Extractor {
         return ExtractionOutcome(kind: kind, page: page, extraction: extraction, transcript: transcript, usage: record)
     }
 
-    /// The page as JPEG, turned the way it is meant to be read and no longer than 1568 points on a side (what the API
-    /// keeps whole), so a scan is a few hundred kilobytes, not a few megabytes.
-    static func jpegData(_ image: CGImage, orientation: CGImagePropertyOrientation?) -> Data? {
+    /// The page as JPEG, turned the way it is meant to be read and no longer than `maxEdge` pixels on a side, so a scan is
+    /// a few hundred kilobytes, not a few megabytes. 1568 is what Haiku 4.5 keeps whole; Sonnet 5 and Opus 5 keep up to
+    /// 2576 on the long edge, at up to three times the image tokens, which the evals have not shown a need for (a letter
+    /// page at 1568 is about 140 dpi). Sending more is the owner's call.
+    static func jpegData(_ image: CGImage, orientation: CGImagePropertyOrientation?, maxEdge: Int = Extractor.pictureEdge) -> Data? {
         var upright = image
         if let orientation, orientation != .up, let turned = rotated(image, orientation: orientation) { upright = turned }
         let longest = max(upright.width, upright.height)
-        if longest > 1568, let smaller = scaled(upright, by: 1568 / CGFloat(longest)) { upright = smaller }
+        if longest > maxEdge, let smaller = scaled(upright, by: CGFloat(maxEdge) / CGFloat(longest)) { upright = smaller }
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
         CGImageDestinationAddImage(destination, upright, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)

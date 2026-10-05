@@ -41,6 +41,7 @@ struct ReadingSettingsSections: View {
     @State private var key = ""
     @State private var testing = false
     @State private var verdict: (ok: Bool, text: String)?
+    @State private var confirmRemove = false
 
     private var hasKey: Bool { !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     #if os(macOS)
@@ -72,7 +73,7 @@ struct ReadingSettingsSections: View {
         }
         .onChange(of: model.claudeModel) { _, _ in verdict = nil }
         Section {
-            SecureField("sk-ant-…", text: $key).textContentType(.password).autocorrectionDisabled()
+            SecureField("API Key", text: $key, prompt: Text("sk-ant-…")).autocorrectionDisabled()   // no content type: as a password it drew AutoFill's offers to save one
                 #if os(iOS)
                 .textInputAutocapitalization(.never)
                 #endif
@@ -92,10 +93,17 @@ struct ReadingSettingsSections: View {
             .disabled(!hasKey || testing)
             if let verdict {
                 Label(verdict.text, systemImage: verdict.ok ? "checkmark.circle" : "exclamationmark.triangle")
-                    .foregroundStyle(verdict.ok ? .secondary : Design.accent).font(.footnote)
+                    .foregroundStyle(verdict.ok ? .secondary : Design.accentInk).font(.footnote)
             }
             if hasKey {
-                Button("Remove Key", role: .destructive) { key = "" }
+                // Asks first: the Console shows a key once, so one lost by a slip has to be made again.
+                Button("Remove Key…", role: .destructive) { confirmRemove = true }
+                    .confirmationDialog("Remove your Claude key?", isPresented: $confirmRemove, titleVisibility: .visible) {
+                        Button("Remove Key", role: .destructive) { key = "" }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("Documents are then read on \(here) and the day is planned there. To use Claude again, paste a key from the Claude Console.")
+                    }
             }
         } header: {
             Kicker("Claude")
@@ -109,7 +117,7 @@ struct ReadingSettingsSections: View {
         } header: {
             Kicker("Small tasks")
         } footer: {
-            Text("Planning the day is a small job \(here) does by itself. Turn this on for Claude's plans, with your instructions read more carefully.")
+            Text("Planning the day is a small job \(here) does by itself. Turn this on for Claude's plans, with your instructions read more carefully; the day's calendar events, your items and what you told the planner are then sent to Anthropic.")
         }
     }
 
@@ -143,7 +151,7 @@ struct DeviceSettingsSections: View {
         } header: {
             Kicker("This device")
         } footer: {
-            Text("Only the device that read a document creates its reminders; the others see them arrive.")
+            Text("Reminders access is asked for the first time there is a deadline to write. Documents shows this device's name beside what it read.")
         }
     }
 }

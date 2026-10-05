@@ -12,6 +12,9 @@ struct ObligationEditor: View {
     @Environment(\.dismiss) private var dismiss
     let mode: Mode
     let courses: [Course]
+    @Environment(\.dynamicTypeSize) private var typeSize
+    /// For an item added by hand: the course whose page it was added from, chosen to begin with.
+    var preferredCourse: UUID? = nil
 
     @State private var title = ""
     @State private var hasDate = true
@@ -23,7 +26,6 @@ struct ObligationEditor: View {
     @State private var notes = ""
     @State private var done = false
     @State private var baseline: Fields?
-    @State private var confirmingDiscard = false
     @State private var confirmingDelete = false
 
     /// Everything the form can change, for the unsaved-changes check.
@@ -38,11 +40,12 @@ struct ObligationEditor: View {
         NavigationStack {
             Form {
                 Section {
-                    LabeledContent("Title") { TextField("Quiz 3", text: $title).multilineTextAlignment(.trailing).promptOnly() }
+                    FieldRow(label: "Title", prompt: "Quiz 3", text: $title)
                     Picker("Course", selection: $courseID.animation()) {   // a course with a grade table brings its row in, animated
                         Text("None").tag(UUID?.none)
                         ForEach(courses) { Text($0.displayName).tag(UUID?.some($0.id)) }
                     }
+                    .choosesInList(typeSize.isAccessibilitySize)
                     if let course, !course.gradeComponents.isEmpty {
                         Picker("Counts toward", selection: $componentName) {
                             Text("Not stated").tag("")
@@ -73,11 +76,13 @@ struct ObligationEditor: View {
                     TextField("Notes", text: $notes, axis: .vertical)
                 }
                 if let item, item.origin == .document {
-                    Section("From the document") {
+                    Section {
                         if let written = item.dateAsWritten, !written.isEmpty { LabeledContent("Date as written", value: written) }
-                        if let doc = item.sourceDocument { LabeledContent("Source", value: "\(doc.displayName), page \((item.sourcePage ?? 0) + 1)") }
+                        // `sourcePage` is where the read's part began: page 1 for any document read whole, so only a later
+                        // part's first page says anything ("from page 9").
+                        if let doc = item.sourceDocument { LabeledContent("Source", value: (item.sourcePage ?? 0) > 0 ? "\(doc.displayName), from page \((item.sourcePage ?? 0) + 1)" : doc.displayName) }
                         if let note = item.changeNote { LabeledContent("Changed", value: note) }
-                    }
+                    } header: { Kicker("From the document") }
                 }
                 if item != nil {
                     Section {
@@ -88,12 +93,9 @@ struct ObligationEditor: View {
                 }
             }
             .paper()
-            .editorChrome(title: isManual ? "Add by Hand" : "Edit Item", confirm: "Save", disabled: title.trimmingCharacters(in: .whitespaces).isEmpty || !isDirty,
-                          cancel: { if isDirty { confirmingDiscard = true } else { dismiss() } }, action: save)
+            .editorChrome(title: isManual ? "Add Item" : "Edit Item", confirm: "Save", disabled: title.trimmingCharacters(in: .whitespaces).isEmpty || !isDirty,
+                          dirty: isDirty, cancel: { dismiss() }, action: save)
             .interactiveDismissDisabled(isDirty)
-            .confirmationDialog("Discard changes?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
-                Button("Discard Changes", role: .destructive) { dismiss() }
-            }
             .confirmationDialog("Delete “\(title)”?", isPresented: $confirmingDelete, titleVisibility: .visible) {
                 Button("Delete", role: .destructive) { if let item { Task { await model.discard(item.id); dismiss() } } }
             } message: {
@@ -110,7 +112,7 @@ struct ObligationEditor: View {
 
     private func load() {
         defer { baseline = isManual ? nil : fields }
-        guard let item else { courseID = courses.count == 1 ? courses[0].id : nil; return }
+        guard let item else { courseID = preferredCourse ?? (courses.count == 1 ? courses[0].id : nil); return }
         title = item.title
         hasDate = item.due != nil
         due = item.due ?? Date()
@@ -124,23 +126,29 @@ struct ObligationEditor: View {
 
     private func save() {
         let dueValue: Date? = hasDate ? (hasTime ? due : Calendar.current.date(bySettingHour: 23, minute: 59, second: 0, of: due)) : nil
-        Task {
-            switch mode {
-            case .manual:
-                await model.addManual(title: title, due: dueValue, dueHasTime: hasTime, courseID: courseID, componentName: componentName.isEmpty ? nil : componentName, notes: notes.isEmpty ? nil : notes)
-            case .review(let item), .edit(let item):
-                var edits = ObligationEdits()
-                if title != item.title { edits.title = title }
-                if dueValue != item.due || hasTime != item.dueHasTime { edits.due = .some(dueValue); edits.dueHasTime = hasTime }
-                if platform != item.platform { edits.platform = platform }
-                if componentName != (item.componentName ?? "") { edits.componentName = .some(componentName.isEmpty ? nil : componentName) }
-                if notes != (item.notes ?? "") { edits.notes = .some(notes.isEmpty ? nil : notes) }
-                if courseID != item.course?.id { edits.courseID = .some(courseID) }
-                let checked = done != (item.completedAt != nil)
-                if checked { await model.setCompleted(item.id, done) }
-                if !checked || edits != ObligationEdits() { await model.confirm(item.id, edits: edits) }   // a check alone confirms nothing and edits nothing
+        let model = model
+        // Everything is read from the sheet before it goes; then the sheet goes at once, and the save (with the sync
+        // after it) runs without holding it up.
+        let work: @MainActor () async -> Void
+        switch mode {
+        case .manual:
+            let (title, hasTime, courseID, component, platform, notes) = (title, hasTime, courseID, componentName.isEmpty ? nil : componentName, platform, notes.isEmpty ? nil : notes)
+            work = { await model.addManual(title: title, due: dueValue, dueHasTime: hasTime, courseID: courseID, componentName: component, platform: platform, notes: notes) }
+        case .review(let item), .edit(let item):
+            var edits = ObligationEdits()
+            if title != item.title { edits.title = title }
+            if dueValue != item.due || hasTime != item.dueHasTime { edits.due = .some(dueValue); edits.dueHasTime = hasTime }
+            if platform != item.platform { edits.platform = platform }
+            if componentName != (item.componentName ?? "") { edits.componentName = .some(componentName.isEmpty ? nil : componentName) }
+            if notes != (item.notes ?? "") { edits.notes = .some(notes.isEmpty ? nil : notes) }
+            if courseID != item.course?.id { edits.courseID = .some(courseID) }
+            let (id, done, checked) = (item.id, done, done != (item.completedAt != nil))
+            work = {
+                if checked { await model.setCompleted(id, done) }
+                if !checked || edits != ObligationEdits() { await model.confirm(id, edits: edits) }   // a check alone confirms nothing and edits nothing
             }
-            dismiss()
         }
+        dismiss()
+        Task { await work() }
     }
 }

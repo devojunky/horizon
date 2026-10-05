@@ -33,7 +33,8 @@ public enum Strip {
         return min(1, (p / 35).squareRoot())
     }
 
-    /// Two or more heavy items within 24 hours of each other, called out by the day the first one falls on.
+    /// Two or more heavy items within a day of each other (a calendar day: 25 hours across the autumn's change of clocks),
+    /// called out by the day the first one falls on.
     public struct Collision: Identifiable, Sendable, Equatable {
         public var id: Date { day }
         public var day: Date
@@ -50,7 +51,7 @@ public enum Strip {
             group = []
         }
         for item in heavy {
-            if let last = group.last, item.due.timeIntervalSince(last.due) <= 86_400 { group.append(item) } else { flush(); group = [item] }
+            if let last = group.last, let dayAfter = calendar.date(byAdding: .day, value: 1, to: last.due), item.due <= dayAfter { group.append(item) } else { flush(); group = [item] }
         }
         flush()
         return result
@@ -159,4 +160,10 @@ public enum Strip {
             return Cell(period: group.period, items: sorted, points: points)
         }
     }
+}
+
+extension DateInterval {
+    /// Whether the period holds `date`: its start and not its end, so midnight belongs to one day and one week only
+    /// (`contains` counts both ends, and puts midnight in two bars).
+    public func holds(_ date: Date) -> Bool { date >= start && date < end }
 }

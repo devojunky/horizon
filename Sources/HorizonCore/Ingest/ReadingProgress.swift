@@ -7,10 +7,12 @@ import IngestKit
 public enum ReadingProgress {
     /// Where each stage's band ends, in 0...1 of the part. Sizing is the model reading the pages before its first
     /// word, a real share of the time; the obligations are most of the writing; the merge after the reply keeps the last.
+    /// A picture is transcribed before its outline is written, so its band ends short of sizing's: the bar, which never
+    /// goes back, still has somewhere to creep while the outline comes.
     public static func band(_ stage: ReadProgress.Stage) -> ClosedRange<Double> {
         switch stage {
         case .sizing: 0.00...0.20
-        case .transcribing: 0.00...0.25
+        case .transcribing: 0.00...0.15
         case .course: 0.20...0.25
         case .grading: 0.25...0.32
         case .obligations: 0.32...0.85

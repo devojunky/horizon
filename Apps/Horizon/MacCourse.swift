@@ -12,6 +12,7 @@ import IngestKit
 struct MacCoursePage: View {
     let course: Course
     @Environment(AppModel.self) private var model
+    @Environment(MacNavigation.self) private var nav
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
     @State private var selection: Set<UUID> = []
     @State private var sortOrder = [KeyPathComparator(\ItemRow.due)]
@@ -19,6 +20,7 @@ struct MacCoursePage: View {
     @State private var editingCourse = false
     @State private var preview: URL?     // the document being looked at, in Quick Look
     @State private var lingering = Lingering()
+    @State private var revealed: UUID?   // the row a link asked for, brought into view
     @AppStorage("courseShowsDone") private var showsDone = false
     // Through queries, not the course's relationships: the store saves from a context of its own, and only a query
     // redraws for that (read through the relationship, an item deleted stayed in the table).
@@ -54,15 +56,16 @@ struct MacCoursePage: View {
                 }
                 .padding(.horizontal, Design.margin)
                 .padding(.bottom, 6)
-                ItemTable(rows: rows, selection: $selection, sortOrder: $sortOrder, showsCourse: false,
+                ItemTable(rows: rows, selection: $selection, sortOrder: $sortOrder, showsCourse: false, compact: true,
                           emptyText: obligations.isEmpty ? "No items yet. Add a document, or an item by hand (File ▸ Add Item…)." : "Everything on file is done.",
+                          reveal: revealed,
                           mark: { id, done in lingering.mark(id, done: done); Task { await model.setCompleted(id, done) } },
                           edit: { id in editing = obligations.first { $0.id == id } },
                           delete: { ids in for id in ids { Task { await model.discard(id) } }; selection.subtract(ids) })
             }
             .frame(minWidth: 420, maxWidth: .infinity)
-            CourseRail(course: course, story: story, documents: documents, preview: $preview)
-                .frame(width: 300)
+            CourseRail(course: course, story: story, documents: documents, obligations: obligations, preview: $preview)
+                .frame(width: 280)
         }
         .background(Design.paper)
         .animation(.default, value: rows.map(\.id))
@@ -77,10 +80,24 @@ struct MacCoursePage: View {
         .sheet(item: $editing) { ObligationEditor(mode: .edit($0), courses: courses) }
         .sheet(isPresented: $editingCourse) { CourseEditor(course: course) }
         .quickLookPreview($preview)
+        .onAppear { reveal() }
+        .onChange(of: nav.reveal) { reveal() }
         .onAppear {
             if MainTabs.debugFlag("--open-item") { editing = obligations.sorted { ($0.due ?? .distantFuture) < ($1.due ?? .distantFuture) }.first }
             if MainTabs.debugFlag("--open-course-editor") { editingCourse = true }
         }
+    }
+}
+
+extension MacCoursePage {
+    /// Selects the item a link asked for, when it is this course's, and brings it into view; a done item shows the
+    /// done ones, so it is there to be seen.
+    private func reveal() {
+        guard let id = nav.reveal, let item = obligations.first(where: { $0.id == id }) else { return }
+        nav.reveal = nil
+        if item.completedAt != nil { showsDone = true }
+        selection = [id]
+        revealed = id
     }
 }
 
@@ -106,6 +123,8 @@ private struct CourseRail: View {
     let course: Course
     let story: CourseCoverage
     let documents: [SourceDocument]
+    /// The course's items, from the page's query: what each document gave is counted from them.
+    let obligations: [Obligation]
     @Binding var preview: URL?
     @Environment(AppModel.self) private var model
 
@@ -120,7 +139,8 @@ private struct CourseRail: View {
                     RailSection("Documents") {
                         VStack(alignment: .leading, spacing: 12) {
                             ForEach(documents) { doc in
-                                Button { preview = model.previewFile(for: doc) } label: { CourseDocumentRow(document: doc, onDevice: model.hasFile(doc), disclosure: false) }
+                                let items = obligations.count { $0.sourceDocument?.id == doc.id }
+                                Button { preview = model.previewFile(for: doc) } label: { CourseDocumentRow(document: doc, items: items, onDevice: model.hasFile(doc), disclosure: false) }
                                     .buttonStyle(.plain)
                                     .disabled(!model.hasFile(doc))
                                     .help(model.hasFile(doc) ? "Open in Quick Look" : "The file is on another device")

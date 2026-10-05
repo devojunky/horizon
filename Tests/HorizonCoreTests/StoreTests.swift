@@ -1,5 +1,7 @@
 import Foundation
 import Testing
+import CoreData
+import _SwiftData_CoreData
 import IngestKit
 @testable import HorizonCore
 
@@ -229,7 +231,7 @@ struct StoreTests {
         var schedule = Fixture.calculus(sha: "sched3"); schedule.course = nil; schedule.gradeComponents = []; schedule.policies = []
         schedule.obligations = [ParsedObligation(title: "HW 1", platform: .webAssign, componentName: "Homework", dateAsWritten: "9/10", due: Fixture.day(9, 10), status: .ready, pointsAtStake: nil, sourcePage: 1),
                                 ParsedObligation(title: "HW 3", platform: .webAssign, componentName: "Homework", dateAsWritten: "9/24", due: Fixture.day(9, 24), status: .ready, pointsAtStake: nil, sourcePage: 1)]
-        try await store.ingest(schedule, documentID: doc.id, calendar: Fixture.calendar)
+        _ = try await store.ingest(schedule, documentID: doc.id, calendar: Fixture.calendar)
         let syllabus = try await store.documents().first { $0.sha256 == "abc" }!
         let before = try await store.obligations().filter { $0.deletedAt == nil }.map(\.title)
         #expect(before.contains("HW 3") && before.contains("Quiz 1"))
@@ -277,7 +279,7 @@ struct StoreTests {
         let doc = try await store.enqueueDocument(filename: "schedule.pdf", sha256: "sched5", kind: "pdf", deviceName: "A", courseID: calc.id)
         var schedule = Fixture.calculus(sha: "sched5"); schedule.course = nil; schedule.gradeComponents = []; schedule.policies = []
         schedule.obligations = [ParsedObligation(title: "HW 2", platform: .webAssign, componentName: "Homework", dateAsWritten: "9/16", due: Fixture.day(9, 16), status: .ready, pointsAtStake: nil, sourcePage: 1)]
-        try await store.ingest(schedule, documentID: doc.id, calendar: Fixture.calendar)
+        _ = try await store.ingest(schedule, documentID: doc.id, calendar: Fixture.calendar)
         try await store.restoreDocument(id: syllabus.id)
         let back = try await store.obligations()
         #expect(back.map(\.title).sorted() == ["Final Exam", "HW 1", "HW 2", "Midterm 1", "Quiz 1"])   // one HW 2, the schedule's
@@ -630,4 +632,255 @@ final class Routes: @unchecked Sendable {
     private var stored: [IngestOptions.RoutePolicy] = []
     var value: [IngestOptions.RoutePolicy] { lock.withLock { stored } }
     func append(_ route: IngestOptions.RoutePolicy) { lock.withLock { stored.append(route) } }
+}
+
+/// What a deletion, a hand edit or a second document does to a read, and what follows from them: points, the bin's
+/// order, freshness, failures that a retry cannot fix, the store's generation, days across time zones.
+struct StoreFollowThroughTests {
+    @Test func aReadFinishingIntoTheBinStaysThereAndARestoreReadsItAgain() async throws {
+        let store = try Fixture.store()
+        let doc = try await store.enqueueDocument(filename: "calc.pdf", sha256: "abc", kind: "pdf", deviceName: "A")
+        try await store.saveCheckpoint(id: doc.id, data: Data("parts read".utf8))
+        try await store.deleteDocument(id: doc.id)                                      // the wrong file: deleted while it is read
+        let summary = try await store.ingest(Fixture.calculus(), documentID: doc.id, calendar: Fixture.calendar)
+        let live = try await store.obligations(), courses = try await store.courses(), toWrite = try await store.pendingProjection()
+        #expect(summary.binned && summary.created == 0 && live.isEmpty && courses.isEmpty && toWrite.isEmpty)
+        #expect(try await store.deletedDocuments().map(\.id) == [doc.id])
+        #expect(try await store.checkpoint(for: doc.id) != nil)                         // what was read waits with it
+        // Restored, it is queued again, and read.
+        try await store.restoreDocument(id: doc.id)
+        #expect(try await store.queuedDocuments().map(\.id) == [doc.id])
+        let again = try await store.ingest(Fixture.calculus(), documentID: doc.id, calendar: Fixture.calendar)
+        #expect(!again.binned && again.created == 5)
+    }
+
+    @Test func aCourseDeletedWhileItsDocumentIsReadStaysDeleted() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let calc = try await store.courses().first!
+        let schedule = try await store.enqueueDocument(filename: "schedule.pdf", sha256: "sched", kind: "pdf", deviceName: "A", courseID: calc.id)
+        try await store.deleteCourse(id: calc.id)
+        let summary = try await store.ingest(Fixture.calculus(sha: "sched"), documentID: schedule.id, calendar: Fixture.calendar)
+        let courses = try await store.courses(), live = try await store.obligations(), binned = try await store.deletedCourses()
+        #expect(summary.binned && courses.isEmpty && live.isEmpty && binned.map(\.id) == [calc.id])
+        #expect(try await store.deletedDocuments().isEmpty)                              // both documents sit under the course
+        // The course back: the schedule with it, queued, and read into it without doubling anything.
+        try await store.restoreCourse(id: calc.id)
+        #expect(try await store.queuedDocuments().map(\.id) == [schedule.id])
+        _ = try await store.ingest(Fixture.calculus(sha: "sched"), documentID: schedule.id, calendar: Fixture.calendar)
+        #expect(try await store.obligations().count == 5)
+    }
+
+    @Test func aDocumentQueuedBeforeItsCourseWasDeletedDoesNotBringItBack() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let calc = try await store.courses().first!
+        let loose = try await store.enqueueDocument(filename: "update.pdf", sha256: "upd", kind: "pdf", deviceName: "A")   // its course is known only once read
+        try await store.deleteCourse(id: calc.id)
+        let summary = try await store.ingest(Fixture.calculus(sha: "upd"), documentID: loose.id, calendar: Fixture.calendar)
+        let courses = try await store.courses(), documents = try await store.documents(), alone = try await store.deletedDocuments()
+        #expect(summary.binned && courses.isEmpty && documents.isEmpty && alone.isEmpty)  // it went into the bin with the course
+        try await store.restoreCourse(id: calc.id)
+        #expect(try await store.queuedDocuments().map(\.id) == [loose.id])
+        // Shared after the deletion, a document is a fresh request and brings the course back.
+        try await store.deleteCourse(id: calc.id)
+        try await Fixture.ingest(Fixture.calculus(sha: "new"), into: store)
+        #expect(try await store.courses().map(\.id) == [calc.id])
+    }
+
+    @Test(.timeLimit(.minutes(1))) func deletingADocumentStopsItsReadAndTheDrainGoesOn() async throws {
+        let store = try Fixture.store()
+        let fileA = try Fixture.file("a.txt", "first"), fileB = try Fixture.file("b.txt", "second"), fileC = try Fixture.file("c.txt", "third")
+        let held = try DocumentStorage.sha256(fileAt: fileC)   // the newest is read first
+        let started = Gate(), parsed = Counter()
+        let coordinator = IngestCoordinator(store: store, storage: DocumentStorage.temporary(), sync: nil, deviceName: "A", parse: { url, _ in
+            let sha = url.deletingPathExtension().lastPathComponent
+            parsed.append(sha)
+            if sha == held { await started.release(); try await Task.sleep(for: .seconds(30)) }   // a long read, stopped only by its cancellation
+            return Fixture.calculus(sha: sha)
+        })
+        let a = try await coordinator.enqueue(fileURL: fileA), b = try await coordinator.enqueue(fileURL: fileB), c = try await coordinator.enqueue(fileURL: fileC)
+        let drain = Task { await coordinator.drain() }
+        await started.wait()
+        #expect(await coordinator.documentBeingRead == c.id)
+        try await coordinator.deleteDocument(id: b.id)                                  // waiting its turn: never read
+        try await coordinator.deleteDocument(id: c.id)                                  // being read: the read stops
+        let reports = await drain.value
+        #expect(parsed.value == [c.sha256, a.sha256])
+        #expect(reports.map(\.document.id) == [a.id])
+        #expect(try await store.obligations().count == 5)
+        #expect(Set(try await store.deletedDocuments().map(\.id)) == [b.id, c.id])
+        #expect(try await store.document(id: c.id)?.status == .queued)                  // unread, for a restore to read
+        #expect(await coordinator.documentBeingRead == nil)
+    }
+
+    @Test func handEditsAreNotNewItemsOnTheNextRead() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let hw1 = try await store.obligations().first { $0.title == "HW 1" }!
+        try await store.confirm(id: hw1.id, edits: ObligationEdits(title: "HW 1 — sections 7.1 to 7.3"))   // renamed
+        let recitation = try await store.addCourse(CourseEdits(title: "Calculus Recitation", code: "MA-UY 1124R"))
+        let quiz = try await store.obligations().first { $0.title == "Quiz 1" }!
+        try await store.confirm(id: quiz.id, edits: ObligationEdits(componentName: .some("Recitation Quizzes"), courseID: .some(recitation.id)))   // moved
+        let summary = try await Fixture.ingest(Fixture.calculus(sha: "v2"), into: store)   // the syllabus, reissued
+        #expect(summary.created == 0)
+        let live = try await store.obligations()
+        #expect(live.count == 5 && live.contains { $0.title == "HW 1 — sections 7.1 to 7.3" })
+        let moved = live.first { $0.id == quiz.id }
+        #expect(moved?.courseID == recitation.id && moved?.componentName == "Recitation Quizzes")   // where the user put it, its row the new course's
+    }
+
+    @Test func deletingALaterDocumentGivesItsItemsBackToTheEarlierOne() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let calc = try await store.courses().first!
+        let syllabus = try await store.documents().first!
+        let update = try await store.enqueueDocument(filename: "update.pdf", sha256: "upd", kind: "pdf", deviceName: "A", courseID: calc.id)
+        var moves = Fixture.calculus(sha: "upd"); moves.course = nil; moves.gradeComponents = []; moves.policies = []
+        moves.obligations = [ParsedObligation(title: "HW 2", platform: .webAssign, componentName: "Homework", dateAsWritten: "9/18", due: Fixture.day(9, 18), status: .ready, sourcePage: 1),
+                             ParsedObligation(title: "Lab Report", dateAsWritten: "9/25", due: Fixture.day(9, 25), status: .ready)]
+        _ = try await store.ingest(moves, documentID: update.id, calendar: Fixture.calendar)
+        #expect(try await store.obligations().first { $0.title == "HW 2" }?.sourceDocumentID == update.id)
+        try await store.deleteDocument(id: update.id)
+        let live = try await store.obligations()
+        #expect(live.map(\.title).sorted() == ["Final Exam", "HW 1", "HW 2", "Midterm 1", "Quiz 1"])   // the syllabus still lists HW 2
+        let hw2 = live.first { $0.title == "HW 2" }!
+        #expect(hw2.sourceDocumentID == syllabus.id && hw2.due == Fixture.day(9, 16) && hw2.state == .pendingReview)   // its date, said in review
+        #expect(hw2.changeNote?.contains("Sep 18 → Sep 16") == true)
+        #expect(try await store.obligations(includeDeleted: true).filter { $0.deletedAt != nil }.map(\.title) == ["Lab Report"])   // only what went is in the bin
+    }
+
+    @Test func pointsFollowEveryHandEdit() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let calc = try await store.courses().first!
+        func points(_ title: String) async throws -> Double { try await store.obligations().first { $0.title == title }?.pointsAtStake ?? -1 }
+        // Homework from 15% to 30% over its stated ten.
+        var table = calc.gradeComponents; table[0].weight = 0.30
+        try await store.updateCourse(id: calc.id, edits: CourseEdits(gradeComponents: table))
+        #expect(abs(try await points("HW 1") - 3) < 1e-9)
+        // HW 2 moved to Quizzes (12% over what is on file): two quizzes now.
+        let hw2 = try await store.obligations().first { $0.title == "HW 2" }!
+        try await store.confirm(id: hw2.id, edits: ObligationEdits(componentName: .some("Quizzes")))
+        let (hw2Points, quizPoints) = (try await points("HW 2"), try await points("Quiz 1"))
+        #expect(abs(hw2Points - 6) < 1e-9 && abs(quizPoints - 6) < 1e-9)
+        // A quiz added by hand shares the row; deleted, the rest share it again.
+        let quiz2 = try await store.addManual(title: "Quiz 2", due: Fixture.day(9, 24), dueHasTime: false, courseID: calc.id, componentName: "Quizzes", notes: nil, deviceName: "A")
+        let (addedPoints, firstPoints) = (try await points("Quiz 2"), try await points("Quiz 1"))
+        #expect(abs(addedPoints - 4) < 1e-9 && abs(firstPoints - 4) < 1e-9)
+        try await store.softDelete(id: quiz2.id)
+        #expect(abs(try await points("Quiz 1") - 6) < 1e-9)
+    }
+
+    @Test func anItemAddedByHandKeepsItsSite() async throws {
+        let store = try Fixture.store()
+        let item = try await store.addManual(title: "WebAssign 3.4", due: Fixture.day(9, 24), dueHasTime: false, courseID: nil, componentName: nil, platform: .webAssign, notes: nil, deviceName: "A")
+        #expect(item.platform == .webAssign && item.userOverrides.contains(.platform))
+        let plain = try await store.addManual(title: "Read ch. 3", due: nil, dueHasTime: false, courseID: nil, componentName: nil, notes: nil, deviceName: "A")
+        #expect(plain.platform == .syllabusOnly && !plain.userOverrides.contains(.platform))
+    }
+
+    @Test func theBinKeepsACoursesPlaceAndARevivedCourseStartsAfresh() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        var biology = Fixture.calculus(sha: "bio"); biology.course = ParsedCourse(code: "BIO-UA 11", title: "Biology")
+        try await Fixture.ingest(biology, into: store)
+        let calc = try await store.courses().first { $0.code == "MA-UY 1124" }!, bio = try await store.courses().first { $0.code == "BIO-UA 11" }!
+        try await store.reorderCourses([bio.id, calc.id])
+        try await store.deleteCourse(id: calc.id)
+        try await store.restoreCourse(id: calc.id)
+        #expect(try await store.courses().first { $0.id == calc.id }?.sortOrder == 1)   // back in its place
+        // Revived by a document later, its silence counts from then.
+        try await store.deleteCourse(id: calc.id)
+        let before = Date()
+        try await Fixture.ingest(Fixture.calculus(sha: "again"), into: store)
+        #expect((try await store.courses().first { $0.id == calc.id }?.createdAt ?? .distantPast) >= before)
+        // "Updated" counts only documents still on file.
+        for doc in try await store.documents() where doc.courseID == calc.id { try await store.deleteDocument(id: doc.id) }
+        #expect(try await store.courses().first { $0.id == calc.id }?.lastIngested == nil)
+        // A stale second delete of an item keeps the stamp of the deletion that took it.
+        let gone = try await store.obligations(includeDeleted: true).first { $0.courseID == calc.id && $0.deletedAt != nil }!
+        try await store.softDelete(id: gone.id)
+        #expect(try await store.obligations(includeDeleted: true).first { $0.id == gone.id }?.deletedAt == gone.deletedAt)
+    }
+
+    @Test func aFailureTheFileCannotGetPastOffersNoRetry() async throws {
+        let store = try Fixture.store()
+        let storage = DocumentStorage.temporary()
+        let broken = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "A", parse: { _, _ in throw IngestError.unreadable("PDFKit could not open it") })
+        let doc = try await broken.enqueue(fileURL: try Fixture.file("empty.txt"))
+        _ = await broken.drain()
+        var record = try await store.document(id: doc.id)
+        #expect(record?.status == .failed && record?.failureIsPermanent == true)
+        try await store.markDocument(id: doc.id, status: .queued)                      // a Retry anyway: queued, the mark cleared
+        record = try await store.document(id: doc.id)
+        #expect(record?.status == .queued && record?.failureIsPermanent == false)
+        // One a retry can fix is not permanent.
+        let flaky = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "A", parse: { _, _ in throw IngestError.extractionFailed("nothing") })
+        _ = await flaky.drain()
+        record = try await store.document(id: doc.id)
+        #expect(record?.status == .failed && record?.failureIsPermanent == false)
+        // A kind Horizon cannot read is refused before it is copied in, and never queued.
+        let refused = try await broken.enqueue(fileURL: try Fixture.file("notes.zip"))
+        #expect(refused.status == .failed && refused.failureIsPermanent && refused.failure == "Horizon cannot read .zip files.")
+        #expect(!storage.exists(sha256: refused.sha256, extension: "zip"))
+        #expect(try await store.queuedDocuments().allSatisfy { $0.id != refused.id })
+        for readable in ["a.pdf", "b.png", "c.txt", "d.md", "e"] { #expect(IngestCoordinator.refusal(for: URL(fileURLWithPath: "/tmp/\(readable)")) == nil, "\(readable)") }
+        // A Word document off a Mac says what to do instead.
+        #expect(IngestCoordinator.explain(IngestError.unsupportedFile("docx (macOS only)"), kind: "docx") == "Word documents can only be read on a Mac. Save it as a PDF and add that instead.")
+        #expect(IngestCoordinator.explain(IngestError.unsupportedFile("zip"), kind: "zip") == "Horizon cannot read .zip files.")
+    }
+
+    @Test func aStoreANewerBuildOpenedIsRefused() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("generation-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("Horizon.store")
+        let marker = HorizonContainer.generationMarker(for: url)
+        let generation = HorizonContainer.storeGeneration
+        // No record (a store from before the guard): it opens, and records this build's generation.
+        do { _ = try HorizonContainer.at(url) }
+        #expect(HorizonContainer.recordedGeneration(at: marker) == generation)
+        // An older record is raised to this build's.
+        try "1".write(to: marker, atomically: true, encoding: .utf8)
+        do { _ = try HorizonContainer.at(url) }
+        #expect(HorizonContainer.recordedGeneration(at: marker) == generation)
+        // A newer one is refused before anything is opened, and left as it was.
+        try String(generation + 1).write(to: marker, atomically: true, encoding: .utf8)
+        #expect(throws: StoreTooNew(recorded: generation + 1, supported: generation)) { _ = try HorizonContainer.at(url) }
+        #expect(HorizonContainer.recordedGeneration(at: marker) == generation + 1)
+    }
+
+    @Test func daysStayDaysWhenTheTimeZoneChanges() async throws {
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)                       // read in New York: HW 1 at 23:59 on Sep 9
+        let timed = try await store.addManual(title: "Exam review", due: Fixture.day(9, 20, hour: 18, minute: 0), dueHasTime: true, courseID: nil, componentName: nil, notes: nil, deviceName: "A")
+        let suite = "horizon-tests-\(UUID().uuidString)"
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        try await DayAnchor.settle(store, suite: suite, zone: Fixture.calendar.timeZone)  // the first run only records the zone
+        let la = TimeZone(identifier: "America/Los_Angeles")!
+        try await DayAnchor.settle(store, suite: suite, zone: la)                       // the student flies west
+        var west = Calendar(identifier: .gregorian); west.timeZone = la
+        let hw1 = try await store.obligations().first { $0.title == "HW 1" }!
+        #expect(west.dateComponents([.month, .day, .hour, .minute], from: hw1.due!) == DateComponents(month: 9, day: 9, hour: 23, minute: 59))
+        #expect(west.dateComponents([.month, .day, .hour], from: try await store.courses().first!.termStart!) == DateComponents(month: 9, day: 2, hour: 0))
+        #expect(try await store.obligations().first { $0.id == timed.id }?.due == Fixture.day(9, 20, hour: 18, minute: 0))   // an instant stays
+        try await DayAnchor.settle(store, suite: suite, zone: la)                       // the same zone again: nothing moves
+        #expect(try await store.obligations().first { $0.title == "HW 1" }?.due == hw1.due)
+    }
+}
+
+
+extension StoreFollowThroughTests {
+    /// Each generation's schema, as Core Data fingerprints its entities. A stored property added, removed or retyped
+    /// changes it: bump `HorizonContainer.storeGeneration` and record the new fingerprint under the new number (a field
+    /// added to a Codable value stored in a row does not show here, and needs the bump all the same).
+    static let fingerprints: [Int: String] = [2: "390b92db4ace32b6624a1ee2df759ba6752544ec9e00a86327af20a0e601ee6b"]
+
+    @Test func theStoredSchemaIsItsGenerations() throws {
+        let model = try #require(NSManagedObjectModel.makeManagedObjectModel(for: Schema(versionedSchema: HorizonSchemaV1.self)))
+        let hashes = model.entityVersionHashesByName.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value.base64EncodedString())" }.joined(separator: ";")
+        let fingerprint = DocumentStorage.sha256(Data(hashes.utf8))
+        #expect(Self.fingerprints[HorizonContainer.storeGeneration] == fingerprint,
+                "a stored property changed: bump HorizonContainer.storeGeneration and record \(fingerprint) for it")
+    }
 }

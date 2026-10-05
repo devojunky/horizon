@@ -12,14 +12,20 @@ struct NowRail: View {
     var chooseEnd: (Int) -> Void
     var tell: () -> Void
     @Environment(AppModel.self) private var model
+    @Environment(MacNavigation.self) private var nav
     @Query(filter: #Predicate<Obligation> { $0.deletedAt == nil && $0.due != nil }, sort: \Obligation.due) private var dated: [Obligation]
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
     @State private var editing: Obligation?
 
-    /// What falls due from today through the next seven days.
+    /// The most the column lists; the rest are counted, and Horizon lists them all.
+    private static let shown = 8
+
+    /// What falls due from today through the next seven days (by the calendar's days, so a change of the clocks moves
+    /// nothing in or out).
     private var dueSoon: [Obligation] {
-        let today = Calendar.current.startOfDay(for: Date())
-        let limit = today.addingTimeInterval(8 * 86_400)
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let limit = calendar.date(byAdding: .day, value: 8, to: today) ?? today.addingTimeInterval(8 * 86_400)
         return dated.filter { item in
             guard item.completedAt == nil, let due = item.due else { return false }
             return due >= today && due < limit
@@ -41,12 +47,20 @@ struct NowRail: View {
                     Button("Tell the Planner…", action: tell).controlSize(.small).padding(.top, 2)
                 }
                 RailSection("Due this week") {
-                    if dueSoon.isEmpty { Text("Nothing due in the next seven days.").font(.subheadline).foregroundStyle(.secondary) }
+                    let due = dueSoon
+                    if due.isEmpty { Text("Nothing due in the next seven days.").font(.subheadline).foregroundStyle(.secondary) }
                     VStack(alignment: .leading, spacing: 12) {
-                        ForEach(dueSoon.prefix(8)) { item in
+                        ForEach(due.prefix(Self.shown)) { item in
                             Button { editing = item } label: { DueRow(item: item) }
                                 .buttonStyle(.plain)
                                 .help("Edit \(item.title)")
+                        }
+                        if due.count > Self.shown {   // never a list that stops without saying so
+                            Button { nav.show(.horizon) } label: {
+                                Text(due.count - Self.shown == 1 ? "And 1 more" : "And \(due.count - Self.shown) more").font(.subheadline).foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("See them all on the Horizon")
                         }
                     }
                 }

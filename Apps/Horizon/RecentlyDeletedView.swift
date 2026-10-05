@@ -39,7 +39,7 @@ struct BinEntry: Identifiable, Equatable {
         /// What restoring brings back, in words.
         var brings: String {
             var parts: [String] = []
-            if items > 0 { parts.append(items == 1 ? "one item and its reminder" : "\(items) items and their reminders") }
+            if items > 0 { parts.append(items == 1 ? "one item" : "\(items) items") }
             if documents > 0 { parts.append(documents == 1 ? "its document" : "its \(documents) documents") }
             switch (kind, parts.isEmpty) {
             case (.course, true): return "Restoring brings the course back."
@@ -86,17 +86,6 @@ extension RecentlyDeletedView {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        .confirmationDialog(chosen?.name ?? "", isPresented: Binding(get: { chosen != nil }, set: { if !$0 { chosen = nil } }), titleVisibility: .visible) {
-            Button("Restore") { if let entry = chosen { restore(entry) } }
-            Button("Delete Now", role: .destructive) { if let entry = chosen { erase(entry) } }
-        } message: {
-            Text(chosen?.brings ?? "")
-        }
-        .confirmationDialog("Delete \(erasing?.name ?? "this") for good?", isPresented: Binding(get: { erasing != nil }, set: { if !$0 { erasing = nil } }), titleVisibility: .visible) {
-            Button("Delete Now", role: .destructive) { if let entry = erasing { erase(entry) } }
-        } message: {
-            Text("This cannot be undone.")
-        }
         .onAppear {
             if MainTabs.debugFlag("--choose-first-deleted") { chosen = courses.first.map(BinEntry.init) ?? documents.first.map(BinEntry.init) }
         }
@@ -123,6 +112,18 @@ extension RecentlyDeletedView {
         .swipeActions(edge: .trailing) {
             Button("Delete Now", systemImage: "trash", role: .destructive) { erasing = entry }
         }
+        // On the row, so that where a dialog is drawn as a popover it points at the row it is about.
+        .confirmationDialog(entry.name, isPresented: Binding(get: { chosen?.id == entry.id }, set: { if !$0 { chosen = nil } }), titleVisibility: .visible) {
+            Button("Restore") { restore(entry) }
+            Button("Delete for Good", role: .destructive) { erase(entry) }
+        } message: {
+            Text(entry.brings + " Deleting it for good cannot be undone.")
+        }
+        .confirmationDialog("Delete \(entry.name) for good?", isPresented: Binding(get: { erasing?.id == entry.id }, set: { if !$0 { erasing = nil } }), titleVisibility: .visible) {
+            Button("Delete for Good", role: .destructive) { erase(entry) }
+        } message: {
+            Text("This cannot be undone.")
+        }
     }
 
     /// "Deleted 2 hours ago · 12 items · 2 documents"
@@ -136,7 +137,7 @@ extension RecentlyDeletedView {
     /// Days until it goes for good.
     private func remaining(_ entry: BinEntry) -> String {
         let days = max(0, Int((Bin.expiry(of: entry.deletedAt).timeIntervalSinceNow / 86400).rounded(.up)))   // a full 30 right after deleting
-        return days == 0 ? "Today" : days == 1 ? "1 day" : "\(days) days"
+        return days == 0 ? "Goes today" : days == 1 ? "1 day left" : "\(days) days left"
     }
 
     private func restore(_ entry: BinEntry) {

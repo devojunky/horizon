@@ -364,7 +364,12 @@ struct MergerTests {
 
     @Test func cadenceImpliedCountDrivesPoints() {
         let r = Self.merge([Self.outcome(0, course: Self.course, components: [Self.component("Quizzes", 12, cadence: "weekly")], obligations: [Self.ob("Quiz 1", "Thu 9/17", iso: "2026-09-17")])])
-        #expect(r.obligations[0].pointsAtStake == 0.86)   // 12% ÷ 14 whole weeks (Sep 2 – Dec 14)
+        #expect(r.obligations[0].pointsAtStake == 0.8)   // 12% ÷ the 15 weeks from Wed Sep 2 to Mon Dec 14, both ends counted
+        // Scores dropped do not count: ten quizzes for 20%, the lowest two dropped, are 2.5 points each.
+        let dropped = Self.merge([Self.outcome(0, course: Self.course, components: [GradeComponentFacts(name: "Quizzes", weightPercent: 20, count: 10, cadence: "weekly", dropLowest: 2, platform: "not_stated")],
+                                               obligations: [Self.ob("Quiz 1", "Thu 9/17", iso: "2026-09-17")])], text: Self.source.replacingOccurrences(of: "Quizzes 12%", with: "Quizzes 20%"))
+        #expect(dropped.obligations[0].pointsAtStake == 2.5)
+        #expect(PointsAtStake.perItem(weight: 0.2, expectedCount: 2, dropLowest: 2, cadence: nil, termStart: nil, termEnd: nil, onFile: 0) == 10)   // a rule that would leave nothing is none
     }
 
     @Test func dropsGarbageAndKeepsSupportedTBD() {
@@ -708,6 +713,76 @@ struct MergerTests {
         ])])
         #expect(r.noClassDates.count == 2)
         #expect(Self.day(r.noClassDates[1].start) == 25 && Self.day(r.noClassDates[1].end) == 27)
+        #expect(r.warnings.contains("1 no-class date(s) dropped: not in the document's words, or no day to them"))   // counted, never silent
+    }
+
+    // MARK: Dates the wording does not settle
+
+    @Test func aDateWithoutAYearIsPlacedInTheTerm() {
+        // A Fall term's January final, and a year-long course's spring essay, are not a year early.
+        let fall = "MATH 2001 Linear Algebra, Fall 2026\nClasses begin September 8, 2026 and end December 18, 2026.\nHomework 1 due September 15\nFinal Exam: January 8, 9:00 AM"
+        let course = CourseFacts(code: "MATH 2001", title: "Linear Algebra", instructor: nil, term: "Fall 2026", termStart: "2026-09-08", termEnd: "2026-12-18", room: nil, meetings: [])
+        let r = Self.merge([Self.outcome(0, course: course, obligations: [Self.ob("Homework 1", "September 15", iso: "2026-09-15"), Self.ob("Final Exam", "January 8, 9:00 AM", iso: "2027-01-08")])], text: fall)
+        let final = try! #require(r.obligations.first { $0.title == "Final Exam" })
+        #expect(Self.options.calendar.dateComponents([.year, .month, .day], from: final.due!) == DateComponents(year: 2027, month: 1, day: 8) && final.status == .ready && final.flags.isEmpty)
+        let yearLong = "HIST 101 World History, Academic Year 2026-2027\nEssay 1 due October 2\nEssay 4 due March 12"
+        let history = CourseFacts(code: "HIST 101", title: "World History", instructor: nil, term: "Academic Year 2026-2027", termStart: nil, termEnd: nil, room: nil, meetings: [])
+        let h = Self.merge([Self.outcome(0, course: history, obligations: [Self.ob("Essay 1", "October 2", iso: "2026-10-02"), Self.ob("Essay 4", "March 12", iso: "2027-03-12")])], text: yearLong)
+        #expect(h.obligations.map { Self.options.calendar.component(.year, from: $0.due!) } == [2026, 2027] && h.obligations.allSatisfy { $0.status == .ready })
+        // A date the wording puts outside the term goes to review, whatever else supports it.
+        let outside = Self.merge([Self.outcome(0, course: Self.course, obligations: [Self.ob("HW 1", "Wed 9/9/2025", iso: "2025-09-09")])], text: Self.source + "\nHW 1 due Wed 9/9/2025.")
+        #expect(outside.obligations[0].flags.contains(.dateOutsideTerm) && outside.obligations[0].status == .needsReview)
+    }
+
+    @Test func severalDaysPrintedAndNoneChosenNeedsReview() {
+        // Fixture 18's two-day presentations: no date from the model, so the last day printed is only a guess.
+        let text = "Dec 7 & Dec 9 ORGANIZATIONAL SHARK TANK SIGNATURE FINAL PROJECT\nFinals Week UNIT TEST 4 (FINAL EXAM) Chapters 12, 13, 16 & 18 /\nFinal Exam: Finals Week – Date/Time per NYU Registrar"
+        let r = Self.merge([Self.outcome(0, obligations: [Self.ob("ORGANIZATIONAL SHARK TANK", "Dec 7 & Dec 9", confidence: "medium"),
+                                                          Self.ob("UNIT TEST 4 (FINAL EXAM)", "Finals Week", confidence: "medium")])], text: text)
+        let byTitle = Dictionary(uniqueKeysWithValues: r.obligations.map { ($0.title, $0) })
+        #expect(byTitle["ORGANIZATIONAL SHARK TANK"]?.status == .needsReview && byTitle["ORGANIZATIONAL SHARK TANK"]?.flags.contains(.dateAmbiguous) == true)
+        // "Finals Week" is a date still to come, not an unsupported one: kept, waiting for its date.
+        #expect(byTitle["UNIT TEST 4 (FINAL EXAM)"]?.status == .awaitingDate && byTitle["UNIT TEST 4 (FINAL EXAM)"]?.due == nil)
+        // The model choosing one of the days printed: that day stands (for review all the same: it is the first of its row's two).
+        let chosen = Self.merge([Self.outcome(0, obligations: [Self.ob("ORGANIZATIONAL SHARK TANK", "Dec 7 & Dec 9", iso: "2026-12-07")])], text: text)
+        #expect(Self.day(chosen.obligations[0].due) == 7 && !chosen.obligations[0].flags.contains(.dateDisagreement))
+        // Choosing a day the wording does not print is no choice among them.
+        let other = Self.merge([Self.outcome(0, obligations: [Self.ob("ORGANIZATIONAL SHARK TANK", "Dec 7 & Dec 9", iso: "2026-12-08")])], text: text)
+        #expect(other.obligations[0].status == .needsReview && other.obligations[0].flags.contains(.dateAmbiguous))
+    }
+
+    @Test func aWeekWithoutItsDayTakesTheModelsDayInsideIt() {
+        let text = "BIO 1 Biology, Fall 2026\nClasses begin August 31, 2026.\nLab report 2 due end of Week 3"
+        let course = CourseFacts(code: "BIO 1", title: "Biology", instructor: nil, term: "Fall 2026", termStart: "2026-08-31", termEnd: nil, room: nil, meetings: [])
+        let friday = Self.merge([Self.outcome(0, course: course, obligations: [Self.ob("Lab report 2", "end of Week 3", iso: "2026-09-18")])], text: text)
+        #expect(Self.day(friday.obligations[0].due) == 18 && friday.obligations[0].status == .ready)
+        let guessed = Self.merge([Self.outcome(0, course: course, obligations: [Self.ob("Lab report 2", "end of Week 3")])], text: text)
+        #expect(Self.day(guessed.obligations[0].due) == 14 && guessed.obligations[0].status == .needsReview && guessed.obligations[0].flags.contains(.dateAmbiguous))
+    }
+
+    @Test func undatedItemsAreOneOnlyByName() {
+        let text = "PSYC 210 Research Methods, Fall 2026\nFinal Project: date TBD\nFinal Project Presentation: date TBD\nTerm Paper Proposal: TBA\nTerm Paper: TBA"
+        let r = Self.merge([Self.outcome(0, obligations: [Self.ob("Final Project", "date TBD"), Self.ob("Final Project Presentation", "date TBD"),
+                                                          Self.ob("Term Paper Proposal", "TBA"), Self.ob("Term Paper", "TBA")]),
+                            Self.outcome(1, obligations: [Self.ob("Final Project", "date TBD")])], text: text)
+        #expect(r.obligations.map(\.title).sorted() == ["Final Project", "Final Project Presentation", "Term Paper", "Term Paper Proposal"])
+        #expect(r.obligations.allSatisfy { $0.status == .awaitingDate } && r.warnings.contains("1 duplicate obligation(s) merged"))
+    }
+
+    @Test func aDocumentThatWritesDayFirstIsReadDayFirst() {
+        let text = "Quiz 1 due 13/9\nQuiz 2 due 4/10\nQuiz 3 due 18/10"
+        let r = Self.merge([Self.outcome(0, obligations: [Self.ob("Quiz 1", "13/9", iso: "2026-09-13"), Self.ob("Quiz 2", "4/10", iso: "2026-10-04")])], text: text)
+        #expect(r.obligations.map { Self.options.calendar.dateComponents([.month, .day], from: $0.due!) } == [DateComponents(month: 9, day: 13), DateComponents(month: 10, day: 4)])
+        #expect(r.obligations.allSatisfy { $0.status == .ready && $0.flags.isEmpty })
+        // The same digits in a document that proves nothing are month first.
+        let us = Self.merge([Self.outcome(0, obligations: [Self.ob("HW 3", "9/4", iso: "2026-09-04")])], text: "HW 3 due 9/4\nHW 4 due 9/23")
+        #expect(Self.day(us.obligations[0].due) == 4 && us.obligations[0].status == .ready)
+    }
+
+    @Test func policiesPastTheCapsAreCounted() {
+        let sentences = (1...4).map { "Late work rule \($0): late homework loses \($0 * 10)% per day." }
+        let r = Self.merge([Self.outcome(0, policies: sentences.map { PolicyFacts(kind: "late_work", text: $0) })], text: sentences.joined(separator: "\n"))
+        #expect(r.policies.count == 3 && r.warnings.contains { $0.hasPrefix("1 policy sentence(s) left out") })
     }
 
     @Test func rollingContextCarriesCourseAndComponents() {

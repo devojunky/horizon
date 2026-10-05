@@ -23,7 +23,6 @@ struct CourseEditor: View {
     @State private var components: [ComponentRow] = []
     @State private var breaks: [BreakRow] = []
     @State private var baseline: Fields?
-    @State private var confirmingDiscard = false
 
     struct MeetingRow: Identifiable, Equatable { let id = UUID(); var weekday = 2; var start = ClockText.time(9, 30); var end = ClockText.time(10, 45) }
     struct ComponentRow: Identifiable, Equatable { let id = UUID(); var name = ""; var weight: Double?; var count: Int?; var cadence: Cadence?; var dropLowest: Int?; var platform: Platform? }
@@ -43,11 +42,11 @@ struct CourseEditor: View {
         NavigationStack {
             Form {
                 Section {
-                    LabeledContent("Name") { TextField("Calculus II", text: $title).multilineTextAlignment(.trailing).promptOnly() }
-                    LabeledContent("Code") { TextField("MA-UY 1124", text: $code).multilineTextAlignment(.trailing).promptOnly().autocorrectionDisabled() }
-                    LabeledContent("Term") { TextField("Fall 2026", text: $term).multilineTextAlignment(.trailing).promptOnly() }
-                    LabeledContent("Instructor") { TextField("Name", text: $instructor).multilineTextAlignment(.trailing).promptOnly().textContentType(.name) }
-                    LabeledContent("Room") { TextField("Rogers Hall 204", text: $room).multilineTextAlignment(.trailing).promptOnly() }
+                    FieldRow(label: "Name", prompt: "Calculus II", text: $title)
+                    FieldRow(label: "Code", prompt: "MA-UY 1124", text: $code).autocorrectionDisabled()
+                    FieldRow(label: "Term", prompt: "Fall 2026", text: $term)
+                    FieldRow(label: "Instructor", prompt: "Name", text: $instructor).textContentType(.name)
+                    FieldRow(label: "Room", prompt: "Rogers Hall 204", text: $room)
                 } footer: {
                     Text("The name is what Horizon shows for the course and adds to each reminder.")
                 }
@@ -60,7 +59,7 @@ struct CourseEditor: View {
                 } footer: {
                     Text("Term dates set how far the Horizon strip runs and when weekly work is expected.")
                 }
-                Section("Meetings") {
+                Section {
                     ForEach($meetings) { $meeting in
                         HStack(spacing: 8) {
                             Picker("Day", selection: $meeting.weekday) {
@@ -75,7 +74,7 @@ struct CourseEditor: View {
                     }
                     .onDelete { meetings.remove(atOffsets: $0) }
                     Button("Add Meeting", systemImage: "plus") { withAnimation { meetings.append(MeetingRow()) } }
-                }
+                } header: { Kicker("Meetings") }
                 Section {
                     ForEach($components) { $component in
                         VStack(alignment: .leading, spacing: 10) {
@@ -94,8 +93,8 @@ struct CourseEditor: View {
                                 }
                                 .labelsHidden()
                                 Spacer(minLength: 0)
-                                LabeledContent("Count") { TextField("–", value: $component.count, format: .number).multilineTextAlignment(.trailing).promptOnly().frame(width: 36).decimalKeyboard() }
-                                LabeledContent("Drops") { TextField("–", value: $component.dropLowest, format: .number).multilineTextAlignment(.trailing).promptOnly().frame(width: 36).decimalKeyboard() }
+                                LabeledContent("Count") { TextField("–", value: $component.count, format: .number).multilineTextAlignment(.trailing).promptOnly().frame(width: 36).numberKeyboard() }
+                                LabeledContent("Drops") { TextField("–", value: $component.dropLowest, format: .number).multilineTextAlignment(.trailing).promptOnly().frame(width: 36).numberKeyboard() }
                             }
                             .font(.subheadline)
                             Picker("Where", selection: $component.platform) {   // the site its work lives on, for Coverage's "never read" line
@@ -111,7 +110,7 @@ struct CourseEditor: View {
                     .onDelete { components.remove(atOffsets: $0) }
                     Button("Add Component", systemImage: "plus") { withAnimation { components.append(ComponentRow()) } }
                 } header: {
-                    Text("Grade")
+                    Kicker("Grade")
                 } footer: {
                     let total = components.compactMap(\.weight).reduce(0, +)
                     let overflow = total > 100.5 ? "The weights add up to \(total.formatted(.number.precision(.fractionLength(0...1))))%, more than a whole grade. " : ""
@@ -128,7 +127,7 @@ struct CourseEditor: View {
                     .onDelete { breaks.remove(atOffsets: $0) }
                     Button("Add Break", systemImage: "plus") { withAnimation { breaks.append(BreakRow()) } }
                 } header: {
-                    Text("No class")
+                    Kicker("No class")
                 }
                 if let course {
                     Section {
@@ -140,11 +139,8 @@ struct CourseEditor: View {
             }
             .paper()
             .editorChrome(title: course == nil ? "New Course" : "Edit Course", confirm: course == nil ? "Add" : "Save", disabled: !named || !(isDirty || course == nil),
-                          cancel: { if isDirty { confirmingDiscard = true } else { dismiss() } }, action: save)
+                          dirty: isDirty, cancel: { dismiss() }, action: save)
             .interactiveDismissDisabled(isDirty)
-            .confirmationDialog("Discard changes?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
-                Button("Discard Changes", role: .destructive) { dismiss() }
-            }
             .onAppear(perform: load)
         }
         #if os(macOS)
@@ -185,10 +181,9 @@ struct CourseEditor: View {
         if table != (course?.gradeComponents ?? []) { edits.gradeComponents = table }
         let spans = breaks.map { ClosedDateRange(start: calendar.startOfDay(for: $0.start), end: calendar.startOfDay(for: $0.end), label: clean($0.label).isEmpty ? nil : clean($0.label)) }
         if spans != (course?.noClassDates ?? []) { edits.noClassDates = spans }
-        Task {
-            if let course { await model.updateCourse(course.id, edits: edits) } else { await model.addCourse(edits) }
-            dismiss()
-        }
+        let (model, id) = (model, course?.id)   // read from the sheet before it goes
+        dismiss()   // at once; the save and the sync after it go on without holding the sheet up
+        Task { if let id { await model.updateCourse(id, edits: edits) } else { await model.addCourse(edits) } }
     }
 
 }
@@ -212,6 +207,14 @@ private extension View {
     func decimalKeyboard() -> some View {
         #if os(iOS)
         keyboardType(.decimalPad)
+        #else
+        self
+        #endif
+    }
+    /// Whole numbers (a count): the keypad with no decimal point.
+    func numberKeyboard() -> some View {
+        #if os(iOS)
+        keyboardType(.numberPad)
         #else
         self
         #endif

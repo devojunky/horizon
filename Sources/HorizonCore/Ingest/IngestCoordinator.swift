@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 import IngestKit
 
 /// Progress of one document's read, for live UI.
@@ -24,6 +25,8 @@ public actor IngestCoordinator {
     private let parse: Parser
     private let name: Namer
     private let progress: @Sendable (DocumentProgress) -> Void
+    /// The read under way: its document, and the task reading it (stopped when the user deletes the document).
+    private var reading: (id: UUID, task: Task<IngestResult, any Error>)?
 
     public struct Report: Sendable, Equatable {
         public var document: DocumentSnapshot
@@ -40,11 +43,35 @@ public actor IngestCoordinator {
     }
 
     /// Copies the file into the App Group container and records it. The same file shared twice is recorded once;
-    /// a file that failed before is queued again.
+    /// a file that failed before is queued again. A file of a kind Horizon cannot read is refused before it is copied:
+    /// recorded as failed for good, with what to do instead.
     public func enqueue(fileURL: URL, filename: String? = nil, courseID: UUID? = nil) async throws -> DocumentSnapshot {
+        let name = filename ?? fileURL.lastPathComponent
+        let target = fileURL.resolvingSymlinksInPath()   // a link is judged, like it is stored, by its file
+        if let refusal = Self.refusal(for: target) {
+            let kind = target.pathExtension.isEmpty ? "bin" : target.pathExtension.lowercased()
+            return try await store.enqueueDocument(filename: name, sha256: try DocumentStorage.sha256(fileAt: target), kind: kind, deviceName: deviceName,
+                                                   courseID: courseID, refusal: Self.explain(refusal, kind: kind))
+        }
         let stored = try storage.store(fileURL)
-        return try await store.enqueueDocument(filename: filename ?? fileURL.lastPathComponent, sha256: stored.sha256,
+        return try await store.enqueueDocument(filename: name, sha256: stored.sha256,
                                                kind: stored.url.pathExtension.lowercased(), deviceName: deviceName, courseID: courseID)
+    }
+
+    /// Why a file cannot be read, from its kind alone, as the reader would find (`DocumentNormalizer.normalize`: a PDF, a
+    /// picture, a Word document on a Mac, text, or a file of no known kind tried as text); nil for a kind it reads.
+    /// Keep the two in step.
+    static func refusal(for url: URL) -> IngestError? {
+        if url.pathExtension.lowercased() == "docx" {
+            #if canImport(AppKit)
+            return nil
+            #else
+            return .unsupportedFile("docx (macOS only)")
+            #endif
+        }
+        let type = UTType(filenameExtension: url.pathExtension) ?? .data
+        if type.conforms(to: .pdf) || type.conforms(to: .image) || type.conforms(to: .text) || type == .data { return nil }
+        return .unsupportedFile(url.pathExtension.isEmpty ? "unknown" : url.pathExtension)
     }
 
     /// A failure in the user's terms: no stored file names, no framework names.
@@ -52,6 +79,7 @@ public actor IngestCoordinator {
         switch error {
         case IngestError.unreadable: "The file could not be opened as a \(kind.uppercased()) document."
         case IngestError.emptyDocument: "The document has no readable text or images."
+        case IngestError.unsupportedFile(let ext) where ext.hasPrefix("docx"): "Word documents can only be read on a Mac. Save it as a PDF and add that instead."
         case IngestError.unsupportedFile(let ext): "Horizon cannot read .\(ext) files."
         case IngestError.extractionFailed: "The model found nothing in it to read."
         case IngestError.modelUnavailable(let why): "The device model is unavailable: \(why)"
@@ -59,10 +87,30 @@ public actor IngestCoordinator {
         }
     }
 
+    /// A failure that is the file's own (unreadable, empty, a kind Horizon cannot read): reading it again can only fail
+    /// the same way, so it is recorded as permanent and offered no Retry.
+    static func isPermanent(_ error: any Error) -> Bool {
+        switch error {
+        case IngestError.unreadable, IngestError.emptyDocument, IngestError.unsupportedFile: true
+        default: false
+        }
+    }
+
     // MARK: Recently Deleted (the store decides; this removes the files once something is gone for good)
 
-    public func deleteCourse(id: UUID) async throws { try await store.deleteCourse(id: id) }
-    public func deleteDocument(id: UUID) async throws { try await store.deleteDocument(id: id) }
+    /// The document being read now, if any.
+    public var documentBeingRead: UUID? { reading?.id }
+
+    /// To the bin. A read under way of a document that went with it (the document itself, or one filed under the
+    /// course) stops: what was read so far stays in its checkpoint, and the drain goes on to the next document.
+    public func deleteCourse(id: UUID) async throws { try await store.deleteCourse(id: id); await stopReadIfBinned() }
+    public func deleteDocument(id: UUID) async throws { try await store.deleteDocument(id: id); await stopReadIfBinned() }
+
+    private func stopReadIfBinned() async {
+        guard let current = reading, (try? await store.document(id: current.id))?.deletedAt != nil else { return }
+        current.task.cancel()
+    }
+
     public func restoreCourse(id: UUID) async throws { try await store.restoreCourse(id: id) }
     public func restoreDocument(id: UUID) async throws { try await store.restoreDocument(id: id) }
 
@@ -110,8 +158,10 @@ public actor IngestCoordinator {
     public func drain() async -> [Report] {
         var reports: [Report] = []
         guard let queued = try? await store.queuedDocuments() else { return reports }
-        for doc in queued {
+        documents: for listed in queued {
             if Task.isCancelled { break }   // background time ran out; the rest stays queued
+            // As it is now: the queue was listed before the reads ahead of it, and the user may have deleted it since.
+            guard let doc = try? await store.document(id: listed.id), doc.deletedAt == nil, doc.status == .queued || doc.status == .awaitingCloudParse else { continue }
             let url = storage.url(sha256: doc.sha256, extension: doc.kind)
             guard storage.exists(sha256: doc.sha256, extension: doc.kind) else { continue }   // ingested on another device
             var perDocument = options
@@ -130,29 +180,46 @@ public actor IngestCoordinator {
             let keeper = store
             perDocument.checkpoint = { checkpoint in if let data = try? checkpoint.encoded() { try? await keeper.saveCheckpoint(id: id, data: data) } }
             do {
-                let result = try await parse(url, perDocument)
+                let result = try await read(url, perDocument, id: doc.id)
                 let summary = try await store.ingest(result, documentID: doc.id)
-                reports.append(Report(document: doc, summary: summary, failure: nil))
-            } catch IngestError.modelNotReady(let why) {
-                try? await store.markDocument(id: doc.id, status: .queued, failure: "Waiting for the on-device model: \(why)")
-                reports.append(Report(document: doc, summary: nil, failure: "Waiting for the on-device model: \(why)"))
-                break   // nothing else will parse until the model is ready
-            } catch IngestError.claudeUnavailable(let why) {
-                // Claude could not read it now: it waits (a processing task with the network, the next drain, or the user's
-                // word to read it on the device). Never read on the device unasked.
-                try? await store.markDocument(id: doc.id, status: .awaitingCloudParse, failure: why)
-                reports.append(Report(document: doc, summary: nil, failure: "Waiting for Claude: \(why)"))
-                if why == "no API key" || why.hasPrefix("no connection") || why.contains("rejected") { break }   // the same will stop every document behind it
-            } catch is CancellationError {
-                try? await store.markDocument(id: doc.id, status: .queued, failure: nil)   // paused: the checkpoint holds the parts read so far; it goes on next time
-                break
+                if !summary.binned { reports.append(Report(document: doc, summary: summary, failure: nil)) }   // deleted while read: it waits in the bin
             } catch {
-                let failure = Self.explain(error, kind: doc.kind)
-                try? await store.markDocument(id: doc.id, status: .failed, failure: failure)
-                reports.append(Report(document: doc, summary: nil, failure: failure))
+                // Deleted while it was read (its read stopped, or failed on the way): it waits in the bin with what was
+                // read, and the next document is read.
+                if !Task.isCancelled, (try? await store.document(id: doc.id))?.deletedAt != nil { continue }
+                switch error {
+                case IngestError.modelNotReady(let why):
+                    try? await store.markDocument(id: doc.id, status: .queued, failure: "Waiting for the on-device model: \(why)")
+                    reports.append(Report(document: doc, summary: nil, failure: "Waiting for the on-device model: \(why)"))
+                    break documents   // nothing else will parse until the model is ready
+                case IngestError.claudeUnavailable(let why):
+                    // Claude could not read it now: it waits (a processing task with the network, the next drain, or the
+                    // user's word to read it on the device). Never read on the device unasked.
+                    try? await store.markDocument(id: doc.id, status: .awaitingCloudParse, failure: why)
+                    reports.append(Report(document: doc, summary: nil, failure: "Waiting for Claude: \(why)"))
+                    // The same will stop every document behind it: no key, a key refused, no connection, no credit, a model the key may not use.
+                    if why == "no API key" || why.hasPrefix("no connection") || why.contains("rejected") || why.contains("out of credit") || why.contains("does not let this key") { break documents }
+                case is CancellationError, _ where Task.isCancelled:
+                    try? await store.markDocument(id: doc.id, status: .queued, failure: nil)   // paused: the checkpoint holds the parts read so far; it goes on next time
+                    break documents
+                default:
+                    let failure = Self.explain(error, kind: doc.kind)
+                    try? await store.markDocument(id: doc.id, status: .failed, failure: failure, permanent: Self.isPermanent(error))
+                    reports.append(Report(document: doc, summary: nil, failure: failure))
+                }
             }
         }
         if let sync, !reports.isEmpty { _ = try? await sync.sync() }
         return reports
+    }
+
+    /// One document's read, as a task of its own so that deleting the document can stop it (`stopReadIfBinned`); the
+    /// drain being cancelled (background time running out) stops it too.
+    private func read(_ url: URL, _ options: IngestOptions, id: UUID) async throws -> IngestResult {
+        let parse = parse
+        let task = Task { try await parse(url, options) }
+        reading = (id, task)
+        defer { reading = nil }
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
 }

@@ -3,8 +3,8 @@ import SwiftData
 import HorizonCore
 
 extension Coverage {
-    /// Every course's story, in the order courses are shown in everywhere (Coverage, and the Mac's sidebar): the
-    /// user's own first; courses without one follow, most suspicious first.
+    /// Every course's story, in Coverage's order: the user's own first; courses without one follow, most suspicious
+    /// first. (The Mac's sidebar keeps the user's order, then names: suspicion moves as items are checked off.)
     @MainActor static func stories(courses: [Course], obligations: [Obligation], documents: [SourceDocument]) -> [CourseCoverage] {
         let live = obligations.map(ObligationSnapshot.init)
         let docs = documents.map(DocumentSnapshot.init)
@@ -32,6 +32,7 @@ struct CoverageList: View {
     /// Pushes a course page (the home stack's guarded push).
     var open: (Route) -> Void = { _ in }
     @Environment(AppModel.self) private var model
+    @Environment(\.editMode) private var editMode
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }) private var courses: [Course]
     @Query(filter: #Predicate<Obligation> { $0.deletedAt == nil }) private var obligations: [Obligation]
     @Query(filter: #Predicate<SourceDocument> { $0.deletedAt == nil }) private var documents: [SourceDocument]
@@ -48,14 +49,25 @@ struct CoverageList: View {
             .pageRow(top: 8, bottom: 8)
         }
         ForEach(stories) { story in
-            Button { open(.course(story.course.id)) } label: {
-                CoverageStory(story: story, disclosure: true).contentShape(Rectangle())
+            if editMode?.wrappedValue.isEditing == true {
+                // Editing the courses (order, delete): each one by its code and name, short enough to drag past the rest.
+                VStack(alignment: .leading, spacing: 2) {
+                    if !story.course.title.isEmpty, !story.course.code.isEmpty { Kicker(story.course.code) }
+                    Text(story.displayName).font(.system(.title3, design: .serif, weight: .semibold))
+                }
+                .listRowSeparator(.visible)
+                .onPaper()
+                .pageRow(top: 10, bottom: 10)
+            } else {
+                Button { open(.course(story.course.id)) } label: {
+                    CoverageStory(story: story, disclosure: true).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Opens the course")
+                .listRowSeparator(.visible)
+                .onPaper()
+                .pageRow(top: 18, bottom: 18)
             }
-            .buttonStyle(.plain)
-            .accessibilityHint("Opens the course")
-            .listRowSeparator(.visible)
-            .onPaper()
-            .pageRow(top: 18, bottom: 18)
         }
         .onMove { from, to in
             var order = stories.map(\.course.id)

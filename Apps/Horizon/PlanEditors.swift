@@ -15,7 +15,6 @@ struct PlanBlockEditor: View {
     @State private var kind: PlanBlock.Kind = .work
     @State private var reason = ""
     @State private var baseline: Fields?
-    @State private var confirmingDiscard = false
 
     private struct Fields: Equatable { var title: String; var start: Date; var end: Date; var kind: PlanBlock.Kind; var reason: String }
     private var fields: Fields { Fields(title: title, start: start, end: end, kind: kind, reason: reason) }
@@ -69,8 +68,10 @@ struct PlanBlockEditor: View {
                 if let block {
                     Section {
                         Button(block.isDone ? "Mark Not Done" : "Mark Done", systemImage: block.isDone ? "arrow.uturn.backward" : "checkmark") { model.markBlock(block.id, done: !block.isDone); dismiss() }
-                        Button(block.isSkipped ? (block.wasLeftUnfinished ? "Undo Not Finished" : "Undo Skip") : Date() >= block.end ? "Not Finished" : "Skip Block",
-                               systemImage: block.isSkipped ? "arrow.uturn.backward" : "forward.end") { model.skipBlock(block.id, skipped: !block.isSkipped); dismiss() }
+                        if block.isSkipped || Date() < block.end || block.asksWhenOver {   // a meal or an event that is over was not "not finished"
+                            Button(block.isSkipped ? (block.wasLeftUnfinished ? "Undo Not Finished" : "Undo Skip") : Date() >= block.end ? "Not Finished" : "Skip Block",
+                                   systemImage: block.isSkipped ? "arrow.uturn.backward" : "forward.end") { model.skipBlock(block.id, skipped: !block.isSkipped); dismiss() }
+                        }
                         Button("Delete Block", role: .destructive) { model.deleteBlock(block.id); dismiss() }
                     }
                 }
@@ -78,11 +79,8 @@ struct PlanBlockEditor: View {
             .paper()
             .animation(.default, value: span == nil)   // "It ends before it starts." comes and goes as the times change
             .editorChrome(title: block == nil ? "New Block" : "Edit Block", confirm: block == nil ? "Add" : "Save", disabled: !isValid || !isDirty,
-                          cancel: { if isDirty { confirmingDiscard = true } else { dismiss() } }, action: save)
+                          dirty: isDirty, cancel: { dismiss() }, action: save)
             .interactiveDismissDisabled(isDirty)
-            .confirmationDialog("Discard changes?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
-                Button("Discard Changes", role: .destructive) { dismiss() }
-            }
             .onAppear(perform: load)
         }
         #if os(macOS)
@@ -98,9 +96,10 @@ struct PlanBlockEditor: View {
         }
         // A new block starts when the current one ends, or now, on a five-minute mark, and runs 50 minutes.
         let now = Date()
-        let after = model.plan?.blocks.first { $0.start <= now && $0.end > now }?.end ?? now
-        let minute = Calendar.current.component(.minute, from: after)
-        start = Calendar.current.date(byAdding: .minute, value: (5 - minute % 5) % 5, to: after).map { Calendar.current.date(bySetting: .second, value: 0, of: $0) ?? $0 } ?? after
+        let after = model.plan?.blocks.first { $0.isOpen && $0.start <= now && $0.end > now }?.end ?? now   // a block already done or set aside is not in the way
+        let whole = Calendar.current.dateInterval(of: .minute, for: after)?.start ?? after   // seconds dropped first: setting them afterwards searched forward, to :06
+        let minute = Calendar.current.component(.minute, from: whole)
+        start = Calendar.current.date(byAdding: .minute, value: (5 - minute % 5) % 5, to: whole) ?? whole
         end = start.addingTimeInterval(50 * 60)
     }
 
@@ -125,7 +124,7 @@ struct PlannerNotesEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
     @State private var hours = PlanHours()
-    @State private var confirmingDiscard = false
+    @ScaledMetric(relativeTo: .body) private var boxHeight: CGFloat = 160
     @FocusState private var focused: Bool
     private let limit = 1500
     private var isDirty: Bool { text != model.planInstructions || hours != model.usualPlanHours }
@@ -135,11 +134,11 @@ struct PlannerNotesEditor: View {
             Form {
                 Section {
                     TextEditor(text: $text)
-                        .frame(minHeight: 160)
+                        .frame(minHeight: boxHeight)   // grows with the text size, so the example is never cut
                         .focused($focused)
                         .overlay(alignment: .topLeading) {
                             if text.isEmpty {
-                                Text("No work after 9 pm. Lunch at 12:30. The essay before anything else.")
+                                Text("No work after 9 PM. Lunch at 12:30. The essay before anything else.")
                                     .foregroundStyle(.tertiary).padding(.top, 8).padding(.leading, 5).allowsHitTesting(false)
                             }
                         }
@@ -164,16 +163,13 @@ struct PlannerNotesEditor: View {
             .paper()
             .animation(.default, value: text.count > limit - 300)   // the count comes in near the limit, not in one frame
             .editorChrome(title: "Tell the Planner", confirm: "Save", disabled: !isDirty,
-                          cancel: { if isDirty { confirmingDiscard = true } else { dismiss() } },
+                          dirty: isDirty, cancel: { dismiss() },
                           action: { model.planInstructions = text.trimmingCharacters(in: .whitespacesAndNewlines); model.usualPlanHours = hours; dismiss() })
             .interactiveDismissDisabled(isDirty)
-            .confirmationDialog("Discard changes?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
-                Button("Discard Changes", role: .destructive) { dismiss() }
-            }
             .onAppear { text = model.planInstructions; hours = model.usualPlanHours; focused = text.isEmpty }
         }
         #if os(macOS)
-        .frame(minWidth: 480, idealWidth: 540, maxWidth: 680, minHeight: 360, idealHeight: 420, maxHeight: 600)
+        .frame(minWidth: 480, idealWidth: 540, maxWidth: 680, minHeight: 420, idealHeight: 560, maxHeight: 680)   // "Your day" in view under the instructions, not below the fold
         #endif
     }
 }

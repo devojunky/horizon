@@ -13,7 +13,6 @@ struct CourseView: View {
     let course: Course
     @State private var editing: Obligation?
     @State private var editingCourse = false
-    @State private var selected: UUID?
     @State private var preview: URL?     // the document being looked at, in Quick Look
     @State private var lingering = Lingering()
     @Environment(\.dismiss) private var dismiss
@@ -39,14 +38,17 @@ struct CourseView: View {
     private var done: [Obligation] { obligations.filter { $0.completedAt != nil && !lingering.contains($0.id) } }
 
     var body: some View {
-        List(selection: $selected) {
+        List {
+            // The masthead: the course's name whole (a navigation bar's title is cut at the bar's width), then what else
+            // the document said, each part kept whole on its line.
             let detail = [course.code == course.displayName ? nil : course.code, course.term, course.instructor].compactMap { $0 }.filter { !$0.isEmpty }
-            if !detail.isEmpty {   // the title names the course; this line carries what else the document said
-                Text(detail.joined(separator: " · ")).foregroundStyle(.secondary)
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 8, trailing: 20))
-                    .onPaper()
+            VStack(alignment: .leading, spacing: 6) {
+                Text(course.displayName).display().fixedSize(horizontal: false, vertical: true).accessibilityAddTraits(.isHeader)
+                if !detail.isEmpty { Text(detail.map(DocumentsView.figure).joined(separator: DocumentsView.separator)).foregroundStyle(.secondary) }
             }
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 8, trailing: 20))
+            .onPaper()
             if !course.gradeComponents.isEmpty {
                 PageSection("Grade") {
                     ForEach(course.gradeComponents, id: \.name) { component in
@@ -57,7 +59,7 @@ struct CourseView: View {
             }
             PageSection("Items") {
                 ForEach(toDo) { row($0) }
-                if obligations.isEmpty { Text("No items yet. Add a document, or an item by hand from the Coverage menu.").foregroundStyle(.secondary) }
+                if obligations.isEmpty { Text("No items yet. Add a document with the button above, or an item by hand from Coverage's More menu.").foregroundStyle(.secondary) }
                 else if toDo.isEmpty { Text("Everything on file is done.").foregroundStyle(.secondary) }
             }
             .onPaper()
@@ -65,7 +67,10 @@ struct CourseView: View {
                 PageSection("Policies") {
                     ForEach(policies) { policy in
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(label(policy.kind)).font(.caption).foregroundStyle(.secondary)
+                            // The caption only where it adds something: not "Policy", and not over a text that opens with it.
+                            if policy.kind != .other, !policy.text.lowercased().hasPrefix(label(policy.kind).lowercased()) {
+                                Text(label(policy.kind)).font(.caption).foregroundStyle(.secondary)
+                            }
                             Text(policy.text)
                         }
                     }
@@ -75,7 +80,7 @@ struct CourseView: View {
             if !documents.isEmpty {
                 PageSection("Documents") {
                     ForEach(documents) { doc in
-                        Button { preview = model.previewFile(for: doc) } label: { CourseDocumentRow(document: doc, onDevice: model.hasFile(doc)) }
+                        Button { preview = model.previewFile(for: doc) } label: { CourseDocumentRow(document: doc, items: items.count { $0.sourceDocument?.id == doc.id }, onDevice: model.hasFile(doc)) }
                             .buttonStyle(.plain)
                             .disabled(!model.hasFile(doc))
                             .contextMenu {
@@ -98,7 +103,9 @@ struct CourseView: View {
         .paper()
         .animation(.default, value: toDo.map(\.id))
         .animation(.default, value: documents.map(\.id))   // a document deleted here leaves its row animated
-        .navigationTitle(course.displayName)
+        .navigationTitle(course.displayName)   // for the system and VoiceOver; the masthead shows it
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(removing: .title)             // a second, cut-off copy of the masthead in the bar would say it twice
         .toolbar {
             ToolbarItem(placement: .primaryAction) { ImportMenu(courseID: course.id) }
             ToolbarItem(placement: .primaryAction) { Button("Edit") { editingCourse = true } }
@@ -124,6 +131,7 @@ struct CourseView: View {
         }
         return Button { editing = item } label: { ObligationRow(obligation: item, showCourse: false, mark: mark) }
             .buttonStyle(.plain)
+            .opacity(lingering.isLeaving(item.id) ? 0 : 1)
             .obligationActions(done: item.completedAt != nil, mark: mark, edit: { editing = item }, delete: { Task { await model.discard(item.id) } })
             .accessibilityHint("Opens the editor")
     }
@@ -138,6 +146,8 @@ struct CourseView: View {
 /// queued, waiting, failed). Pressing it opens the file itself.
 struct CourseDocumentRow: View {
     let document: SourceDocument
+    /// What came from it, counted from the page's query (a relationship read would not redraw when an item goes).
+    let items: Int
     /// The file is on this device; a document read on another is a record only.
     let onDevice: Bool
     /// A chevron says pressing it opens the file (a phone's page); a Mac's column says so on hover instead.
@@ -157,7 +167,6 @@ struct CourseDocumentRow: View {
     }
 
     private var detail: String {
-        let items = (document.obligations ?? []).filter { $0.deletedAt == nil }.count
         var parts: [String]
         switch document.status {
         case .parsed:

@@ -40,7 +40,8 @@ enum PartialJSON {
                     skipSpace()
                     guard i < chars.count else { snapshot.arrays[key] = elements; return snapshot }
                     if chars[i] == UInt8(ascii: "]") { i += 1; break }
-                    guard let end = scanValue(chars, from: i) else { snapshot.arrays[key] = elements; return snapshot }
+                    // A value that is not there (a stray "}" where an element should be) stops the reading: it never moves on.
+                    guard let end = scanValue(chars, from: i), end > i else { snapshot.arrays[key] = elements; return snapshot }
                     elements.append(String(decoding: chars[i..<end], as: UTF8.self))
                     i = end
                     skipSpace()
@@ -146,13 +147,23 @@ enum ExtractionJSON {
     /// Where the reply stands: the key being written names the stage, the finished elements the count, the outline the total.
     static func progress(_ text: String) -> ReadProgress { progress(PartialJSON.snapshot(text)) }
 
-    /// The names the outline has listed so far while it is still being written: the strings inside its titles array.
+    /// The names the outline has listed so far while it is still being written: the whole strings inside its titles
+    /// array, read as strings (a name may hold "]" or an escaped quote).
     static func namesSoFar(_ snapshot: PartialJSON.Snapshot) -> Int {
         guard let open = snapshot.open, let start = open.range(of: "\"obligationTitles\"") else { return 0 }
-        let rest = open[start.upperBound...]
-        guard let bracket = rest.firstIndex(of: "["), let closeAt = rest.firstIndex(of: "]") ?? Optional(rest.endIndex) else { return 0 }
-        let inside = rest[rest.index(after: bracket)..<closeAt]
-        return inside.matches(of: /"(?:[^"\\]|\\.)*"/).count
+        let chars = Array(open[start.upperBound...].utf8)
+        guard var i = chars.firstIndex(of: UInt8(ascii: "[")) else { return 0 }
+        i += 1
+        var names = 0
+        while i < chars.count, chars[i] != UInt8(ascii: "]") {
+            if chars[i] == UInt8(ascii: "\"") {
+                guard let end = PartialJSON.scanString(chars, from: i) else { break }   // a name still being written
+                names += 1; i = end
+            } else {
+                i += 1
+            }
+        }
+        return names
     }
 
     static func progress(_ snapshot: PartialJSON.Snapshot) -> ReadProgress {
@@ -208,14 +219,14 @@ enum ExtractionJSON {
         if let i = value as? Int { return Double(i) }
         return nil
     }
+    /// A whole number, or nil: a figure too large for an Int ("count": 1e300) is no count, never a crash.
     static func integer(_ value: Any?) -> Int? {
         if let i = value as? Int { return i }
-        if let d = value as? Double, d == d.rounded() { return Int(d) }
+        if let d = value as? Double { return Int(exactly: d) }
         return nil
     }
 }
 
-/// The plan's JSON as the draft the planner validates.
 /// What Claude returns for a picture: the page transcribed, then the facts (`PageReading`'s JSON). The facts are a
 /// nested object, so the partial-reply helpers run on the text after its key.
 enum PageReadingJSON {
@@ -244,6 +255,7 @@ enum PageReadingJSON {
     }
 }
 
+/// The plan's JSON as the draft the planner validates.
 enum PlanJSON {
     static func decode(_ text: String) throws -> PlanDraft {
         guard let object = PartialJSON.parse(text) as? [String: Any] else { throw ClaudeError.malformed("the plan is not a JSON object") }

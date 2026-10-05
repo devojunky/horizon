@@ -33,38 +33,71 @@ struct IntakeStatus: View {
     @Environment(\.openURL) private var openURL
     /// Opens Documents, where a failed read can be retried.
     var openDocuments: () -> Void
+    /// Opens the app's settings, where the Claude key is (a key Claude refused is fixed there, not by trying again).
+    var openSettings: () -> Void
     @State private var confirmDevice: SourceDocument?
 
     /// Documents that could not be read, in one line: a failure must not vanish into Documents unannounced.
     var readFailure: String? {
         let failed = documents.filter { $0.status == .failed }
         guard let first = failed.first else { return nil }
-        return failed.count == 1 ? "Could not read \(first.displayName): \(first.failure ?? "") Retry it from Documents." : "\(failed.count) documents could not be read. Retry them from Documents."
+        guard failed.count == 1 else { return "\(failed.count) documents could not be read. See them in Documents." }
+        return "Could not read \(first.displayName): \(first.failure ?? "")" + (first.retryHelps ? " Retry it from Documents." : "")
     }
 
     /// Documents Claude could not read yet, in one line, with the way out: try again, or let the device read one.
     var waitingForClaude: [SourceDocument] { documents.filter { $0.status == .awaitingCloudParse } }
 
+    /// The wait is over the key or the model (none, one Claude refused, a model the key may not use): trying again cannot
+    /// help, Settings can. (Out of credit is the Anthropic Console's to fix, then Try Again.)
+    private func keyProblem(_ document: SourceDocument) -> Bool {
+        guard let failure = document.failure else { return false }
+        return failure == "no API key" || failure.contains("rejected") || failure.contains("does not let this key")
+    }
+
+    #if os(macOS)
+    private static let device = "Mac"   // what the Mac's own pages call it (Documents: "Read on This Mac")
+    #else
+    private static let device = "Device"
+    #endif
+
+    /// What stands on the page until it is dealt with, one at a time, in this order.
+    private enum Notice: Hashable { case waiting, remindersOff, listGone, failed }
+    private var notice: Notice? {
+        if !waitingForClaude.isEmpty { return .waiting }
+        if model.remindersAuthorized == false { return .remindersOff }
+        if model.remindersListGone { return .listGone }
+        if readFailure != nil { return .failed }
+        return nil
+    }
+    /// What just happened (a duplicate shared, a sync's result, an error): a row of its own under any notice, never hidden by it.
+    private var status: String? { model.statusLine ?? model.lastError }
+
     var body: some View {
         if let reading = model.reading {
             ReadingSection(reading: reading, cancel: { model.cancelReading() })
-        } else if let first = waitingForClaude.first {
+        } else if notice != nil || status != nil {
             Section {
-                VStack(alignment: .leading, spacing: 10) {
-                    let count = waitingForClaude.count
-                    Label(count == 1 ? "\(first.displayName) is waiting for Claude: \(first.failure ?? "it could not be reached")." : "\(count) documents are waiting for Claude: \(first.failure ?? "it could not be reached").",
-                          systemImage: "cloud").foregroundStyle(.secondary)
-                    HStack(spacing: 10) {
-                        Button("Try Again") { Task { await model.drainAndSync() } }.buttonStyle(.bordered).controlSize(.small)
-                        Button(count == 1 ? "Read on This Device…" : "Read Them on This Device…") { confirmDevice = first }.buttonStyle(.bordered).controlSize(.small)
-                    }
+                if let notice {
+                    // One place: a notice giving way to another fades through it, never over it.
+                    ZStack(alignment: .topLeading) { noticeView(notice).id(notice).transition(.fadeThrough) }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .macRow(top: 16, bottom: 4)
                 }
-                .macRow(top: 16, bottom: 4)
+                if let status {
+                    Label { Text(status).id(status).transition(.fadeThrough) } icon: {
+                        if model.lastError != nil, model.statusLine == nil { Image(systemName: "exclamationmark.triangle") }
+                        else if model.busy { ProgressView().controlSize(.small) }   // syncing: something is happening
+                        else { Image(systemName: "arrow.triangle.2.circlepath") }
+                    }
+                    .foregroundStyle(model.lastError != nil && model.statusLine == nil ? Design.accentInk : .secondary)
+                    .macRow(top: notice == nil ? 16 : 6, bottom: 4)
+                }
             }
             .listRowSeparator(.hidden)
             .onPaper()
-            .confirmationDialog("Read on this device instead?", isPresented: Binding(get: { confirmDevice != nil }, set: { if !$0 { confirmDevice = nil } }), titleVisibility: .visible) {
-                Button(waitingForClaude.count == 1 ? "Read on This Device" : "Read All on This Device") {
+            .confirmationDialog("Read on this \(Self.device.lowercased()) instead?", isPresented: Binding(get: { confirmDevice != nil }, set: { if !$0 { confirmDevice = nil } }), titleVisibility: .visible) {
+                Button(waitingForClaude.count == 1 ? "Read on This \(Self.device)" : "Read All on This \(Self.device)") {
                     let ids = waitingForClaude.map(\.id)
                     Task { for id in ids { await model.readOnDevice(documentID: id) } }
                 }
@@ -72,35 +105,46 @@ struct IntakeStatus: View {
             } message: {
                 Text("The device model is less sure of tables and pictures than Claude, and it takes minutes on a long document. Nothing is sent to Anthropic.")
             }
-        } else if model.remindersAuthorized == false {
-            Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("Reminders access is off, so deadlines stay in Horizon and never reach your lists.", systemImage: "exclamationmark.triangle").foregroundStyle(Design.accent)
-                    #if os(iOS)
-                    Button("Open Settings") { if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) } }.buttonStyle(.bordered).controlSize(.small)
-                    #else
-                    Button("Open System Settings") { if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders") { openURL(url) } }.controlSize(.small)
-                    #endif
+        }
+    }
+
+    @ViewBuilder private func noticeView(_ notice: Notice) -> some View {
+        switch notice {
+        case .waiting:
+            if let first = waitingForClaude.first {
+                VStack(alignment: .leading, spacing: 10) {
+                    let count = waitingForClaude.count
+                    Label(count == 1 ? "\(first.displayName.sentenceStart) is waiting for Claude: \(first.failure ?? "it could not be reached")." : "\(count) documents are waiting for Claude: \(first.failure ?? "it could not be reached").",
+                          systemImage: "cloud").foregroundStyle(.secondary)
+                    HStack(spacing: 10) {
+                        if keyProblem(first) {
+                            Button("Check Key…", action: openSettings).buttonStyle(.bordered).controlSize(.small).reachable()
+                        } else {
+                            Button("Try Again") { Task { await model.drainAndSync() } }.buttonStyle(.bordered).controlSize(.small).reachable()
+                        }
+                        Button(count == 1 ? "Read on This \(Self.device)…" : "Read Them on This \(Self.device)…") { confirmDevice = first }.buttonStyle(.bordered).controlSize(.small).reachable()
+                    }
                 }
-                .macRow(top: 16, bottom: 4)
             }
-            .listRowSeparator(.hidden)
-            .onPaper()
-        } else if model.remindersListGone {
-            Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("The Horizon list is gone from Reminders, so deadlines stay in Horizon until it is back.", systemImage: "exclamationmark.triangle").foregroundStyle(Design.accent)
-                    Button("Recreate List") { Task { await model.recreateRemindersList() } }.buttonStyle(.bordered).controlSize(.small)
-                }
-                .macRow(top: 16, bottom: 4)
+        case .remindersOff:
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Reminders access is off, so deadlines stay in Horizon and never reach your lists.", systemImage: "exclamationmark.triangle").foregroundStyle(Design.accentInk)
+                #if os(iOS)
+                Button("Open Settings") { if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) } }.buttonStyle(.bordered).controlSize(.small).reachable()
+                #else
+                Button("Open System Settings") { if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders") { openURL(url) } }.controlSize(.small)
+                #endif
             }
-            .listRowSeparator(.hidden)
-            .onPaper()
-        } else if let failure = readFailure {
-            Section {
+        case .listGone:
+            VStack(alignment: .leading, spacing: 8) {
+                Label("The Horizon list is gone from Reminders, so deadlines stay in Horizon until it is back.", systemImage: "exclamationmark.triangle").foregroundStyle(Design.accentInk)
+                Button("Recreate List") { Task { await model.recreateRemindersList() } }.buttonStyle(.bordered).controlSize(.small).reachable()
+            }
+        case .failed:
+            if let failure = readFailure {
                 Button(action: openDocuments) {
                     HStack {
-                        Label(failure, systemImage: "exclamationmark.triangle").foregroundStyle(Design.accent)
+                        Label(failure, systemImage: "exclamationmark.triangle").foregroundStyle(Design.accentInk)
                         Spacer()
                         Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
                     }
@@ -108,22 +152,7 @@ struct IntakeStatus: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityHint("Opens Documents")
-                .macRow(top: 16, bottom: 4)
             }
-            .listRowSeparator(.hidden)
-            .onPaper()
-        } else if let status = model.statusLine ?? model.lastError {
-            Section {
-                Label { Text(status) } icon: {
-                    if model.lastError != nil { Image(systemName: "exclamationmark.triangle") }
-                    else if model.busy { ProgressView().controlSize(.small) }   // syncing: something is happening
-                    else { Image(systemName: "arrow.triangle.2.circlepath") }
-                }
-                .foregroundStyle(model.lastError == nil ? .secondary : Design.accent)
-                .macRow(top: 16, bottom: 4)
-            }
-            .listRowSeparator(.hidden)
-            .onPaper()
         }
     }
 }
@@ -158,7 +187,7 @@ struct RootView: View {
     var body: some View {
         NavigationStack(path: $path) {
             List {
-                IntakeStatus(openDocuments: { open(.documents) })
+                IntakeStatus(openDocuments: { open(.documents) }, openSettings: { open(.settings) })
                 if !pending.isEmpty {
                     NavigationLink { ReviewView() } label: {
                         HStack(alignment: .firstTextBaseline) {
@@ -171,7 +200,7 @@ struct RootView: View {
                     .onPaper()
                     .listRowInsets(EdgeInsets(top: 16, leading: 20, bottom: 4, trailing: 20))
                 }
-                let unfiled = looseDocuments.filter { $0.status == .parsed && !($0.obligations ?? []).filter { $0.deletedAt == nil }.isEmpty }
+                let unfiled = looseDocuments.filter { doc in doc.status == .parsed && obligations.contains { $0.deletedAt == nil && $0.sourceDocument?.id == doc.id } }   // through the query, not the relationship
                 if !unfiled.isEmpty {
                     Button { open(.documents) } label: {
                         HStack {
@@ -218,6 +247,10 @@ struct RootView: View {
                 }
             }
             .environment(\.openRoute, OpenRouteAction(open: open))
+            .onChange(of: courses.map(\.id)) { _, ids in   // a course deleted while its page is open: the page goes too
+                let gone = path.contains { if case .course(let id) = $0 { !ids.contains(id) } else { false } }
+                if gone { withAnimation { path.removeAll { if case .course(let id) = $0 { !ids.contains(id) } else { false } } } }
+            }
             .onChange(of: courses.count, initial: true) { _, count in
                 if MainTabs.debugFlag("--open-course"), count > 0, path.isEmpty, let first = courses.first { open(.course(first.id)) }
             }
@@ -297,7 +330,8 @@ struct RecentlyDeletedRow: View {
     }
 }
 
-/// The document resolving into obligations, as the model streams them (SPEC §9's one earned animation, plainly for now).
+/// The document resolving into obligations, as the model streams them (SPEC §9's one earned animation): the creeping
+/// bar, its one-line caption, and the items as they are written.
 /// A spinner, a progress bar that keeps moving while the model thinks, and a cancel button; the rows the model is
 /// streaming sit behind a disclosure, closed by default, and the choice is remembered.
 struct ReadingSection: View {
@@ -338,8 +372,10 @@ struct ReadingSection: View {
                 }
                 .padding(.top, -6)   // the buttons' 44 points leave air above; the line belongs to the name
                 CreepingProgressBar(real: reading.fraction, mark: reading.nextMark)
+                    .id(reading.documentID)   // a new document's bar starts from nothing: the bar never goes backwards, so it must not be the last one's
             }
             .padding(.vertical, 4)
+            .listRowSeparator(.hidden)   // the section's own rules are enough; a separator under it doubled the one below
             .macRow(top: 8, bottom: 4)
             if showDetails {
                 ForEach(reading.items) { item in
@@ -425,7 +461,11 @@ struct ObligationRow: View {
                         }
                         VStack(alignment: .leading, spacing: 1) {
                             if !course.isEmpty { Text(course).lineLimit(1).truncationMode(.middle) }
-                            due.lineLimit(1).minimumScaleFactor(0.8)
+                            due.lineLimit(1)
+                        }
+                        VStack(alignment: .leading, spacing: 1) {   // the largest sizes: the date without its weekday, whole
+                            if !course.isEmpty { Text(course).lineLimit(2) }
+                            Text(Design.due(obligation.due, hasTime: obligation.dueHasTime, short: true)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
                         }
                     }
                     .font(.subheadline).foregroundStyle(.secondary)
@@ -447,12 +487,22 @@ struct ObligationRow: View {
 /// where it was made. An uncheck lets go at once.
 @MainActor @Observable final class Lingering {
     private(set) var ids: Set<UUID> = []
+    /// About to leave: the row fades out first, then the list closes over an empty row, so the row below never slides
+    /// up through it at half strength (a crossfade).
+    private(set) var leaving: Set<UUID> = []
     func contains(_ id: UUID) -> Bool { ids.contains(id) }
+    func isLeaving(_ id: UUID) -> Bool { leaving.contains(id) }
 
     func mark(_ id: UUID, done: Bool) {
-        guard done else { ids.remove(id); return }
+        guard done else { ids.remove(id); leaving.remove(id); return }
         ids.insert(id)
-        Task { try? await Task.sleep(for: .seconds(2.5)); ids.remove(id) }
+        Task {
+            try? await Task.sleep(for: .seconds(2.4))
+            guard ids.contains(id) else { return }   // unchecked meanwhile: it stays
+            withAnimation(.easeIn(duration: 0.12)) { _ = leaving.insert(id) }
+            try? await Task.sleep(for: .seconds(0.12))
+            ids.remove(id); leaving.remove(id)
+        }
     }
 }
 
@@ -481,7 +531,7 @@ extension View {
     func obligationActions(done: Bool, mark: @escaping (Bool) -> Void, edit: @escaping () -> Void, delete: @escaping () -> Void) -> some View {
         self
             .swipeActions(edge: .leading) {
-                Button(done ? "Not Done" : "Done", systemImage: done ? "arrow.uturn.backward" : "checkmark") { mark(!done) }.tint(Design.accent)
+                Button(done ? "Not Done" : "Done", systemImage: done ? "arrow.uturn.backward" : "checkmark") { mark(!done) }.tint(Design.accentInk)
             }
             .swipeActions(edge: .trailing) {
                 Button("Delete", systemImage: "trash", role: .destructive, action: delete)

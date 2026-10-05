@@ -6,7 +6,7 @@ import IngestKit
 let usage = """
 usage: horizon-parse <file> [options]
   file                 .pdf, .png/.jpg/.heic, .txt/.md, .docx
-  --claude             read with Claude (the default when a key is found: ANTHROPIC_API_KEY, else claude_api_key.secret beside the package)
+  --claude             read with Claude (the default when a key is found: ANTHROPIC_API_KEY, else claude_api_key.secret at the package root)
   --model sonnet5      which Claude: sonnet5, opus5, haiku45
   --on-device          read with the device model instead
   --year YYYY          year for undated-year dates when the document names no term
@@ -20,6 +20,28 @@ usage: horizon-parse <file> [options]
 func fail(_ message: String, code: Int32 = 1) -> Never {
     FileHandle.standardError.write(Data((message + "\n").utf8))
     exit(code)
+}
+
+/// The Claude key: ANTHROPIC_API_KEY when it holds one (set but empty is not set), else the git-ignored
+/// claude_api_key.secret at the package root: the nearest folder holding Package.swift above the working directory, or
+/// above the binary (.build/debug/horizon-parse). Never printed.
+func claudeKey() -> String? {
+    if let key = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty { return key }
+    let binary = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
+    for start in [URL(fileURLWithPath: FileManager.default.currentDirectoryPath), binary] {
+        var dir = start.standardizedFileURL
+        while true {
+            if FileManager.default.fileExists(atPath: dir.appendingPathComponent("Package.swift").path) {
+                let key = (try? String(contentsOf: dir.appendingPathComponent("claude_api_key.secret"), encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let key, !key.isEmpty { return key }
+                break   // the package root has no key: not a parent package's
+            }
+            let parent = dir.deletingLastPathComponent()
+            guard parent.path != dir.path else { break }
+            dir = parent
+        }
+    }
+    return nil
 }
 
 var args = Array(CommandLine.arguments.dropFirst())
@@ -67,11 +89,7 @@ if titleOnly {
     }
 }
 if options.route == .claude {
-    // The key from the environment, else the git-ignored file beside the package. Never printed.
-    let file = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()
-    let candidates = [FileManager.default.currentDirectoryPath, file.path].map { URL(fileURLWithPath: $0).appendingPathComponent("claude_api_key.secret") }
-    let fromFile = candidates.lazy.compactMap { try? String(contentsOf: $0, encoding: .utf8) }.first?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let key = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? fromFile ?? ""
+    let key = claudeKey() ?? ""
     if key.isEmpty {
         if askedClaude { fail("no Claude key: set ANTHROPIC_API_KEY or write claude_api_key.secret", code: 2) }
         options.route = .onDevice   // no key, nothing asked for: the device reads

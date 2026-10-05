@@ -13,13 +13,17 @@ struct HorizonApp: App {
 
     init() {
         let container: ModelContainer
+        var failure: String?
         do { container = try AppModel.scratchStore.map { try HorizonContainer.at($0.appendingPathComponent("Horizon.store")) } ?? HorizonContainer.shared() }
         catch {
-            // Only a misconfigured build gets here; stay usable (nothing persists) and say so in the log.
-            Logger(subsystem: Identifiers.bundlePrefix, category: "store").error("shared store failed: \(error.localizedDescription, privacy: .public); using an in-memory store")
+            // The library would not open (a newer build's store, a failed migration, a full disk). The app says so and
+            // does nothing else: an empty in-memory store that still read and synced would look like data lost, and
+            // its reminders would be orphans at the next launch.
+            Logger(subsystem: Identifiers.bundlePrefix, category: "store").error("shared store failed: \(error.localizedDescription, privacy: .public)")
+            failure = error.localizedDescription
             container = try! HorizonContainer.inMemory()
         }
-        let model = AppModel(container: container)
+        let model = AppModel(container: container, storeFailure: failure)
         #if DEBUG
         // `--claude-key <key>` stores a key and reads with Claude, to exercise the route and its failures without typing;
         // `--read-on-device` / `--read-with-claude` set the route. Set here, before the first drain can read the route.
@@ -39,14 +43,19 @@ struct HorizonApp: App {
 
     var body: some Scene {
         WindowGroup {
-            MainTabs()
+            Group {
+                if let failure = model.storeFailure { StoreFailure(reason: failure) } else { MainTabs() }
+            }
+                .modifier(UndoHookup(model: model))
                 .environment(model)
                 .modelContainer(model.container)
-                .tint(Design.accent)
+                .defaultAppStorage(AppModel.defaults)
+                .tint(Design.accentInk)
                 .onOpenURL { url in Task { await model.open(url) } }
                 .task {
                     #if DEBUG
-                    print("horizon: launch task, arguments \(CommandLine.arguments.dropFirst().joined(separator: " "))")
+                    let shown = CommandLine.arguments.dropFirst().enumerated().map { i, a in i > 0 && CommandLine.arguments[i] == "--claude-key" ? "<key>" : a }
+                    print("horizon: launch task, arguments \(shown.joined(separator: " "))")   // never the key itself
                     // `xcrun simctl launch booted com.daniel.horizon --ingest-sample` drives the sample read without a tap.
                     if CommandLine.arguments.contains("--ingest-sample"), let sample = Bundle.main.url(forResource: "sample-syllabus", withExtension: "pdf") {
                         await model.importFiles([sample]); return
@@ -67,8 +76,9 @@ struct HorizonApp: App {
                     #endif
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .EKEventStoreChanged)) { _ in Task { await model.drainAndSync() } }
+                .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in Task { await model.drainAndSync() } }   // date-only deadlines keep their day (`DayAnchor`)
                 #if os(macOS)
-                .task { if AppModel.scratchStore == nil { await WatchedFolder.start(model: model) } }
+                .task { if AppModel.scratchStore == nil, model.storeFailure == nil { await WatchedFolder.start(model: model) } }
                 #if DEBUG
                 .task { await WindowSnapshot.writeIfAsked() }
                 #endif
@@ -90,9 +100,38 @@ struct HorizonApp: App {
         #endif
         #if os(macOS)
         Settings {   // ⌘, — its own window, the way a Mac keeps its settings
-            MacSettingsView().environment(model).modelContainer(model.container).tint(Design.accent)
+            MacSettingsView().environment(model).modelContainer(model.container).defaultAppStorage(AppModel.defaults).tint(Design.accentInk)
         }
         #endif
+    }
+}
+
+/// Hands the window's undo manager to the model, so an item deleted anywhere can be put back with Edit ▸ Undo or a shake.
+struct UndoHookup: ViewModifier {
+    let model: AppModel
+    @Environment(\.undoManager) private var undoManager
+    func body(content: Content) -> some View {
+        content
+            .onAppear { model.undoManager = undoManager }
+            .onChange(of: undoManager) { _, manager in model.undoManager = manager }
+    }
+}
+
+/// The library could not be opened: said plainly, with nothing else on offer, since nothing else would work.
+struct StoreFailure: View {
+    let reason: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            EditorialEmpty(title: "Horizon could not open its library.",
+                           deck: "Nothing in it was changed, and nothing goes to Reminders until it opens. Quit Horizon and open it again; if this keeps happening, update the app.") { EmptyView() }
+            Text(reason).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Design.margin)
+        .padding(.top, 40)
+        .frame(maxWidth: 640, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Design.paper.ignoresSafeArea())
     }
 }
 
@@ -144,14 +183,21 @@ enum ActivityRefresh {
         }
     }
 
-    /// Nil: nothing will change by itself, and no refresh is wanted.
-    static func schedule(at date: Date?) {
-        guard let date else { BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Identifiers.activityRefreshTask); return }
-        let request = BGAppRefreshTaskRequest(identifier: Identifiers.activityRefreshTask)
-        request.earliestBeginDate = date.addingTimeInterval(5)
-        BGTaskScheduler.shared.submitTaskRequest(request) { error in
-            if let error { Logger(subsystem: Identifiers.bundlePrefix, category: "activity").error("activity refresh not scheduled: \(error.localizedDescription, privacy: .public)") }
+    /// Nil: nothing will change by itself, and no refresh is wanted. The same moment asked for again (Now's minute tick)
+    /// books nothing; a new one replaces the last, submitted off the main thread as the SDK asks.
+    @MainActor static func schedule(at date: Date?) {
+        guard !hasBooked || date != booked else { return }
+        hasBooked = true; booked = date
+        Task.detached {
+            guard let date else { BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Identifiers.activityRefreshTask); return }
+            let request = BGAppRefreshTaskRequest(identifier: Identifiers.activityRefreshTask)
+            request.earliestBeginDate = date.addingTimeInterval(5)
+            BGTaskScheduler.shared.submitTaskRequest(request) { error in
+                if let error { Logger(subsystem: Identifiers.bundlePrefix, category: "activity").error("activity refresh not scheduled: \(error.localizedDescription, privacy: .public)") }
+            }
         }
     }
+    @MainActor private static var booked: Date?
+    @MainActor private static var hasBooked = false
 }
 #endif

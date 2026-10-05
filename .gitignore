@@ -10,6 +10,6 @@ Evals/Results/
 Config/Local.xcconfig
 *.xcodeproj
 
-# a local OpenAI key for tests, never committed
+# local API keys for the CLI and evals, never committed (key.textClipping: an old one)
 key.textClipping
 claude_api_key.secret

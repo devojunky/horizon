@@ -7,8 +7,22 @@ struct EditorChrome: ViewModifier {
     let title: String
     let confirmTitle: String
     let confirmDisabled: Bool
+    /// Something was changed: Cancel (and Escape) asks before throwing it away, from the Cancel button itself, so on
+    /// iOS the question points at what was pressed rather than floating over the form.
+    var dirty = false
     let cancel: () -> Void
     let confirm: () -> Void
+    @State private var confirmingDiscard = false
+
+    private func tryCancel() { if dirty { confirmingDiscard = true } else { cancel() } }
+
+    private func cancelButton() -> some View {
+        Button("Cancel", action: tryCancel)
+            .confirmationDialog("Discard changes?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
+                Button("Discard Changes", role: .destructive, action: cancel)
+                Button("Keep Editing", role: .cancel) {}
+            }
+    }
 
     func body(content: Content) -> some View {
         #if os(iOS)
@@ -16,7 +30,7 @@ struct EditorChrome: ViewModifier {
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: cancel) }
+                ToolbarItem(placement: .cancellationAction) { cancelButton() }
                 ToolbarItem(placement: .confirmationAction) { Button(confirmTitle, action: confirm).disabled(confirmDisabled) }
             }
         #else
@@ -26,13 +40,13 @@ struct EditorChrome: ViewModifier {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 HStack(spacing: 12) {
                     Spacer()
-                    Button("Cancel", action: cancel).keyboardShortcut(.cancelAction)
+                    cancelButton().keyboardShortcut(.cancelAction)
                     Button(confirmTitle, action: confirm).keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent).disabled(confirmDisabled)
                 }
                 .padding(.horizontal, 20).padding(.vertical, 14)
                 .background(.bar)
             }
-            .modifier(EscapeCancels(cancel: cancel))
+            .modifier(EscapeCancels(cancel: tryCancel))
         #endif
     }
 }
@@ -96,8 +110,8 @@ extension View {
         #endif
     }
 
-    func editorChrome(title: String, confirm: String, disabled: Bool, cancel: @escaping () -> Void, action: @escaping () -> Void) -> some View {
-        modifier(EditorChrome(title: title, confirmTitle: confirm, confirmDisabled: disabled, cancel: cancel, confirm: action))
+    func editorChrome(title: String, confirm: String, disabled: Bool, dirty: Bool = false, cancel: @escaping () -> Void, action: @escaping () -> Void) -> some View {
+        modifier(EditorChrome(title: title, confirmTitle: confirm, confirmDisabled: disabled, dirty: dirty, cancel: cancel, confirm: action))
     }
 }
 
@@ -110,6 +124,38 @@ struct PageStack<Content: View>: View {
         NavigationStack { content }
         #else
         content
+        #endif
+    }
+}
+
+/// A labelled text field in an editor: the label and the value on one line, the value trailing; at the accessibility
+/// sizes the label above and the value under it, wrapping, so the value (the thing being edited) is read whole.
+struct FieldRow: View {
+    let label: String
+    let prompt: String
+    @Binding var text: String
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    var body: some View {
+        if typeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(label).font(.subheadline).foregroundStyle(.secondary)
+                TextField(prompt, text: $text, axis: .vertical)
+            }
+        } else {
+            LabeledContent(label) { TextField(prompt, text: $text).multilineTextAlignment(.trailing).promptOnly() }
+        }
+    }
+}
+
+extension View {
+    /// A picker whose choices are long names (courses): at the accessibility sizes on iOS a list of its own, where each
+    /// name is whole, rather than a menu whose value is cut in the row.
+    @ViewBuilder func choosesInList(_ large: Bool) -> some View {
+        #if os(iOS)
+        if large { pickerStyle(.navigationLink) } else { self }
+        #else
+        self
         #endif
     }
 }

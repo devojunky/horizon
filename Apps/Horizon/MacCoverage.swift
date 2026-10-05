@@ -11,6 +11,7 @@ import HorizonCore
 struct MacCoveragePage: View {
     @Bindable var nav: MacNavigation
     @Environment(AppModel.self) private var model
+    @Environment(\.openSettings) private var openSettings
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }) private var courses: [Course]
     @Query(filter: #Predicate<Obligation> { $0.deletedAt == nil }) private var obligations: [Obligation]
     @Query(filter: #Predicate<SourceDocument> { $0.deletedAt == nil }) private var documents: [SourceDocument]
@@ -20,7 +21,7 @@ struct MacCoveragePage: View {
         let span = TermWeeks.span(courses: courses, obligations: obligations)   // one term for every band, so the weeks line up from story to story
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                IntakeStatus(openDocuments: { nav.show(.documents) })
+                IntakeStatus(openDocuments: { nav.show(.documents) }, openSettings: { openSettings() })
                     .padding(.horizontal, 8)   // on the margin, with the stories' words
                     .padding(.bottom, 8)
                 if stories.isEmpty, model.reading == nil {

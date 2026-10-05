@@ -36,8 +36,9 @@ public struct NormalizedDocument: @unchecked Sendable {
         pages.compactMap { if case .text(let t) = $0 { t } else { nil } }.joined(separator: "\n")
     }
 
-    /// The text pages of a PDF in `range`, rendered as pictures at a size Claude keeps whole (its longest edge under
-    /// 1568 points). Empty for anything but a PDF, and for image pages, which are pictures already.
+    /// The text pages of a PDF in `range`, rendered as pictures about 1500 pixels on the long edge (a letter page at about
+    /// 140 dpi: under the 1568 every model keeps whole; `Extractor.jpegData` has the rest). Empty for anything but a PDF,
+    /// and for image pages, which are pictures already.
     func pictures(ofPages range: ClosedRange<Int>) -> [Picture] {
         guard let pdfData, let pdf = PDFDocument(data: pdfData) else { return [] }
         return range.compactMap { index -> Picture? in
@@ -62,16 +63,22 @@ enum DocumentNormalizer {
 
         if type.conforms(to: .pdf) {
             guard let pdf = PDFDocument(data: data) else { throw IngestError.unreadable("PDFKit could not open \(name)") }
+            // Every page keeps its place, so that a page's index here is its index in the PDF (`pictures(ofPages:)` draws
+            // by it, and a page that dropped out put every later picture beside the wrong text): one that cannot be drawn
+            // keeps what little text it has.
             var pages: [NormalizedDocument.Page] = []
             for i in 0..<pdf.pageCount {
-                guard let page = pdf.page(at: i) else { continue }
+                guard let page = pdf.page(at: i) else { pages.append(.text("")); continue }
                 let text = collapseRepeats(page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
                 if text.count >= minimumTextCharacters {
                     pages.append(.text(text))
                 } else if let image = rasterize(page) {
                     pages.append(.image(image, orientation: nil))
+                } else {
+                    pages.append(.text(text))
                 }
             }
+            if pages.allSatisfy({ if case .text(let t) = $0 { t.isEmpty } else { false } }) { pages = [] }   // nothing on any page: nothing to read
             return NormalizedDocument(info: info(name, data, .pdf, pdf.pageCount), pages: pages, pdfData: data)
         }
         if type.conforms(to: .image) {

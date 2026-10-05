@@ -10,7 +10,7 @@ import HorizonCore
 /// pointer reads in the header; a click chooses it, a drag chooses any run of days, a click on a week's date in the
 /// axis chooses the week; the arrow keys move the choice and Shift stretches it; Escape lets it go. Under the chart,
 /// the items themselves in a table: what was chosen, else what is coming up, sortable, a row's ring checks it off, a
-/// double-click edits, Delete bins, and the items selected there are marked on the chart.
+/// double-click edits, Delete deletes, and the items selected there are marked on the chart.
 struct MacHorizonPage: View {
     @Environment(AppModel.self) private var model
     @Query(filter: #Predicate<Obligation> { $0.deletedAt == nil && $0.due != nil }, sort: \Obligation.due) private var obligations: [Obligation]
@@ -28,7 +28,7 @@ struct MacHorizonPage: View {
     private func listed(_ data: StripData) -> [Obligation] {
         let ids: Set<UUID>
         if let chosen {
-            ids = Set(data.items.filter { $0.due >= chosen.start && $0.due < chosen.end }.map(\.id))
+            ids = Set(data.items.filter { chosen.holds($0.due) }.map(\.id))
         } else {
             let today = calendar.startOfDay(for: Date())
             ids = Set(data.items.filter { $0.due >= today && (!$0.completed || lingering.contains($0.id)) }.map(\.id))
@@ -70,7 +70,6 @@ struct MacHorizonPage: View {
         }
         .background(Design.paper)
         .navigationTitle("Horizon")
-        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)   // the page's head meets the toolbar, not the table: without this the table's pinned header makes the toolbar a hard band
         .toolbar {
             if data.choices.count > 1 {   // one course is its own filter
                 ToolbarSpacer(.fixed, placement: .primaryAction)   // the page's own control, apart from the window's
@@ -138,6 +137,8 @@ struct ItemRow: Identifiable {
     let done: Bool
     /// Just checked off, still listed for a moment.
     let lingering: Bool
+    /// The document it was read from, for Open Document.
+    let document: SourceDocument?
 
     @MainActor init(_ o: Obligation, lingering: Lingering) {
         id = o.id
@@ -150,82 +151,119 @@ struct ItemRow: Identifiable {
         weight = o.pointsAtStake ?? -1
         done = o.completedAt != nil
         self.lingering = lingering.contains(o.id)
+        document = o.sourceDocument
     }
 }
 
 /// Items in a table: a ring to check one off, its name, course, due date, the grade row it counts toward and its
-/// weight. Sortable by every column but the ring; a double-click edits, Delete bins the selection, the context menu
-/// does all three, and one selected item is what the Item menu acts on.
+/// weight. Sortable by every column but the ring; a double-click edits, Delete deletes the selection, the context menu
+/// does all three and opens the document an item was read from, and one selected item is what the Item menu acts on
+/// while the table has the keyboard. Ideal widths fit the narrowest window with every column in view (a table lays its
+/// columns out at their ideal widths and scrolls sideways rather than shrink them); a wider one shares out the rest.
 struct ItemTable: View {
     let rows: [ItemRow]
     @Binding var selection: Set<UUID>
     @Binding var sortOrder: [KeyPathComparator<ItemRow>]
     /// False when every row is one course's (the page is narrowed, or it is the course's own page).
     var showsCourse = true
+    /// Beside a column of its own (a course's page, its rail): narrower ideal widths.
+    var compact = false
     /// What an empty table says in its place.
     var emptyText = "Nothing due."
+    /// A row to bring into view (a link asked for it; the page selects it).
+    var reveal: UUID? = nil
     var mark: (UUID, Bool) -> Void
     var edit: (UUID) -> Void
     var delete: (Set<UUID>) -> Void
+    @Environment(AppModel.self) private var model
     @FocusState private var focused: Bool
+    @State private var preview: URL?   // the document an item was read from, in Quick Look
 
     var body: some View {
-        Table(rows, selection: $selection, sortOrder: $sortOrder) {
-            TableColumn("") { row in
-                Button { mark(row.id, !row.done) } label: { DoneMark(done: row.done, size: 15).frame(width: 22, height: 22).contentShape(Rectangle()) }
-                    .buttonStyle(.plain)
-                    .help(row.done ? "Mark not done" : "Mark done")
-                    .accessibilityLabel(row.done ? "Done" : "Mark done")
+        ScrollViewReader { proxy in
+            Table(rows, selection: $selection, sortOrder: $sortOrder) {
+                TableColumn("") { row in
+                    Button { mark(row.id, !row.done) } label: { DoneMark(done: row.done, size: 15).frame(width: 22, height: 22).contentShape(Rectangle()) }
+                        .buttonStyle(.plain)
+                        .help(row.done ? "Mark not done" : "Mark done")
+                        .accessibilityLabel(row.done ? "Done" : "Mark done")
+                }
+                .width(24)
+                TableColumn("Item", value: \.title) { row in
+                    Text(row.title).fontWeight(.medium).strikethrough(row.done, color: .secondary).lineLimit(1).truncationMode(.tail)
+                        .help(row.title)
+                }
+                .width(min: compact ? 90 : 120, ideal: compact ? 110 : 160)
+                if showsCourse {
+                    TableColumn("Course", value: \.course) { row in Text(row.course).foregroundStyle(.secondary).lineLimit(1).help(row.course) }
+                        .width(min: 80, ideal: 110)
+                }
+                TableColumn("Due", value: \.due) { row in
+                    let due = Design.due(row.hasDue ? row.due : nil, hasTime: row.dueHasTime)
+                    Text(due).monospacedDigit().lineLimit(1).foregroundStyle(row.hasDue ? .primary : .secondary).help(due)
+                }
+                .width(min: 80, ideal: compact ? 100 : 130)
+                TableColumn("Counts Toward", value: \.component) { row in
+                    Text(row.component.isEmpty ? "—" : row.component).foregroundStyle(row.component.isEmpty ? .tertiary : .secondary).lineLimit(1).help(row.component)
+                }
+                .width(min: 50, ideal: compact ? 70 : 90)
+                TableColumn("Weight", value: \.weight) { row in
+                    Group { if row.weight >= 0 { Design.points(row.weight).fontWeight(.semibold) } else { Text("—").foregroundStyle(.tertiary) } }
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                .width(min: 46, ideal: 50, max: 80)
+                .alignment(.trailing)   // the header over its figures
             }
-            .width(24)
-            TableColumn("Item", value: \.title) { row in
-                Text(row.title).fontWeight(.medium).strikethrough(row.done, color: .secondary).lineLimit(1).truncationMode(.tail)
-                    .help(row.title)
+            .tableStyle(.inset(alternatesRowBackgrounds: true))
+            .scrollContentBackground(.hidden)
+            .takesKeyboard($focused, hasRows: !rows.isEmpty)
+            .opacity(rows.isEmpty ? 0.001 : 1)   // kept in the layout (its height), but an empty table's header says nothing
+            .overlay(alignment: .top) {
+                if rows.isEmpty { Text(emptyText).foregroundStyle(.secondary).padding(.top, 14).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Design.margin) }
             }
-            .width(min: 180, ideal: 280)
-            if showsCourse {
-                TableColumn("Course", value: \.course) { row in Text(row.course).foregroundStyle(.secondary).lineLimit(1) }
-                    .width(min: 100, ideal: 170)
+            .contextMenu(forSelectionType: UUID.self) { ids in
+                let chosen = rows.filter { ids.contains($0.id) }
+                if !chosen.isEmpty {
+                    let allDone = chosen.allSatisfy(\.done)
+                    Button(allDone ? "Mark Not Done" : "Mark Done") { for row in chosen { mark(row.id, !allDone) } }
+                    if chosen.count == 1, let one = chosen.first {
+                        Button("Edit…") { edit(one.id) }
+                        if let open = openDocument(one) { Button("Open Document", action: open) }
+                    }
+                    Divider()
+                    Button("Delete", role: .destructive) { delete(ids) }
+                }
+            } primaryAction: { ids in
+                if let first = ids.first, ids.count == 1 { edit(first) }
             }
-            TableColumn("Due", value: \.due) { row in Text(Design.due(row.hasDue ? row.due : nil, hasTime: row.dueHasTime)).monospacedDigit().lineLimit(1).foregroundStyle(row.hasDue ? .primary : .secondary) }
-                .width(min: 150, ideal: 200)
-            TableColumn("Counts Toward", value: \.component) { row in Text(row.component.isEmpty ? "—" : row.component).foregroundStyle(row.component.isEmpty ? .tertiary : .secondary).lineLimit(1) }
-                .width(min: 90, ideal: 150)
-            TableColumn("Weight", value: \.weight) { row in
-                Group { if row.weight >= 0 { Design.points(row.weight).fontWeight(.semibold) } else { Text("—").foregroundStyle(.tertiary) } }
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+            .onDeleteCommand { delete(visibleSelection) }
+            // A row chosen with the pointer takes the keyboard with it: after the chart above had it (it is focusable,
+            // for its arrow keys), a click on a row selected it but left the keys with the chart, so Delete and ⌘⌫
+            // did nothing until Tab.
+            .onChange(of: selection) { _, chosen in if !chosen.isEmpty, !focused { focused = true } }
+            .onChange(of: rows.map(\.id)) { _, ids in selection.formIntersection(ids) }   // a row that left the table (a filter, Show Done, another period) leaves the selection too, so nothing unseen is acted on
+            .task(id: reveal) {   // once the rows are laid out: a row asked for before then is nowhere to scroll to
+                guard let reveal else { return }
+                do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+                proxy.scrollTo(reveal, anchor: .center)
             }
-            .width(min: 56, ideal: 70)
+            // The table's own, not the scene's: while a sheet's field has the keyboard the Item menu has nothing, so ⌘⌫
+            // there deletes words, never the item behind the sheet.
+            .focusedValue(\.selectedItem, visibleSelection.count == 1 ? rows.first { visibleSelection.contains($0.id) }.map { row in
+                SelectedItem(id: row.id, done: row.done, mark: { mark(row.id, $0) }, edit: { edit(row.id) }, openDocument: openDocument(row), delete: { delete([row.id]) })   // Item ▸ Mark Done, the way a click on the ring does it; ⌘⌫ as Delete does
+            } : nil)
+            .quickLookPreview($preview)
         }
-        .tableStyle(.inset(alternatesRowBackgrounds: true))
-        .scrollContentBackground(.hidden)
-        .scrollEdgeEffectStyle(.soft, for: .top)   // the table sits under the page's head, not the toolbar: no hard band up there
-        .takesKeyboard($focused, hasRows: !rows.isEmpty)
-        .opacity(rows.isEmpty ? 0.001 : 1)   // kept in the layout (its height), but an empty table's header says nothing
-        .overlay(alignment: .top) {
-            if rows.isEmpty { Text(emptyText).foregroundStyle(.secondary).padding(.top, 14).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Design.margin) }
-        }
-        .contextMenu(forSelectionType: UUID.self) { ids in
-            let chosen = rows.filter { ids.contains($0.id) }
-            if !chosen.isEmpty {
-                let allDone = chosen.allSatisfy(\.done)
-                Button(allDone ? "Mark Not Done" : "Mark Done") { for row in chosen { mark(row.id, !allDone) } }
-                if chosen.count == 1, let one = chosen.first { Button("Edit…") { edit(one.id) } }
-                Divider()
-                Button("Delete", role: .destructive) { delete(ids) }
-            }
-        } primaryAction: { ids in
-            if let first = ids.first, ids.count == 1 { edit(first) }
-        }
-        .onDeleteCommand { delete(visibleSelection) }
-        .onChange(of: rows.map(\.id)) { _, ids in selection.formIntersection(ids) }   // a row that left the table (a filter, Show Done, another period) leaves the selection too, so nothing unseen is acted on
-        .focusedSceneValue(\.selectedItem, visibleSelection.count == 1 ? rows.first { visibleSelection.contains($0.id) }.map { row in
-            SelectedItem(id: row.id, done: row.done, mark: { mark(row.id, $0) }, delete: { delete([row.id]) })   // Item ▸ Mark Done, the way a click on the ring does it; ⌘⌫ as Delete does
-        } : nil)
     }
 
     /// The selection, of the rows that are here.
     private var visibleSelection: Set<UUID> { selection.intersection(rows.map(\.id)) }
+
+    /// Shows the document a row was read from in Quick Look, when its file is on this Mac.
+    private func openDocument(_ row: ItemRow) -> (() -> Void)? {
+        guard let doc = row.document, model.hasFile(doc) else { return nil }
+        return { preview = model.previewFile(for: doc) }
+    }
 }
 
 /// What the chart is showing, set above it: a kicker, the deck (the day or the run of days under the pointer, else
@@ -255,20 +293,24 @@ private struct ChartHeader: View {
         HStack(alignment: .bottom, spacing: 24) {
             VStack(alignment: .leading, spacing: 5) {
                 if let shown {
-                    let items = data.items.filter { $0.due >= shown.start && $0.due < shown.end }
+                    let items = data.items.filter { shown.holds($0.due) }
                     let points = items.filter { !$0.completed }.reduce(0) { $0 + ($1.points ?? 0) }
-                    let pileup = data.collisions.contains { $0.day >= shown.start && $0.day < shown.end }
+                    let pileup = data.collisions.contains { shown.holds($0.day) }
                     let days = calendar.dateComponents([.day], from: shown.start, to: shown.end).day ?? 1
                     let kind = pileup ? "Pileup" : days <= 1 ? "Day" : calendar.dateInterval(of: .weekOfYear, for: shown.start) == shown ? "Week" : "\(days) days"
-                    Text(kicker(kind)).font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(pileup ? Design.accent : .secondary).lineLimit(1)
+                    Text(kicker(kind)).font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(pileup ? Design.accentInk : .secondary).lineLimit(1)
                     Text(Self.name(of: shown, calendar: calendar, style: .long)).deck().lineLimit(1).contentTransition(.numericText())
                     Text(items.isEmpty ? "Nothing due." : "\(items.count) item\(items.count == 1 ? "" : "s"), \(points.formatted(.number.precision(.fractionLength(0...1))))% of grades at stake.")
                         .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 } else {
-                    Text(kicker("Semester")).font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(.secondary).lineLimit(1)
+                    Text(kicker("Term")).font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(.secondary).lineLimit(1)
                     Text(summary).deck().lineLimit(1)
-                    Text("Point at a day to read it. Click to choose it, drag across days to choose a stretch, or click a week's date.")
-                        .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    ViewThatFits(in: .horizontal) {   // the widest wording the header has room for, never cut short
+                        Text("Point at a day to read it. Click to choose it, drag across days to choose a stretch, or click a week's date.")
+                        Text("Point at a day to read it. Click to choose it, or drag across days.")
+                        Text("Point at a day to read it.")
+                    }
+                    .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
             Spacer(minLength: 0)
@@ -280,10 +322,16 @@ private struct ChartHeader: View {
 
     private func kicker(_ word: String) -> String { data.narrowedTo.map { "\(word) · \($0.name)" } ?? word }
 
+    /// The term in a line, as the iPhone's strip says it: everything on the page, what of it is still ahead (the
+    /// table's "Coming up"), the pileups.
     private var summary: String {
         let total = data.items.count, count = data.collisions.count
-        let pileups = count == 0 ? "no pileups" : count == 1 ? "one pileup" : "\(count) pileups"
-        return "\(total) obligation\(total == 1 ? "" : "s") on the horizon, \(pileups)."
+        let today = calendar.startOfDay(for: Date())
+        let ahead = data.items.filter { $0.due >= today && !$0.completed }.count
+        let items = total == 1 ? "1 item" : "\(total) items"
+        let still = ahead == 0 ? "none still ahead" : ahead == total && total > 1 ? "all still ahead" : "\(ahead) still ahead"
+        let pileups = count == 0 ? "no pileups" : count == 1 ? "1 pileup" : "\(count) pileups"
+        return "\(items), \(still), \(pileups)."
     }
 }
 
@@ -337,14 +385,15 @@ private struct TermChart: View {
                 }
                 .gesture(DragGesture(minimumDistance: 0)
                     .onChanged { value in
-                        guard value.startLocation.x >= g.plotX, value.startLocation.y >= g.bandsTop, abs(value.translation.width) >= 4,
+                        guard value.startLocation.x >= g.plotX, value.startLocation.y >= g.bandsTop, value.startLocation.y < g.bandsBottom + 4, abs(value.translation.width) >= 4,
                               let a = g.day(at: value.startLocation.x), let b = g.day(at: value.location.x) else { return }
                         pointer.day = nil   // the header reads the choice while it is being made
                         choose(from: a, to: b)   // a drag chooses the run of days it covers
                     }
                     .onEnded { value in
                         focused = true
-                        guard abs(value.translation.width) < 4, value.startLocation.x >= g.plotX, let a = g.day(at: value.startLocation.x) else { return }
+                        guard abs(value.translation.width) < 4, value.startLocation.x >= g.plotX, value.startLocation.y < g.bandsBottom + 4,   // under the bands (the foot, "Today") is nothing to choose, as the pointer reads nothing there
+                              let a = g.day(at: value.startLocation.x) else { return }
                         pointer.day = nil   // the header reads what was just chosen; the next move of the pointer reads again
                         let day = data.periods[a]
                         if value.startLocation.y < g.bandsTop, let week = calendar.dateInterval(of: .weekOfYear, for: day.start),   // a click on the axis: the week
@@ -376,7 +425,7 @@ private struct TermChart: View {
     private func weekElements(_ g: Geometry) -> some View {
         ZStack(alignment: .topLeading) {
             ForEach(weeks, id: \.start) { week in
-                let items = data.items.filter { $0.due >= week.start && $0.due < week.end }
+                let items = data.items.filter { week.holds($0.due) }
                 let points = items.filter { !$0.completed }.reduce(0) { $0 + ($1.points ?? 0) }
                 let first = data.periods.firstIndex { $0.end > week.start } ?? 0
                 let last = data.periods.lastIndex { $0.start < week.end } ?? first
@@ -436,7 +485,7 @@ private struct TermChart: View {
             ForEach(data.bands) { band in
                 Text(band.name).font(.caption2.weight(.semibold)).textCase(.uppercase).kerning(0.6)
                     .foregroundStyle(band.kind == .all ? .primary : .secondary)
-                    .lineLimit(1).truncationMode(.middle)
+                    .lineLimit(2).truncationMode(.tail)   // a long name takes a second line in its band (two fit in a row) rather than lose its middle
                     .frame(width: Geometry.labelWidth - 16, height: Geometry.row, alignment: .leading)
             }
         }
@@ -489,7 +538,7 @@ private struct ChartCanvas: View {
             var flags: [ClosedRange<CGFloat>] = []   // where the pileups' dates sit, which the weeks' dates give way to
             for collision in data.collisions {
                 guard let i = days.firstIndex(where: { $0.start == collision.day }) else { continue }
-                let label = context.resolve(Text(collision.day.formatted(.dateTime.month(.abbreviated).day())).font(.caption2.weight(.bold)).foregroundStyle(Design.accent))
+                let label = context.resolve(Text(collision.day.formatted(.dateTime.month(.abbreviated).day())).font(.caption2.weight(.bold)).foregroundStyle(Design.accentInk))
                 let w = label.measure(in: CGSize(width: 120, height: 30)).width
                 let cx = min(max(g.x(i) + g.dayWidth / 2, g.plotX + w / 2), size.width - w / 2)
                 if flags.contains(where: { $0.overlaps((cx - w / 2 - 4)...(cx + w / 2 + 4)) }) { continue }
@@ -502,7 +551,7 @@ private struct ChartCanvas: View {
                 guard weekWidth >= 22 else { continue }
                 let label = context.resolve(Text(day.start.formatted(.dateTime.day())).font(.caption2).foregroundStyle(day.start == today ? .primary : .secondary))
                 let w = label.measure(in: CGSize(width: 40, height: 20)).width
-                guard !flags.contains(where: { $0.overlaps((x + 2)...(x + 4 + w)) }) else { continue }
+                guard x + 3 + w <= size.width, !flags.contains(where: { $0.overlaps((x + 2)...(x + 4 + w)) }) else { continue }   // never cut at the chart's edge
                 context.draw(label, at: CGPoint(x: x + 3, y: TermChart.Geometry.monthTier + TermChart.Geometry.weekTier / 2), anchor: .leading)
             }
 

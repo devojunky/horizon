@@ -124,3 +124,55 @@ extension HorizonStore {
         try modelContext.save()
     }
 }
+
+/// A one-way gate: whoever waits is held until it is released (and passes at once after).
+actor Gate {
+    private var open = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func wait() async { if open { return }; await withCheckedContinuation { waiters.append($0) } }
+    func release() { open = true; waiters.forEach { $0.resume() }; waiters = [] }
+}
+
+actor Flag { var on = false; func set() { on = true } }
+
+/// Reminders around a fake, with a hook on the calls a race needs to hold: every fetch can take a while, and a create or
+/// a completion write can wait at a gate after it lands (the reminder written, the store not yet told).
+struct HeldReminders: ReminderStore {
+    let inner: FakeReminderStore
+    var fetchDelay: Duration = .zero
+    var holdCreate: (entered: Gate, proceed: Gate)? = nil
+    var holdCompletion: (entered: Gate, proceed: Gate)? = nil
+    func requestAccess() async throws -> Bool { true }
+    func fetchHorizonList() async throws -> HorizonList? {
+        if fetchDelay > .zero { try await Task.sleep(for: fetchDelay) }
+        return try await inner.fetchHorizonList()
+    }
+    func ensureHorizonList() async throws { try await inner.ensureHorizonList() }
+    func create(_ draft: ReminderDraft) async throws -> ReminderItem {
+        if let holdCreate { await holdCreate.entered.release(); await holdCreate.proceed.wait() }
+        return try await inner.create(draft)
+    }
+    func update(externalID: String, with draft: ReminderDraft) async throws -> ReminderItem? { try await inner.update(externalID: externalID, with: draft) }
+    func setCompleted(externalID: String, _ completed: Bool, at date: Date?) async throws -> Bool {
+        let written = try await inner.setCompleted(externalID: externalID, completed, at: date)
+        if let holdCompletion { await holdCompletion.entered.release(); await holdCompletion.proceed.wait() }
+        return written
+    }
+    func remove(externalID: String) async throws { try await inner.remove(externalID: externalID) }
+}
+
+final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String] = []
+    var value: [String] { lock.withLock { stored } }
+    func append(_ s: String) { lock.withLock { stored.append(s) } }
+}
+
+extension Fixture {
+    /// A file of its own for a coordinator to enqueue.
+    static func file(_ name: String, _ text: String = UUID().uuidString) throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString.prefix(6))-\(name)")
+        try text.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+}

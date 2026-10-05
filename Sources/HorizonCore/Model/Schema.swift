@@ -35,7 +35,8 @@ public enum HorizonSchemaV1: VersionedSchema {
         /// Gone for good (from the bin, or the bin expiring): its documents are removed and its tombstones retired; the
         /// row itself stays a tombstone until the purge, as every synced record does.
         public var erasedAt: Date?
-        /// The user's own order on the Coverage screen; courses without one follow, most suspicious first.
+        /// The user's own order (Coverage, the Mac's sidebar); courses without one follow (on Coverage most suspicious
+        /// first, in the sidebar by name). Kept through the bin, so a restored course is back in its place.
         public var sortOrder: Int?
         @Relationship(deleteRule: .cascade, inverse: \Obligation.course) public var obligations: [Obligation]?
         @Relationship(deleteRule: .cascade, inverse: \SourceDocument.course) public var documents: [SourceDocument]?
@@ -86,7 +87,12 @@ public enum HorizonSchemaV1: VersionedSchema {
         public var conflictingDate: Date?
         /// Human-readable diff after a re-ingest changed a document-owned field; cleared when the user confirms.
         public var changeNote: String?
-        /// Device that created the row. Only that device creates the reminder, so two devices never race (SPEC §4.4).
+        /// What each document that listed the item said of it (its title and date as printed, whatever the user has made
+        /// of the row since), the current source's last. A re-read matches on these, so a hand edit is never a new item, and
+        /// an item whose source is deleted goes back to an earlier document still on file instead of going with it.
+        public var documentWords: [DocumentWord] = []
+        /// Device that created the row. With CloudKit mirroring only that device creates the reminder, so two devices never
+        /// race (SPEC §4.4); without it every row is this device's (`ReminderProjector.writes`).
         public var createdOn: String = ""
         public var createdAt: Date = Date()
         public var updatedAt: Date = Date()
@@ -100,8 +106,9 @@ public enum HorizonSchemaV1: VersionedSchema {
     public final class SourceDocument {
         public var id: UUID = UUID()
         public var filename: String = ""
-        /// What the document is, in a few words ("Calculus II Syllabus"): the device model's name for it from its first
-        /// lines, checked against them. Nil until it has been named, or where the device model is not there to ask.
+        /// What the document is, in a few words ("Calculus II Syllabus"): the device model's name for it, from its first
+        /// lines (a picture's from Claude's transcript, or a digest of what was read), checked against them. Nil until
+        /// someone has tried to name it; empty when the model was asked and had no name, so it is not asked again.
         public var title: String?
         public var sha256: String = ""
         public var kind: String = "pdf"
@@ -111,6 +118,9 @@ public enum HorizonSchemaV1: VersionedSchema {
         public var deviceName: String = ""
         public var status: DocumentStatus = DocumentStatus.queued
         public var failure: String?
+        /// The failure is the file's own (unreadable, empty, a kind Horizon cannot read), so a retry would only fail again;
+        /// cleared whenever the document is queued again.
+        public var failureIsPermanent: Bool = false
         public var route: String?
         /// The platform a screenshot came from; nil for syllabi. Feeds "never ingested" on the Coverage screen.
         public var platform: Platform?

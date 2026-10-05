@@ -22,6 +22,15 @@ public enum ClaudeModelChoice: String, Codable, Sendable, CaseIterable, Identifi
     }
     /// Whether `output_config.effort` may be sent: Haiku 4.5 rejects it.
     var acceptsEffort: Bool { self != .haiku45 }
+    /// Whether `thinking: disabled` should be sent to keep the model from thinking: Sonnet 5 takes it at every effort,
+    /// Opus 5 at high or below (a 400 at xhigh and max). Haiku 4.5 thinks only when asked, so it needs nothing sent.
+    func takesThinkingOff(atEffort effort: String) -> Bool {
+        switch self {
+        case .sonnet5: true
+        case .opus5: ["low", "medium", "high"].contains(effort)
+        case .haiku45: false
+        }
+    }
 }
 
 /// The user's own Claude credential and model. The key is the app's to keep (the Keychain); IngestKit only sends it.
@@ -32,4 +41,10 @@ public struct ClaudeConfiguration: Sendable, Equatable {
     public init(apiKey: String, model: ClaudeModelChoice = .default, baseURL: URL = URL(string: "https://api.anthropic.com/v1")!) {
         self.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines); self.model = model; self.baseURL = baseURL
     }
+}
+
+/// Printed or interpolated anywhere (a log line, a debugger), the configuration never shows its key.
+extension ClaudeConfiguration: CustomStringConvertible, CustomDebugStringConvertible {
+    public var description: String { "ClaudeConfiguration(\(model.rawValue), key of \(apiKey.count) characters)" }
+    public var debugDescription: String { description }
 }

@@ -43,6 +43,9 @@ import AppKit
     var addingBlock = false
     var tellingPlanner = false
     var confirmingReplan = false
+    /// An item a `horizon://obligation/<id>` link asked for: the page that lists it (Review, or its course's) selects
+    /// it and clears this.
+    var reveal: UUID?
 }
 
 /// Where the keyboard goes as a page appears, when the page was chosen with the pointer or the menu bar
@@ -74,21 +77,54 @@ extension View {
     func keyboardStaysInSidebar() -> some View { modifier(PageKeyboard(list: nil, hasRows: false)) }
 }
 
-/// The item selected in a table of items, for the menu bar's Item commands.
+/// The item selected in a table of items, for the menu bar's Item commands. Published only while the table has the
+/// keyboard (`focusedValue`, not the scene's): a sheet's field then has it, and ⌘⌫ there deletes words, not the item.
 struct SelectedItem: Equatable {
     var id: UUID
     var done: Bool
     /// Checks it off, or back on, the way its page does (a row just checked lingers where it was for a moment).
     var mark: (Bool) -> Void
+    /// Opens its editor, as a double-click does.
+    var edit: () -> Void
+    /// Shows the document it was read from in Quick Look, when the file is on this Mac.
+    var openDocument: (() -> Void)?
     /// Deletes it, the way the Delete key does.
     var delete: () -> Void
-    static func == (a: SelectedItem, b: SelectedItem) -> Bool { a.id == b.id && a.done == b.done }
+    static func == (a: SelectedItem, b: SelectedItem) -> Bool { a.id == b.id && a.done == b.done && (a.openDocument == nil) == (b.openDocument == nil) }
+}
+
+/// The documents selected in Documents, for the File menu: what the table's context menu does, from the menu bar.
+struct DocumentActions: Equatable {
+    var ids: Set<UUID>
+    /// Shows the one selected file in Quick Look (nil when several are selected, or the file is on another device).
+    var look: (() -> Void)?
+    /// Reads again those that failed, were cancelled or wait for Claude.
+    var retry: (() -> Void)?
+    /// Asks, then reads on this Mac those waiting for Claude.
+    var readOnDevice: (() -> Void)?
+    /// Files the one selected document, read and loose, under a course.
+    var fileUnder: [(name: String, file: () -> Void)]
+    static func == (a: DocumentActions, b: DocumentActions) -> Bool {
+        a.ids == b.ids && (a.look == nil) == (b.look == nil) && (a.retry == nil) == (b.retry == nil)
+            && (a.readOnDevice == nil) == (b.readOnDevice == nil) && a.fileUnder.map(\.name) == b.fileUnder.map(\.name)
+    }
+}
+
+/// The selection in Recently Deleted, for the File menu.
+struct BinActions: Equatable {
+    var ids: Set<UUID>
+    var restore: () -> Void
+    /// Asks first: it cannot be undone.
+    var erase: () -> Void
+    static func == (a: BinActions, b: BinActions) -> Bool { a.ids == b.ids }
 }
 
 extension FocusedValues {
     @Entry var navigation: MacNavigation?
     @Entry var selectedItem: SelectedItem?
     @Entry var reviewActions: ReviewActions?
+    @Entry var documentActions: DocumentActions?
+    @Entry var binActions: BinActions?
 }
 
 /// The Mac window: a sidebar of the app's areas and its courses, and a detail column (HIG: a sidebar holds the areas
@@ -97,13 +133,20 @@ extension FocusedValues {
 /// in it moves when something is chosen. The toolbar carries what acts on every page (Add Document, Sync), each page
 /// adds its own after a gap, and a file from the Finder can be dropped anywhere on the window. Sheets the menu bar
 /// opens (Add Item, New Course, Edit Course, Add Block, Tell the Planner) live here.
+///
+/// The toolbar is one thing on every page: no band of its own, the paper running up under it (a page's scroll views
+/// fade softly beneath it once scrolled), so it never changes from page to page, nor splits where a page's columns
+/// meet (a course's rail, Review's detail and Now's column each claimed it for themselves).
 struct MacRootView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.modelContext) private var context
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
     @State private var nav = MacNavigation()
     @State private var columns: NavigationSplitViewVisibility = .all
     @State private var dropping = false
+    /// An item a link asked for that no page lists (no course, nothing to review): its editor, over the window.
+    @State private var linkedItem: Obligation?
 
     private var shownCourse: Course? { nav.course.flatMap { id in courses.first { $0.id == id } } }
     private var editedCourse: Course? { nav.editingCourse.flatMap { id in courses.first { $0.id == id } } }
@@ -115,6 +158,9 @@ struct MacRootView: View {
         } detail: {
             detail
                 .environment(nav)   // a page asks it whether to take the keyboard as it appears
+                .scrollEdgeEffectStyle(.soft, for: .top)
+                .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+                .navigationSplitViewColumnWidth(min: 740, ideal: 1000)   // the narrowest a page's tables keep their key columns at; the sidebar gives way first
                 .toolbar {
                     if shownCourse != nil { ToolbarSpacer(.flexible, placement: .primaryAction) }   // a course's page keeps its title off the toolbar: this holds the buttons at the trailing edge, where every other page has them
                     ToolbarItemGroup(placement: .primaryAction) {   // both are File menu commands as well
@@ -139,7 +185,8 @@ struct MacRootView: View {
             let course = shownCourse?.id
             if case .success(let urls) = result { Task { await model.importFiles(urls, courseID: course) } }
         }
-        .sheet(isPresented: $nav.addingItem) { ObligationEditor(mode: .manual, courses: courses) }
+        .sheet(isPresented: $nav.addingItem) { ObligationEditor(mode: .manual, courses: courses, preferredCourse: shownCourse?.id) }   // added on a course's page: that course
+        .sheet(item: $linkedItem) { ObligationEditor(mode: .edit($0), courses: courses) }
         .sheet(isPresented: $nav.addingCourse) { CourseEditor(course: nil) }
         .sheet(isPresented: Binding(get: { editedCourse != nil }, set: { if !$0 { nav.editingCourse = nil } })) { if let editedCourse { CourseEditor(course: editedCourse) } }
         .sheet(isPresented: $nav.addingBlock) { PlanBlockEditor(block: nil) }
@@ -153,6 +200,8 @@ struct MacRootView: View {
         .onChange(of: courses.map(\.id)) { _, ids in   // the course on show was deleted (here, or on another device): back to Coverage
             if let id = nav.course, !ids.contains(id) { nav.show(.coverage) }
         }
+        .onChange(of: model.linkedObligationID) { _, id in show(linked: id) }
+        .handlesExternalEvents(preferring: ["*"], allowing: ["*"])   // a link or a file opened from outside comes to this window, not a new one
         .onAppear {
             if MainTabs.debugFlag("--tab-horizon") { nav.show(.horizon) }
             if MainTabs.debugFlag("--tab-now") { nav.show(.now) }
@@ -161,11 +210,31 @@ struct MacRootView: View {
             if MainTabs.debugFlag("--open-review") { nav.show(.review) }
             if MainTabs.debugFlag("--open-course"), let first = Coverage.stories(courses: courses, obligations: [], documents: []).first { nav.show(course: first.course.id) }   // DEBUG: a course's page without a click
             if MainTabs.debugFlag("--open-settings") { openSettings() }
+            show(linked: model.linkedObligationID)   // a link that launched the app
             #if DEBUG
+            if let i = CommandLine.arguments.firstIndex(of: "--open-link"), i + 1 < CommandLine.arguments.count, let url = URL(string: CommandLine.arguments[i + 1]) {
+                Task { await model.open(url) }   // DEBUG: a horizon:// link without a reminder to click
+            }
             if MainTabs.debugFlag("--light") { NSApp.appearance = NSAppearance(named: .aqua) }   // the app's own appearance, for screenshots; the system's is left alone
             if MainTabs.debugFlag("--dark") { NSApp.appearance = NSAppearance(named: .darkAqua) }
             #endif
         }
+    }
+
+    /// A `horizon://obligation/<id>` link (the link on every reminder): the item where it lives, selected. Review when it
+    /// waits there, else its course's page; an item neither lists opens in its editor.
+    private func show(linked id: UUID?) {
+        guard let id else { return }   // the reset below fires this again with nil
+        model.linkedObligationID = nil
+        guard let item = try? context.fetch(FetchDescriptor<Obligation>(predicate: #Predicate { $0.id == id && $0.deletedAt == nil })).first else { return }   // deleted since its reminder was written
+        if item.state == .pendingReview, item.completedAt == nil {
+            nav.reveal = id; nav.show(.review)
+        } else if let course = item.course, course.deletedAt == nil {
+            nav.reveal = id; nav.show(course: course.id)
+        } else {
+            linkedItem = item
+        }
+        NSApp.activate()
     }
 
     @ViewBuilder private var detail: some View {
@@ -270,7 +339,8 @@ private struct SidebarIcon: View {
     }
 }
 
-/// Documents as a table: sortable, alternating rows, a context menu and the Delete key on the selection.
+/// Documents as a table: sortable, alternating rows, a context menu and the Delete key on the selection, and the same
+/// actions in the File menu while the table has the keyboard.
 struct DocumentsTable: View {
     @Environment(AppModel.self) private var model
     @FocusState private var focused: Bool
@@ -285,48 +355,23 @@ struct DocumentsTable: View {
     private func chosen(_ ids: Set<UUID>) -> [SourceDocument] { documents.filter { ids.contains($0.id) } }
 
     var body: some View {
-        Table(rows, selection: $selection, sortOrder: $sortOrder) {
-            TableColumn("Document", value: \.displayName) { doc in   // two lines on every row, so the rows keep one height
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(doc.displayName).fontWeight(.medium).lineLimit(1)
-                    Text(doc.displayName != doc.filename ? doc.filename : Self.kind(doc)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)   // the file it came as
-                }
-                .padding(.vertical, 3)
-            }
-            .width(min: 220, ideal: 320)
-            TableColumn("Status", value: \.statusLabel) { doc in
-                HStack(spacing: 4) {
-                    Text(doc.statusLabel).foregroundStyle(doc.status == .failed ? Design.accent : .primary)
-                        .help(doc.failure ?? "")   // why it could not be read, on hover
-                    if !doc.warnings.isEmpty {   // what the read had to say, on hover
-                        Text(doc.warnings.count == 1 ? "· 1 note" : "· \(doc.warnings.count) notes").foregroundStyle(.secondary)
-                            .help(doc.warnings.joined(separator: "\n"))
+        Group {
+            if documents.isEmpty {
+                ScrollView {
+                    EditorialEmpty(title: "No documents yet.", deck: "Add a syllabus, a schedule or a screenshot, or drop one on this window. Every document Horizon reads is listed here, with what became of it.") {
+                        ImportMenu().buttonStyle(.borderedProminent)
                     }
+                    .padding(.horizontal, Design.margin)
                 }
-                .lineLimit(1)
+                .keyboardStaysInSidebar()
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    PageLine("Everything Horizon has been given to read. Select a document and press Space to look at it.")
+                    table
+                }
             }
-            .width(min: 100, ideal: 150)
-            TableColumn("Course") { doc in
-                if let course = doc.course { Text(course.displayName) }
-                else if doc.status == .parsed, !courses.isEmpty {
-                    Menu("File Under…") {
-                        ForEach(courses) { course in Button(course.displayName) { Task { await model.assignDocument(doc.id, to: course.id) } } }
-                    }
-                    .fixedSize()
-                } else { Text("—").foregroundStyle(.tertiary) }
-            }
-            .width(min: 120, ideal: 180)
-            TableColumn("Added", value: \.queuedAt) { doc in Text(Self.added(doc.queuedAt)).monospacedDigit() }.width(min: 140, ideal: 160)
-            TableColumn("Read") { doc in
-                if doc.status == .parsed {
-                    Text("\(doc.inputTokens) in · \(doc.outputTokens) out · \(doc.durationMs / 1000) s · \(Self.routeName(doc.route))").monospacedDigit().foregroundStyle(.secondary)
-                } else { Text("—").foregroundStyle(.tertiary) }
-            }
-            .width(min: 200, ideal: 300)
         }
-        .tableStyle(.inset(alternatesRowBackgrounds: true))
-        .takesKeyboard($focused, hasRows: !documents.isEmpty)
-        .animation(.default, value: documents.map(\.id))   // rows come and go as a Mac table's do
+        .background(Design.paper)
         .confirmationDialog("Read on this Mac instead?", isPresented: Binding(get: { !confirmDevice.isEmpty }, set: { if !$0 { confirmDevice = [] } }), titleVisibility: .visible) {
             Button(confirmDevice.count == 1 ? "Read on This Mac" : "Read \(confirmDevice.count) on This Mac") {
                 let ids = confirmDevice.map(\.id)
@@ -336,17 +381,68 @@ struct DocumentsTable: View {
         } message: {
             Text("The Mac's own model is less sure of tables and pictures than Claude, and it takes minutes on a long document. Nothing is sent to Anthropic.")
         }
+        .quickLookPreview($preview)
+        .navigationTitle("Documents")
+    }
+
+    /// Ideal widths that fit the narrowest page (the detail column's minimum) with every column in view; the columns
+    /// share what a wider window adds.
+    private var table: some View {
+        Table(rows, selection: $selection, sortOrder: $sortOrder) {
+            TableColumn("Document", value: \.displayName) { doc in   // two lines on every row, so the rows keep one height
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(doc.displayName).fontWeight(.medium).lineLimit(1)
+                    Text(doc.displayName != doc.filename ? doc.filename : Self.kind(doc)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)   // the file it came as
+                }
+                .padding(.vertical, 3)
+                .help(doc.displayName)
+            }
+            .width(min: 140, ideal: 190)
+            TableColumn("Status", value: \.statusLabel) { doc in
+                HStack(spacing: 4) {
+                    Text(doc.statusLabel).foregroundStyle(doc.status == .failed ? Design.accentInk : .primary)
+                        .help(doc.failure ?? "")   // why it could not be read, on hover
+                    if !doc.warnings.isEmpty {   // what the read had to say, on hover
+                        Text(doc.warnings.count == 1 ? "· 1 note" : "· \(doc.warnings.count) notes").foregroundStyle(.secondary)
+                            .help(doc.warnings.joined(separator: "\n"))
+                    }
+                }
+                .lineLimit(1)
+            }
+            .width(min: 80, ideal: 110)
+            TableColumn("Course") { doc in
+                if let course = doc.course { Text(course.displayName).lineLimit(1) }
+                else if doc.status == .parsed, !courses.isEmpty {
+                    Menu("File Under…") {
+                        ForEach(courses) { course in Button(course.displayName) { Task { await model.assignDocument(doc.id, to: course.id) } } }
+                    }
+                    .fixedSize()
+                } else { Text("—").foregroundStyle(.tertiary) }
+            }
+            .width(min: 90, ideal: 110)
+            TableColumn("Added", value: \.queuedAt) { doc in Text(Self.added(doc.queuedAt)).monospacedDigit().lineLimit(1) }.width(min: 90, ideal: 110)
+            TableColumn("Read") { doc in
+                if doc.status == .parsed {
+                    Text("\(doc.inputTokens) in · \(doc.outputTokens) out · \(doc.durationMs / 1000) s · \(Self.routeName(doc.route))").monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+                        .help("\(doc.inputTokens) tokens in, \(doc.outputTokens) out, \(doc.durationMs / 1000) seconds, read \(Self.routeName(doc.route) == "Claude" ? "by Claude" : Self.routeName(doc.route))")
+                } else { Text("—").foregroundStyle(.tertiary) }
+            }
+            .width(min: 80, ideal: 100)
+        }
+        .tableStyle(.inset(alternatesRowBackgrounds: true))
+        .takesKeyboard($focused, hasRows: true)
+        .animation(.default, value: documents.map(\.id))   // rows come and go as a Mac table's do
         .contextMenu(forSelectionType: UUID.self) { ids in
             let docs = chosen(ids)
             if docs.count == 1, let doc = docs.first, model.hasFile(doc) {
-                Button("Open") { look(at: doc) }
+                Button("Quick Look") { look(at: doc) }
                 Divider()
             }
-            if docs.contains(where: { $0.status == .failed || $0.status == .awaitingCloudParse || $0.status == .cancelled }) {
-                Button("Retry") { for doc in docs { Task { await model.retry(documentID: doc.id) } } }
+            if docs.contains(where: Self.canRetry) {
+                Button("Retry") { retry(docs) }
             }
-            if docs.contains(where: { $0.status == .awaitingCloudParse && !$0.readOnDevice }) {
-                Button("Read on This Mac Instead…") { confirmDevice = docs.filter { $0.status == .awaitingCloudParse } }
+            if docs.contains(where: Self.waitsForClaude) {
+                Button("Read on This Mac Instead…") { confirmDevice = docs.filter(Self.waitsForClaude) }
             }
             if docs.count == 1, let doc = docs.first, doc.course == nil, doc.status == .parsed, !courses.isEmpty {
                 Menu("File Under") {
@@ -363,18 +459,28 @@ struct DocumentsTable: View {
             look(at: doc)
             return .handled
         }
-        .quickLookPreview($preview)
-        .scrollContentBackground(.hidden)
-        .background(Design.paper)   // the page every other one sits on; the rows' stripes lie on it
-        .opacity(documents.isEmpty ? 0 : 1)
-        .overlay {
-            if documents.isEmpty {
-                ContentUnavailableView("No Documents", systemImage: "doc.text", description: Text("Add a syllabus, a schedule or a screenshot, or drop one on this window."))
-                    .background(Design.paper)
-            }
-        }
-        .navigationTitle("Documents")
+        .focusedValue(\.documentActions, actions)
+        .scrollContentBackground(.hidden)   // the page every other one sits on; the rows' stripes lie on it
     }
+
+    /// The File menu's share of the context menu, for the selection.
+    private var actions: DocumentActions? {
+        let docs = chosen(selection)
+        guard !docs.isEmpty else { return nil }
+        let one = docs.count == 1 ? docs.first : nil
+        let loose = one.flatMap { $0.course == nil && $0.status == .parsed ? $0 : nil }
+        return DocumentActions(
+            ids: Set(docs.map(\.id)),
+            look: one.flatMap { doc in model.hasFile(doc) ? { look(at: doc) } : nil },
+            retry: docs.contains(where: Self.canRetry) ? { retry(docs) } : nil,
+            readOnDevice: docs.contains(where: Self.waitsForClaude) ? { confirmDevice = docs.filter(Self.waitsForClaude) } : nil,
+            fileUnder: loose.map { doc in courses.map { course in (name: course.displayName, file: { file(doc.id, under: course.id) }) } } ?? [])
+    }
+
+    private static func canRetry(_ doc: SourceDocument) -> Bool { doc.status == .failed || doc.status == .awaitingCloudParse || doc.status == .cancelled }
+    private static func waitsForClaude(_ doc: SourceDocument) -> Bool { doc.status == .awaitingCloudParse && !doc.readOnDevice }
+    private func file(_ document: UUID, under course: UUID) { Task { await model.assignDocument(document, to: course) } }
+    private func retry(_ docs: [SourceDocument]) { for doc in docs where Self.canRetry(doc) { Task { await model.retry(documentID: doc.id) } } }
 
     /// When a document came in: the day and the time, the year only when it is not this one.
     static func added(_ date: Date) -> String {
@@ -420,46 +526,47 @@ extension SourceDocument {
     }
 }
 
-/// Recently Deleted as a table: Restore and Delete Now on the selection (toolbar, context menu, the Delete key);
-/// only Delete Now asks, since it cannot be undone. Double-clicking a row restores it.
+/// Recently Deleted as a table: Restore and Delete Now on the selection (toolbar, context menu, the File menu, the
+/// Delete key); only Delete Now asks, since it cannot be undone. Double-clicking a row restores it. Sortable, newest
+/// deletion first.
 struct RecentlyDeletedTable: View {
     @Environment(AppModel.self) private var model
     @FocusState private var focused: Bool
     @Query(filter: #Predicate<Course> { $0.deletedAt != nil && $0.erasedAt == nil }) private var courses: [Course]
     @Query(filter: #Predicate<SourceDocument> { $0.deletedAt != nil }) private var deletedDocuments: [SourceDocument]
     @State private var selection: Set<UUID> = []
+    @State private var sortOrder = [KeyPathComparator(\BinEntry.deletedAt, order: .reverse)]
     @State private var erasing: [BinEntry] = []
 
     private var entries: [BinEntry] {
-        (courses.map(BinEntry.init) + deletedDocuments.filter(\.isBinned).map(BinEntry.init)).sorted { $0.deletedAt > $1.deletedAt }
+        (courses.map(BinEntry.init) + deletedDocuments.filter(\.isBinned).map(BinEntry.init)).sorted(using: sortOrder)
     }
     private func chosen(_ ids: Set<UUID>) -> [BinEntry] { entries.filter { ids.contains($0.id) } }
 
     var body: some View {
-        Table(entries, selection: $selection) {
-            TableColumn("Name") { entry in Text(entry.name).fontWeight(.medium) }.width(min: 200, ideal: 300)
-            TableColumn("Kind") { entry in Text(entry.kind == .course ? "Course" : "Document") }.width(min: 80, ideal: 100)
-            TableColumn("Holds") { entry in Text(holds(entry)).foregroundStyle(.secondary) }.width(min: 140, ideal: 200)
-            TableColumn("Deleted") { entry in Text(entry.deletedAt.formatted(.relative(presentation: .named))) }.width(min: 120, ideal: 150)
-            TableColumn("Gone in") { entry in Text(remaining(entry)).monospacedDigit() }.width(min: 80, ideal: 100)
+        let entries = entries
+        Group {
+            if entries.isEmpty {
+                ScrollView {
+                    EditorialEmpty(title: "Nothing deleted lately.", deck: "A course or document you delete waits here for 30 days, and can be put back until then.") { EmptyView() }
+                        .padding(.horizontal, Design.margin)
+                }
+                .keyboardStaysInSidebar()
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    PageLine("Deleted courses and documents wait here for 30 days. Double-click one to put it back.")
+                    table(entries)
+                }
+            }
         }
-        .tableStyle(.inset(alternatesRowBackgrounds: true))
-        .takesKeyboard($focused, hasRows: !entries.isEmpty)
-        .animation(.default, value: entries.map(\.id))   // restored and erased rows leave as a Mac table's do
-        .contextMenu(forSelectionType: UUID.self) { ids in
-            Button("Restore") { restore(ids) }
-            Button("Delete Now…", role: .destructive) { erasing = chosen(ids) }
-        } primaryAction: { ids in
-            restore(ids)
-        }
-        .onDeleteCommand { erasing = chosen(selection) }
+        .background(Design.paper)
         .toolbar {
             ToolbarSpacer(.fixed, placement: .primaryAction)   // the page's own, apart from the window's Add Document and Sync
-            ToolbarItemGroup(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {   // both in the File menu too
                 Button { restore(selection) } label: { Label("Restore", systemImage: "arrow.uturn.backward") }
-                    .help("Put the selection back").disabled(selection.isEmpty)
+                    .help("Put the selection back").disabled(chosen(selection).isEmpty)
                 Button { erasing = chosen(selection) } label: { Label("Delete Now", systemImage: "trash.slash") }
-                    .help("Delete the selection for good").disabled(selection.isEmpty)
+                    .help("Delete the selection for good").disabled(chosen(selection).isEmpty)
             }
         }
         .alert(eraseTitle, isPresented: Binding(get: { !erasing.isEmpty }, set: { if !$0 { erasing = [] } })) {
@@ -468,16 +575,30 @@ struct RecentlyDeletedTable: View {
         } message: {
             Text("This cannot be undone.")
         }
-        .scrollContentBackground(.hidden)
-        .background(Design.paper)
-        .opacity(entries.isEmpty ? 0 : 1)
-        .overlay {
-            if entries.isEmpty {
-                ContentUnavailableView("Nothing Deleted Lately", systemImage: "trash", description: Text("A course or document you delete waits here for 30 days, and can be put back until then."))
-                    .background(Design.paper)
-            }
-        }
         .navigationTitle("Recently Deleted")
+    }
+
+    /// Ideal widths that fit the narrowest page with every column in view; the columns share what a wider window adds.
+    private func table(_ entries: [BinEntry]) -> some View {
+        Table(entries, selection: $selection, sortOrder: $sortOrder) {
+            TableColumn("Name", value: \.name) { entry in Text(entry.name).fontWeight(.medium).lineLimit(1).help(entry.name) }.width(min: 140, ideal: 220)
+            TableColumn("Kind", value: \.kindName) { entry in Text(entry.kindName) }.width(min: 70, ideal: 80)
+            TableColumn("Holds", value: \.held) { entry in Text(holds(entry)).foregroundStyle(.secondary).lineLimit(1) }.width(min: 90, ideal: 130)
+            TableColumn("Deleted", value: \.deletedAt) { entry in Text(entry.deletedAt.formatted(.relative(presentation: .named))).lineLimit(1) }.width(min: 90, ideal: 110)
+            TableColumn("Gone in", value: \.expiry) { entry in Text(remaining(entry)).monospacedDigit() }.width(min: 60, ideal: 70)
+        }
+        .tableStyle(.inset(alternatesRowBackgrounds: true))
+        .takesKeyboard($focused, hasRows: true)
+        .animation(.default, value: entries.map(\.id))   // restored and erased rows leave as a Mac table's do
+        .contextMenu(forSelectionType: UUID.self) { ids in
+            Button("Restore") { restore(ids) }
+            Button("Delete Now…", role: .destructive) { erasing = chosen(ids) }
+        } primaryAction: { ids in
+            restore(ids)
+        }
+        .onDeleteCommand { erasing = chosen(selection) }
+        .focusedValue(\.binActions, chosen(selection).isEmpty ? nil : BinActions(ids: selection, restore: { restore(selection) }, erase: { erasing = chosen(selection) }))
+        .scrollContentBackground(.hidden)
     }
 
     private var eraseTitle: String {
@@ -490,7 +611,7 @@ struct RecentlyDeletedTable: View {
         return parts.isEmpty ? "—" : parts.joined(separator: ", ")
     }
     private func remaining(_ entry: BinEntry) -> String {
-        let days = max(0, Int((Bin.expiry(of: entry.deletedAt).timeIntervalSinceNow / 86400).rounded(.up)))
+        let days = max(0, Int((entry.expiry.timeIntervalSinceNow / 86400).rounded(.up)))
         return days == 0 ? "Today" : days == 1 ? "1 day" : "\(days) days"
     }
     private func restore(_ ids: Set<UUID>) {
@@ -500,6 +621,31 @@ struct RecentlyDeletedTable: View {
     private func erase(_ entry: BinEntry) {
         Task { entry.kind == .course ? await model.eraseCourse(entry.id) : await model.eraseDocument(entry.id) }
         selection.remove(entry.id)
+    }
+}
+
+extension BinEntry {
+    /// What it is, in a word, and what the table sorts the Kind column by.
+    var kindName: String { kind == .course ? "Course" : "Document" }
+    /// How much went with it, for sorting the Holds column: items first, then documents.
+    var held: Int { items * 1000 + documents }
+    /// When it is erased for good.
+    var expiry: Date { Bin.expiry(of: deletedAt) }
+}
+
+/// The line that opens a page of a table, on the paper above it (Review's, Documents', Recently Deleted's): it says
+/// what the page holds, and it keeps the table off the toolbar, whose band a table's pinned header would otherwise
+/// bring back on just these pages.
+struct PageLine: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+    var body: some View {
+        Text(text)
+            .foregroundStyle(.secondary)
+            .lineLimit(2)
+            .padding(.horizontal, Design.margin)
+            .padding(.top, 16)
+            .padding(.bottom, 12)
     }
 }
 
@@ -522,18 +668,38 @@ private struct DropVeil: View {
 }
 
 /// The menu bar. Every toolbar and context-menu action is here too, with its shortcut, so the toolbar can be hidden
-/// and the keyboard suffices. Commands act on the window in front through the focused `MacNavigation`.
+/// and the keyboard suffices. Commands act on the window in front through the focused `MacNavigation`, and on a
+/// page's selection only while its table has the keyboard (a sheet's fields then keep their own keys: ⌘⌫ deletes
+/// words in a title, never the item behind the sheet).
 struct HorizonCommands: Commands {
     let model: AppModel
     @FocusedValue(\.navigation) private var nav
     @FocusedValue(\.selectedItem) private var item
     @FocusedValue(\.reviewActions) private var review
+    @FocusedValue(\.documentActions) private var documents
+    @FocusedValue(\.binActions) private var bin
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             Button("Add Document…") { nav?.importing = true }.keyboardShortcut("o").disabled(nav == nil)
             Button("Add Item…") { nav?.addingItem = true }.keyboardShortcut("n").disabled(nav == nil)
             Button("New Course…") { nav?.addingCourse = true }.keyboardShortcut("n", modifiers: [.command, .shift]).disabled(nav == nil)
+            Divider()
+            // The documents selected in Documents, as their context menu has them.
+            Button("Quick Look") { documents?.look?() }.keyboardShortcut("y").disabled(documents?.look == nil)
+            Button("Retry Reading") { documents?.retry?() }.disabled(documents?.retry == nil)
+            Button("Read on This Mac Instead…") { documents?.readOnDevice?() }.disabled(documents?.readOnDevice == nil)
+            if let courses = documents?.fileUnder, !courses.isEmpty {
+                Menu("File Under") {
+                    ForEach(Array(courses.enumerated()), id: \.offset) { _, course in Button(course.name) { course.file() } }
+                }
+            } else {
+                Button("File Under") {}.disabled(true)   // an empty submenu would not dim
+            }
+            Divider()
+            // What is selected in Recently Deleted.
+            Button("Restore") { bin?.restore() }.disabled(bin == nil)
+            Button("Delete Now…") { bin?.erase() }.disabled(bin == nil)
             Divider()
             Button("Sync with Reminders") { Task { await model.drainAndSync() } }.keyboardShortcut("r")
             Button("Recreate Horizon List in Reminders") { Task { await model.recreateRemindersList() } }.disabled(!model.remindersListGone)
@@ -554,23 +720,33 @@ struct HorizonCommands: Commands {
                 .disabled(nav?.course == nil)   // ⌘⌫ deletes what is selected in the page, as in Mail; the course goes from here, its menu, or Delete in the sidebar
         }
         CommandMenu("Item") {   // the item selected in a table (a course's items, Horizon's), and those selected in Review
-            Button(item?.done == true ? "Mark Not Done" : "Mark Done") { if let item { item.mark(!item.done) } }
+            Button(item?.done == true ? "Mark Not Done" : "Mark Done") { if !Self.keyboardIsElsewhere, let item { item.mark(!item.done) } }
                 .keyboardShortcut("d", modifiers: [.command, .shift]).disabled(item == nil)
+            Button("Edit Item…") { if !Self.keyboardIsElsewhere { (review?.edit ?? item?.edit)?() } }   // Return in the table, as a double-click
+                .disabled(review?.edit == nil && item == nil)
+            Button("Open Document") { (review?.openDocument ?? item?.openDocument)?() }
+                .disabled(review?.openDocument == nil && item?.openDocument == nil)
             Divider()
-            Button(review.map { $0.count == 1 ? "Confirm" : "Confirm \($0.count) Items" } ?? "Confirm") { review?.confirm() }
+            Button(review.map { $0.count == 1 ? "Confirm" : "Confirm \($0.count) Items" } ?? "Confirm") { if !Self.keyboardIsElsewhere { review?.confirm() } }
                 .keyboardShortcut(.return, modifiers: .command).disabled(review == nil)
-            // ⌘⌫ acts on the selection in the page: Review's items are discarded, a table's item deleted.
-            Button(review.map { $0.count == 1 ? "Discard" : "Discard \($0.count) Items" } ?? (item == nil ? "Discard" : "Delete Item")) {
-                if let review { review.discard() } else { item?.delete() }
+            // A later document moved the date: the choice is between the two dates (Discard would delete the item).
+            Button(review?.otherDate.map { "Use \($0.formatted(.dateTime.month(.abbreviated).day()))" } ?? "Use Other Date") { if !Self.keyboardIsElsewhere { review?.useOtherDate?() } }
+                .disabled(review?.useOtherDate == nil)
+            // ⌘⌫ acts on the selection in the page: Review's items are discarded, a table's item deleted. In a text
+            // field (an editor's Title, the key in Settings) it is the text's own ⌘⌫, to the line's start.
+            Button(deleteTitle) {
+                if Self.keyboardIsElsewhere { NSApp.sendAction(#selector(NSStandardKeyBindingResponding.deleteToBeginningOfLine(_:)), to: nil, from: nil); return }
+                if let review { review.discard?() } else { item?.delete() }
             }
-            .keyboardShortcut(.delete, modifiers: .command).disabled(review == nil && item == nil)
+            .keyboardShortcut(.delete, modifiers: .command).disabled(review?.discard == nil && item == nil)
         }
         CommandMenu("Plan") {
             Button(model.plan == nil ? "Plan Today" : "Plan Again") {
                 if model.planEdited, model.plan != nil { nav?.confirmingReplan = true } else { Task { await model.planToday() } }
             }
             .keyboardShortcut("p", modifiers: [.command, .shift]).disabled(model.planning)
-            Button("Tell the Planner…") { nav?.tellingPlanner = true }.keyboardShortcut("t", modifiers: [.command, .option]).disabled(nav == nil)
+            // ⌥⌘P, beside Plan Today: ⌥⌘T is the system's Show/Hide Toolbar (HIG keyboards), which View already has.
+            Button("Tell the Planner…") { nav?.tellingPlanner = true }.keyboardShortcut("p", modifiers: [.command, .option]).disabled(nav == nil)
             Button("Add Block…") { nav?.addingBlock = true }.disabled(nav == nil)
             Divider()
             Picker("Tonight Until", selection: Binding(get: { model.tonightEnd }, set: { if model.chooseTonightEnd($0) { nav?.confirmingReplan = true } })) {
@@ -585,6 +761,21 @@ struct HorizonCommands: Commands {
             }
         }
         #endif
+    }
+
+    /// The keyboard is somewhere a ⌘-key belongs to what is being typed or to a sheet, not to the page's selection: a
+    /// field being edited, or an editor's sheet over the window. A menu's key equivalent is matched before a field sees
+    /// the key, and a table's selection stays published under a sheet, so ⌘⌫ in an editor's Title deleted the item
+    /// selected behind it (seen 2026-10-05).
+    @MainActor static var keyboardIsElsewhere: Bool {
+        guard let window = NSApp.keyWindow else { return false }
+        return window.sheetParent != nil || window.firstResponder is NSText
+    }
+
+    /// ⌘⌫'s item: Discard in Review (those of the selection a later document did not move), Delete Item elsewhere.
+    private var deleteTitle: String {
+        if let review { return review.discardCount <= 1 ? "Discard" : "Discard \(review.discardCount) Items" }
+        return nav?.page == .review ? "Discard" : "Delete Item"
     }
 
     /// A page as a checked item in the View menu, with its number.

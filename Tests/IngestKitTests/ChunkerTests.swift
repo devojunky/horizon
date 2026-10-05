@@ -26,4 +26,15 @@ struct ChunkerTests {
         #expect(Chunker.halve(TextChunk(index: 0, text: "single", firstPage: 0, lastPage: 0)) == nil)
         #expect(Chunker.halve(TextChunk(index: 0, text: "one long line with spaces only", firstPage: 0, lastPage: 0))?.map(\.text) == ["one long line", "with spaces only"])
     }
+
+    @Test func eachHalfKeepsItsOwnPages() {
+        // Pages 0, 1 and 3 (2 is a picture) in one chunk: a half sent alone carries only the pictures of its own pages.
+        let chunk = Chunker.chunks(pages: [(0, "a\n\nb"), (1, "c\n\nd"), (3, "e\n\nf")], budgetTokens: 1000, charsPerToken: 3)[0]
+        #expect(chunk.firstPage == 0 && chunk.lastPage == 3 && chunk.pageStarts.map(\.page) == [1, 3])
+        let halves = Chunker.halve(chunk)!
+        #expect(halves.map(\.text) == ["a\n\nb\n\nc", "d\n\ne\n\nf"])
+        #expect(halves.map { [$0.firstPage, $0.lastPage] } == [[0, 1], [1, 3]])
+        let quarters = Chunker.halve(halves[1])!
+        #expect(quarters.map(\.text) == ["d", "e\n\nf"] && quarters.map { [$0.firstPage, $0.lastPage] } == [[1, 1], [3, 3]])
+    }
 }

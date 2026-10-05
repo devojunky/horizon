@@ -39,6 +39,14 @@ struct ScoringTests {
         #expect(s.notes.contains("title: HW 1 got MyLab Homework") && s.notes.contains("missed: Quiz 3 (2026-10-01)"))
     }
 
+    @Test func aDateInventedForATBDItemIsAReadyError() {
+        let expected = FixtureShape(obligations: [O(title: "Final Exam", due: nil)])
+        let ready = Scoring.score(produced: FixtureShape(obligations: [O(title: "Final Exam", due: "2026-12-17", status: .ready)]), expected: expected)
+        #expect(ready.recall == 1 && ready.readyErrors == 1 && ready.notes.contains("date: Final Exam expected TBD got 2026-12-17 (ready)"))
+        let reviewed = Scoring.score(produced: FixtureShape(obligations: [O(title: "Final Exam", due: "2026-12-17", status: .needsReview)]), expected: expected)
+        #expect(reviewed.readyErrors == 0)   // caught by review: reported, not fatal
+    }
+
     @Test func seriesItemsMatchByDate() {
         let expected = FixtureShape(obligations: [O(title: "Quiz", due: "2026-09-10"), O(title: "Quiz", due: "2026-09-17")])
         let produced = FixtureShape(obligations: [O(title: "Quiz", due: "2026-09-17"), O(title: "Quiz", due: "2026-09-10")])

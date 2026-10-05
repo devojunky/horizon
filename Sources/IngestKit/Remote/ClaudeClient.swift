@@ -1,9 +1,13 @@
 import Foundation
 
-/// What can go wrong talking to Claude, in classes that decide what happens next: the key and the request are the
-/// user's to fix (no retry), a payload too large is the caller's to split, and the rest is retried with backoff.
+/// What can go wrong talking to Claude, in classes that decide what happens next: the key, the account and the request
+/// are the user's to fix (no retry), a payload too large is the caller's to split, and the rest is retried with backoff.
 public enum ClaudeError: Error, LocalizedError, Sendable, Equatable {
     case unauthorized
+    /// 402: the account has no credit left, or its billing needs attention. Waiting does not change it.
+    case billing
+    /// 403: the key is good but may not do this: the model is not open to its organization, or not from where it is used.
+    case forbidden(model: String)
     case modelNotFound(String)
     case badRequest(String)
     case payloadTooLarge
@@ -18,6 +22,8 @@ public enum ClaudeError: Error, LocalizedError, Sendable, Equatable {
     public var errorDescription: String? {
         switch self {
         case .unauthorized: "the API key is missing or was rejected"
+        case .billing: "the Anthropic account behind the key is out of credit"
+        case .forbidden(let model): "Anthropic does not let this key use \(ClaudeModelChoice(rawValue: model)?.displayName ?? model)"
         case .modelNotFound(let model): "Anthropic has no model named \(model)"
         case .badRequest(let message): "Anthropic rejected the request: \(message)"
         case .payloadTooLarge: "the request was too large for the model"
@@ -51,7 +57,7 @@ public struct ClaudeTransport: Sendable {
         let lines = AsyncThrowingStream<String, any Error> { continuation in
             let task = Task {
                 do {
-                    for try await line in bytes.lines { continuation.yield(line) }
+                    try await eventLines(of: bytes) { continuation.yield($0) }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -61,29 +67,56 @@ public struct ClaudeTransport: Sendable {
         }
         return (http, lines)
     }
+
+    /// The body's lines as an event stream defines them: split at LF alone, a CR before it dropped. Not `AsyncBytes.lines`,
+    /// which also splits at U+2028, U+2029 and U+0085: JSON leaves those unescaped inside a string (a Word soft break
+    /// becomes U+2028, and Claude quotes a policy as printed), and an event cut there is no JSON, so the read failed.
+    static func eventLines<Bytes: AsyncSequence>(of bytes: Bytes, _ yield: (String) -> Void) async throws where Bytes.Element == UInt8 {
+        var line: [UInt8] = []
+        func emit() {
+            if line.last == 0x0D { line.removeLast() }
+            yield(String(decoding: line, as: UTF8.self))
+            line.removeAll(keepingCapacity: true)
+        }
+        for try await byte in bytes {
+            if byte == 0x0A { emit() } else { line.append(byte) }
+        }
+        if !line.isEmpty { emit() }
+    }
 }
 
 /// The Messages API with structured output, streamed. Every call is retried on the failures that pass (a dropped
 /// connection, a rate limit, an overload, a server error) with exponential backoff and the server's own Retry-After,
-/// never on the ones that will not change (a bad key, a bad request, a payload too large). Cancellation stops
-/// everything at once. No thinking is asked for: extraction is copying, and a thinking model spent its budget
-/// thinking and answered with an empty structure one run in three.
+/// never on the ones that will not change (a bad key, an account out of credit, a bad request, a payload too large).
+/// Cancellation stops everything at once. Reading asks for no thinking (`Thinking.off`): extraction is copying, and a
+/// thinking model spent its budget thinking and answered with an empty structure one run in three.
 public actor ClaudeClient {
+    /// Whether the model thinks before it answers. The Claude 5 models think adaptively unless told not to, so `.off`
+    /// is sent as `thinking: disabled` (Sonnet 5 at any effort; Opus 5 at high or below, which is all this app asks
+    /// for); Haiku 4.5 thinks only when asked, so it is sent nothing. `.adaptive` sends nothing either: the model thinks
+    /// as much as the effort calls for.
+    public enum Thinking: Sendable, Equatable { case adaptive, off }
+
     public struct Request: Sendable {
         public var system: String
         public var user: String
         /// JPEG pictures, sent base64 before the text.
         public var images: [Data]
+        /// A line for each picture, sent just before it ("Page 3"), so the prompt can speak of the pages by number.
+        public var imageLabels: [String]
         /// A JSON Schema object, as text, its properties in the order the model should write them.
         public var schema: String
-        /// The output budget, which the model's own reasoning spends from too: the Claude 5 models think adaptively
-        /// unless told otherwise, and a reply cut off while it was still thinking has no text at all.
+        /// The output budget. With thinking on, the model's reasoning spends from it too, and a reply cut off while it
+        /// was still thinking has no text at all.
         public var maxOutputTokens: Int
         /// How hard the model works (`output_config.effort`): "medium" for reading; "low" for the small tasks (the day
         /// plan, the calendar read before it), where more reasoning bought nothing but a wait and a spent budget.
         public var effort: String
-        public init(system: String, user: String, images: [Data] = [], schema: String, maxOutputTokens: Int, effort: String = "medium") {
-            self.system = system; self.user = user; self.images = images; self.schema = schema; self.maxOutputTokens = maxOutputTokens; self.effort = effort
+        public var thinking: Thinking
+        public init(system: String, user: String, images: [Data] = [], imageLabels: [String] = [], schema: String, maxOutputTokens: Int,
+                    effort: String = "medium", thinking: Thinking = .adaptive) {
+            self.system = system; self.user = user; self.images = images; self.imageLabels = imageLabels; self.schema = schema
+            self.maxOutputTokens = maxOutputTokens; self.effort = effort; self.thinking = thinking
         }
     }
 
@@ -91,6 +124,7 @@ public actor ClaudeClient {
         public var text: String
         /// "end_turn" for a whole reply, "max_tokens" when the output budget cut it, "refusal" when the model declined.
         public var stopReason: String?
+        /// Tokens over every attempt: a reply cut short and retried was paid for too.
         public var inputTokens: Int
         public var cachedTokens: Int
         public var outputTokens: Int
@@ -133,14 +167,17 @@ public actor ClaudeClient {
     public func stream(_ request: Request, onText: @escaping @Sendable (String) async -> Void = { _ in }) async throws -> Completion {
         let urlRequest = try makeRequest(request)
         var attempt = 0
+        var spent = Spent()
         while true {
             attempt += 1
             try Task.checkCancellation()
             do {
-                var completion = try await attemptOnce(urlRequest, onText: onText)
+                var completion = try await attemptOnce(urlRequest, onText: onText, spent: &spent)
                 completion.attempts = attempt
+                completion.inputTokens = spent.input; completion.cachedTokens = spent.cached; completion.outputTokens = spent.output
                 return completion
             } catch let error as ClaudeError {
+                try Task.checkCancellation()   // a Cancel that cut the stream is a cancellation, on the last attempt too
                 guard error.isRetryable else { throw error }
                 if attempt >= policy.attempts { throw ClaudeError.exhausted(attempts: attempt, last: error.localizedDescription) }
                 let delay: TimeInterval
@@ -154,19 +191,26 @@ public actor ClaudeClient {
 
     /// Whether the key and the model answer: one request for one word.
     public func probe() async throws -> String {
-        let request = Request(system: "Answer with the single word OK.", user: "Are you there?", schema: ClaudeSchemas.render(.object([("answer", .string(nil))], required: ["answer"])), maxOutputTokens: 16)
-        _ = try await stream(request)
+        let request = Request(system: "Answer with the single word OK.", user: "Are you there?", schema: ClaudeSchemas.render(.object([("answer", .string(nil))], required: ["answer"])),
+                              maxOutputTokens: 16, thinking: .off)
+        let completion = try await stream(request)
+        log("claude: probe in \(completion.inputTokens) out \(completion.outputTokens)")
         return "\(configuration.model.displayName) answered."
     }
 
     // MARK: One attempt
 
-    private func attemptOnce(_ urlRequest: URLRequest, onText: @Sendable (String) async -> Void) async throws -> Completion {
+    struct Spent: Sendable { var input = 0, cached = 0, output = 0 }
+
+    /// One request and its streamed reply. Whatever usage the reply reported is added to `spent`, whether or not it
+    /// finished.
+    private func attemptOnce(_ urlRequest: URLRequest, onText: @Sendable (String) async -> Void, spent: inout Spent) async throws -> Completion {
         let (http, body): (HTTPURLResponse, AsyncThrowingStream<String, any Error>)
         do { (http, body) = try await transport.send(urlRequest) } catch { throw Self.mapTransport(error) }
         guard (200..<300).contains(http.statusCode) else { throw try await Self.failure(http, body, model: configuration.model.rawValue, log: log) }
         var text = "", stop: String?, ended = false
         var input = 0, cached = 0, output = 0
+        defer { spent.input += input; spent.cached += cached; spent.output += output }
         do {
             for try await raw in body {
                 let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -206,6 +250,7 @@ public actor ClaudeClient {
         } catch {
             throw Self.mapTransport(error, midStream: true)
         }
+        try Task.checkCancellation()   // a stream that stopped because the task was cancelled is not a dropped connection
         guard ended || stop != nil else { throw ClaudeError.interrupted("the reply ended before it was complete") }
         return Completion(text: text, stopReason: stop, inputTokens: input, cachedTokens: cached, outputTokens: output, attempts: 0)
     }
@@ -220,13 +265,16 @@ public actor ClaudeClient {
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         // The schema's property order is the model's writing order, so the body is written by hand: JSONSerialization
-        // would sort or shuffle it.
-        let blocks = request.images.map { "{\"type\": \"image\", \"source\": {\"type\": \"base64\", \"media_type\": \"image/jpeg\", \"data\": \"\($0.base64EncodedString())\"}}" }
-            + ["{\"type\": \"text\", \"text\": \(ClaudeSchemas.quote(request.user))}"]
+        // would sort or shuffle it. Each picture follows its label, when it has one.
+        let blocks = request.images.enumerated().flatMap { i, image in
+            (i < request.imageLabels.count ? ["{\"type\": \"text\", \"text\": \(ClaudeSchemas.quote(request.imageLabels[i]))}"] : [])
+                + ["{\"type\": \"image\", \"source\": {\"type\": \"base64\", \"media_type\": \"image/jpeg\", \"data\": \"\(image.base64EncodedString())\"}}"]
+        } + ["{\"type\": \"text\", \"text\": \(ClaudeSchemas.quote(request.user))}"]
         var outputConfig = "\"format\": {\"type\": \"json_schema\", \"schema\": \(request.schema)}"
         if configuration.model.acceptsEffort { outputConfig += ", \"effort\": \(ClaudeSchemas.quote(request.effort))" }
+        let thinking = request.thinking == .off && configuration.model.takesThinkingOff(atEffort: request.effort) ? "\"thinking\": {\"type\": \"disabled\"}, " : ""
         let body = """
-        {"model": \(ClaudeSchemas.quote(configuration.model.rawValue)), "max_tokens": \(request.maxOutputTokens), "stream": true, \
+        {"model": \(ClaudeSchemas.quote(configuration.model.rawValue)), "max_tokens": \(request.maxOutputTokens), "stream": true, \(thinking)\
         "system": \(ClaudeSchemas.quote(request.system)), \
         "messages": [{"role": "user", "content": [\(blocks.joined(separator: ", "))]}], \
         "output_config": {\(outputConfig)}}
@@ -277,7 +325,9 @@ public actor ClaudeClient {
     static func apiError(status: Int, type: String, message: String, model: String) -> ClaudeError {
         let lowered = message.lowercased()
         switch type {
-        case "authentication_error", "permission_error": return .unauthorized
+        case "authentication_error": return .unauthorized
+        case "permission_error": return .forbidden(model: model)
+        case "billing_error": return .billing
         case "overloaded_error": return .overloaded
         case "rate_limit_error": return .rateLimited(retryAfter: nil)
         case "not_found_error": return lowered.contains("model") ? .modelNotFound(model) : .badRequest(message)
@@ -287,7 +337,9 @@ public actor ClaudeClient {
         default: break
         }
         switch status {
-        case 401, 403: return .unauthorized
+        case 401: return .unauthorized
+        case 402: return .billing
+        case 403: return .forbidden(model: model)
         case 404: return lowered.contains("model") ? .modelNotFound(model) : .badRequest(message)
         case 413: return .payloadTooLarge
         case 400, 422: return lowered.contains("too long") || lowered.contains("too large") ? .payloadTooLarge : .badRequest(message)

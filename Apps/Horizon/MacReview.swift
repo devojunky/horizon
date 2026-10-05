@@ -7,9 +7,11 @@ import HorizonCore
 /// Review on a Mac (SPEC §4.1 step 6): the items the reader was unsure of, in a table, each with what its date was
 /// read as, why it waits, how sure the reader was and where it came from. Confirm, Edit and Discard act on the
 /// selection (the toolbar, the context menu, the Item menu, the Delete key), so a run of right readings goes through
-/// in one go; Open Document shows the file an item came from, to check it against.
+/// in one go; Open Document shows the file an item came from, to check it against. An item a later document moved
+/// offers its other date instead of Discard (discarding it would delete the item itself), as on iOS.
 struct MacReviewPage: View {
     @Environment(AppModel.self) private var model
+    @Environment(MacNavigation.self) private var nav
     @FocusState private var tableFocused: Bool
     @Query(sort: \Obligation.due) private var obligations: [Obligation]
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
@@ -23,6 +25,8 @@ struct MacReviewPage: View {
     /// longer acted on, whatever the table's selection still holds.
     private var chosen: [Obligation] { pending.filter { selection.contains($0.id) } }
     private var chosenIDs: Set<UUID> { Set(chosen.map(\.id)) }
+    /// Those of the selection that can be discarded: not one a later document moved (its choice is between two dates).
+    private var discardable: Set<UUID> { Set(chosen.filter { $0.otherDate == nil }.map(\.id)) }
     /// The one selected item's document, when its file is on this Mac.
     private var chosenDocument: SourceDocument? {
         guard chosen.count == 1, let doc = chosen.first?.sourceDocument, model.hasFile(doc) else { return nil }
@@ -33,26 +37,21 @@ struct MacReviewPage: View {
         let rows = pending.map(ReviewRow.init).sorted(using: sortOrder)
         Group {
             if rows.isEmpty {
-                VStack(alignment: .leading, spacing: 0) {
+                ScrollView {   // in a scroll view, as every empty page is: alone, its words set the window's minimum height
                     EditorialEmpty(title: "Nothing to review.", deck: "Everything the reader found was sure enough to go straight to Reminders.") { EmptyView() }
                         .padding(.horizontal, Design.margin)
-                    Spacer(minLength: 0)
                 }
                 .keyboardStaysInSidebar()
             } else {
                 HStack(alignment: .top, spacing: 0) {
                     VStack(alignment: .leading, spacing: 0) {
-                        Text(rows.count == 1 ? "One item the reader was unsure of." : "\(rows.count) items the reader was unsure of. Select several to confirm or discard them together.")
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, Design.margin)
-                            .padding(.top, 16)
-                            .padding(.bottom, 12)
+                        PageLine(rows.count == 1 ? "One item the reader was unsure of." : "\(rows.count) items the reader was unsure of. Select several to confirm or discard them together.")
                         table(rows)
                     }
                     .frame(minWidth: 400, maxWidth: .infinity)
-                    ReviewDetail(items: chosen, confirm: { confirm(chosenIDs) }, edit: { editing = chosen.first }, discard: { discard(chosenIDs) },
+                    ReviewDetail(items: chosen, confirm: { confirm(chosenIDs) }, useOther: { use($0) }, edit: { editing = chosen.first }, discard: { discard(discardable) },
                                  open: { doc in preview = model.previewFile(for: doc) })
-                        .frame(width: 340)
+                        .frame(width: 320)
                 }
             }
         }
@@ -67,16 +66,16 @@ struct MacReviewPage: View {
                     .help("Fix the selected item (↩)").disabled(chosen.count != 1)
                 Button { if let chosenDocument { preview = model.previewFile(for: chosenDocument) } } label: { Label("Open Document", systemImage: "doc.text.magnifyingglass") }
                     .help("Open the document the item was read from").disabled(chosenDocument == nil)
-                Button { discard(chosenIDs) } label: { Label("Discard", systemImage: "trash") }
-                    .help("Discard the selection: it was never an item (⌘⌫)").disabled(chosen.isEmpty)
+                Button { discard(discardable) } label: { Label("Discard", systemImage: "trash") }
+                    .help("Discard the selection: it was never an item (⌘⌫)").disabled(discardable.isEmpty)
             }
         }
-        .focusedSceneValue(\.reviewActions, chosen.isEmpty ? nil : ReviewActions(count: chosen.count, confirm: { confirm(chosenIDs) }, discard: { discard(chosenIDs) }))
         .sheet(item: $editing) { ObligationEditor(mode: .review($0), courses: courses) }
         .quickLookPreview($preview)
-        .onAppear {   // the first item is up for review at once, its page beside it
-            if selection.isEmpty, let first = rows.first { selection = [first.id] }
+        .onAppear {   // the item a link asked for, else the first, is up for review at once, its page beside it
+            if !reveal(), selection.isEmpty, let first = rows.first { selection = [first.id] }
         }
+        .onChange(of: nav.reveal) { reveal() }
         .onChange(of: rows.map(\.id)) { old, new in   // an item left the queue (its editor confirmed it, a read changed it): the one in its place comes up
             let kept = selection.intersection(new)
             guard kept.count < selection.count else { return }
@@ -88,42 +87,73 @@ struct MacReviewPage: View {
         }
     }
 
-    /// The items, lean: what, whose, when, and what it is worth. Why each waits is beside the table, in full.
+    /// Selects the item a link asked for, when it is waiting here.
+    @discardableResult private func reveal() -> Bool {
+        guard let id = nav.reveal, pending.contains(where: { $0.id == id }) else { return false }
+        nav.reveal = nil
+        selection = [id]
+        return true
+    }
+
+    /// What the Item menu does with the selection, while the table has the keyboard.
+    private var actions: ReviewActions? {
+        guard !chosen.isEmpty else { return nil }
+        let one = chosen.count == 1 ? chosen.first : nil
+        let discardable = discardable
+        return ReviewActions(
+            count: chosen.count,
+            confirm: { confirm(chosenIDs) },
+            discardCount: discardable.count,
+            discard: discardable.isEmpty ? nil : { discard(discardable) },
+            edit: one.map { item in { editing = item } },
+            openDocument: chosenDocument.map { doc in { preview = model.previewFile(for: doc) } },
+            otherDate: one?.otherDate,
+            useOtherDate: one?.otherDate == nil ? nil : { use(one!) })
+    }
+
+    /// The items, lean: what, whose, when, and what it is worth. Why each waits is beside the table, in full. Ideal
+    /// widths that fit the narrowest window with every column in view; a wider one shares out the rest.
     private func table(_ rows: [ReviewRow]) -> some View {
         Table(rows, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("Item", value: \.title) { row in Text(row.title).fontWeight(.medium).lineLimit(1).help(row.title) }
-                .width(min: 120, ideal: 200)
-            TableColumn("Course", value: \.course) { row in Text(row.course).foregroundStyle(.secondary).lineLimit(1) }
-                .width(min: 80, ideal: 150)
+                .width(min: 100, ideal: 120)
+            TableColumn("Course", value: \.course) { row in Text(row.course).foregroundStyle(.secondary).lineLimit(1).help(row.course) }
+                .width(min: 60, ideal: 70)
             TableColumn("Due", value: \.due) { row in
                 Text(row.hasDue ? Design.due(row.due, hasTime: row.dueHasTime) : "Date TBA").monospacedDigit().lineLimit(1)
             }
-            .width(min: 100, ideal: 150)
+            .width(min: 80, ideal: 90)
             TableColumn("Weight", value: \.weight) { row in
                 Group { if row.weight >= 0 { Design.points(row.weight).fontWeight(.semibold) } else { Text("—").foregroundStyle(.tertiary) } }
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
-            .width(min: 52, ideal: 60)
+            .width(min: 46, ideal: 50, max: 80)
+            .alignment(.trailing)
         }
         .tableStyle(.inset(alternatesRowBackgrounds: true))
         .scrollContentBackground(.hidden)
-        .scrollEdgeEffectStyle(.soft, for: .top)   // under the page's line, not the toolbar
         .takesKeyboard($tableFocused, hasRows: true)   // ↑ and ↓ go through the items, ⌘↩ and ⌘⌫ act on them: the pointer is needed only to edit
         .animation(.default, value: rows.map(\.id))   // a confirmed or discarded row leaves as a Mac table's rows do, the rest closing up
         .contextMenu(forSelectionType: UUID.self) { ids in
-            if !ids.isEmpty {
-                Button(ids.count == 1 ? "Confirm" : "Confirm \(ids.count) Items") { confirm(ids) }
-                if ids.count == 1, let id = ids.first { Button("Edit…") { editing = pending.first { $0.id == id } } }
-                if ids.count == 1, let id = ids.first, let doc = pending.first(where: { $0.id == id })?.sourceDocument, model.hasFile(doc) {
-                    Button("Open Document") { preview = model.previewFile(for: doc) }
+            let items = pending.filter { ids.contains($0.id) }
+            if !items.isEmpty {
+                Button(items.count == 1 ? "Confirm" : "Confirm \(items.count) Items") { confirm(Set(items.map(\.id))) }
+                if items.count == 1, let item = items.first {
+                    if let other = item.otherDate { Button("Use \(other.formatted(.dateTime.month(.abbreviated).day()))") { use(item) } }
+                    Button("Edit…") { editing = item }
+                    if let doc = item.sourceDocument, model.hasFile(doc) { Button("Open Document") { preview = model.previewFile(for: doc) } }
                 }
-                Divider()
-                Button(ids.count == 1 ? "Discard" : "Discard \(ids.count) Items", role: .destructive) { discard(ids) }
+                let gone = Set(items.filter { $0.otherDate == nil }.map(\.id))
+                if !gone.isEmpty {
+                    Divider()
+                    Button(gone.count == 1 ? "Discard" : "Discard \(gone.count) Items", role: .destructive) { discard(gone) }
+                }
             }
         } primaryAction: { ids in
             if ids.count == 1, let id = ids.first { editing = pending.first { $0.id == id } }
         }
-        .onDeleteCommand { discard(chosenIDs) }
+        .onDeleteCommand { discard(discardable) }
+        .focusedValue(\.reviewActions, actions)   // the table's, not the page's: a sheet over it keeps ⌘⌫ and ⌘↩ for its fields
     }
 
     private func confirm(_ ids: Set<UUID>) {
@@ -132,7 +162,16 @@ struct MacReviewPage: View {
         selection = next.map { [$0] } ?? []
     }
 
+    /// Confirms an item a later document moved with its other date (the earlier one, or the document's beside the user's).
+    private func use(_ item: Obligation) {
+        guard let date = item.otherDate else { return }
+        let id = item.id, next = following([id])
+        Task { await model.confirm(id, edits: ObligationEdits(due: .some(date))) }
+        selection = next.map { [$0] } ?? []
+    }
+
     private func discard(_ ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
         let next = following(ids)
         for id in ids { Task { await model.discard(id) } }
         selection = next.map { [$0] } ?? []
@@ -153,6 +192,8 @@ struct MacReviewPage: View {
 private struct ReviewDetail: View {
     let items: [Obligation]
     var confirm: () -> Void
+    /// Confirms the one item with the other date a later document gave it.
+    var useOther: (Obligation) -> Void
     var edit: () -> Void
     var discard: () -> Void
     var open: (SourceDocument) -> Void
@@ -164,9 +205,13 @@ private struct ReviewDetail: View {
                 if items.count == 1, let item = items.first {
                     single(item)
                 } else if items.count > 1 {
+                    let moved = items.filter { $0.otherDate != nil }.count
                     Text("\(items.count) items selected").deck()
-                    Text("Confirm them as they were read, or discard them.").foregroundStyle(.secondary).padding(.top, 6)
-                    actions(several: true).padding(.top, 18)
+                    Text(moved == 0 ? "Confirm them as they were read, or discard them."
+                         : moved == items.count ? "A later document moved each one's date. Confirm them as they are, or choose one at a time."
+                         : "Confirm them as they were read, or discard them. Discard leaves out the \(moved == 1 ? "one" : "\(moved)") a later document moved.")
+                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
+                    actions(several: true, other: nil, discards: moved < items.count).padding(.top, 18)
                 } else {
                     Text("Select an item to see why it waits and the page it was read from.").foregroundStyle(.secondary)
                 }
@@ -192,7 +237,7 @@ private struct ReviewDetail: View {
         .padding(.top, 14)
         RailSection("Why it waits") {
             VStack(alignment: .leading, spacing: 4) {
-                if let note = item.changeNote { Text(note).foregroundStyle(Design.accent) }
+                if let note = item.changeNote { Text(note).foregroundStyle(Design.accentInk) }
                 ForEach(item.reviewFlags, id: \.self) { Text($0.prefix(1).uppercased() + $0.dropFirst() + ".") }
                 Text("The reader was \(Int((item.confidence * 100).rounded()))% sure.").foregroundStyle(.secondary)
             }
@@ -208,7 +253,7 @@ private struct ReviewDetail: View {
             }
             .padding(.top, 24)
         }
-        actions(several: false).padding(.top, 24)
+        actions(several: false, other: item.otherDate.map { _ in item }, discards: item.otherDate == nil).padding(.top, 24)
     }
 
     private func label(_ text: String) -> some View {
@@ -217,12 +262,18 @@ private struct ReviewDetail: View {
 
     /// Each with the keys that do it from the table (the Item menu's, and Return for the table's own Edit), so the
     /// keyboard is learned where the buttons are.
-    private func actions(several: Bool) -> some View {
+    /// An item a later document moved (`other`) offers its other date where Discard would be: discarding it would
+    /// delete the item, and the choice is between the two dates.
+    private func actions(several: Bool, other: Obligation?, discards: Bool) -> some View {
         HStack(spacing: 10) {
             Button(action: confirm) { ShortcutLabel(several ? "Confirm All" : "Confirm", keys: "⌘↩") }.buttonStyle(.borderedProminent)
+            if let other, let date = other.otherDate {
+                Button { useOther(other) } label: { Text("Use \(date.formatted(.dateTime.month(.abbreviated).day()))") }
+                    .help("Confirm it due \(date.formatted(.dateTime.weekday(.wide).month(.wide).day())) instead")
+            }
             if !several { Button(action: edit) { ShortcutLabel("Edit…", keys: "↩") } }
             Spacer(minLength: 0)
-            Button(role: .destructive, action: discard) { ShortcutLabel(several ? "Discard All" : "Discard", keys: "⌘⌫") }
+            if discards { Button(role: .destructive, action: discard) { ShortcutLabel(several ? "Discard All" : "Discard", keys: "⌘⌫") } }
         }
     }
 }
@@ -325,7 +376,16 @@ private struct SourcePage: View {
 struct ReviewActions {
     var count: Int
     var confirm: () -> Void
-    var discard: () -> Void
+    /// How many of the selection Discard would take: not those a later document moved.
+    var discardCount: Int
+    var discard: (() -> Void)?
+    /// The one selected item's editor.
+    var edit: (() -> Void)?
+    /// The one selected item's document in Quick Look, when its file is on this Mac.
+    var openDocument: (() -> Void)?
+    /// The other date of the one selected item a later document moved, and confirming it with that date.
+    var otherDate: Date?
+    var useOtherDate: (() -> Void)?
 }
 
 /// An item waiting for review, as a table row: what it sorts by.

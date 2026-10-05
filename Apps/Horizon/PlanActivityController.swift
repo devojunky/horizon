@@ -17,7 +17,13 @@ import os
     private var shown: PlanActivityAttributes.ContentState?
     private static let logger = Logger(subsystem: Identifiers.bundlePrefix, category: "activity")
     private static func log(_ message: String) {
+        // The lines carry the user's own words (titles, calendar events, file names): readable in a DEBUG build, where
+        // they are how the app is tested, and private in a release, where the unified log keeps them.
+        #if DEBUG
         logger.notice("\(message, privacy: .public)")
+        #else
+        logger.notice("\(message, privacy: .private)")
+        #endif
         #if DEBUG
         print("horizon: activity: \(message)")
         #endif
@@ -49,6 +55,9 @@ import os
             nonisolated(unsafe) let running = running
             await running.update(content)
             Self.log("updated: \(Self.describe(state, at: now))")
+        } else if activity?.activityState == .dismissed || dismissed == plan.id {
+            dismissed = plan.id   // the user removed it from the Lock Screen: not again for this plan (a new plan may start one)
+            activity = nil
         } else {
             do {
                 activity = try Activity.request(attributes: PlanActivityAttributes(day: day), content: content, pushType: nil)
@@ -74,11 +83,12 @@ import os
         }
     }
     private var ending: Set<String> = []
+    private var dismissed: UUID?
 
     static func state(of plan: DayPlan, at now: Date) -> PlanActivityAttributes.ContentState {
         let focus = plan.focus(at: now)
         return PlanActivityAttributes.ContentState(current: focus.current.map(block), next: focus.next.map(block),
-                                                   asking: plan.awaitingAnswer(at: now).map(block), done: plan.doneCount, total: plan.blocks.count)
+                                                   asking: plan.awaitingAnswer(at: now).map(block), done: plan.doneCount, total: plan.workBlocks.count)
     }
 
     private static func block(_ b: PlanBlock) -> PlanActivityAttributes.Block {

@@ -91,3 +91,16 @@ struct StripTests {
         #expect(!Strip.showsTotal(bands: 1) && Strip.showsTotal(bands: 2))   // one course is its own total
     }
 }
+
+extension StripTests {
+    @Test func aPileupIsADayApartAcrossTheChangeOfClocks() {
+        let cal = Fixture.calendar
+        func heavy(_ m: Int, _ d: Int) -> StripItem { StripItem(id: UUID(), title: "Exam \(m)/\(d)", courseID: nil, courseCode: "X", due: Fixture.day(m, d), dueHasTime: false, points: 20, state: .projected) }
+        #expect(Strip.collisions([heavy(10, 31), heavy(11, 1)], calendar: cal).count == 1)   // Sat and Sun: 25 hours apart across the fall-back night
+        #expect(Strip.collisions([heavy(11, 2), heavy(11, 3)], calendar: cal).count == 1)
+        #expect(Strip.collisions([heavy(11, 2), heavy(11, 4)], calendar: cal).isEmpty)
+        // A period holds its start and not its end.
+        let day = DateInterval(start: cal.startOfDay(for: Fixture.day(11, 2)), duration: 86_400)
+        #expect(day.holds(day.start) && !day.holds(day.end) && day.contains(day.end))
+    }
+}

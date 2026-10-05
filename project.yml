@@ -3,7 +3,7 @@ name: Horizon
 options:
   bundleIdPrefix: com.daniel
   fileTypes:
-    icon:   # an Icon Composer document is one opaque file to Xcode (folder.iconcomposer.icon), compiled by actool with the asset catalog
+    icon:   # an Icon Composer document is one opaque file to Xcode (wrapper.icon), compiled by actool with the asset catalog
       file: true
       buildPhase: resources
   deploymentTarget:
@@ -53,11 +53,15 @@ targets:
       properties:
         CFBundleDisplayName: Horizon
         CFBundleName: Horizon
-        UILaunchScreen: {}
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)   # the extensions take the same: App Store validation refuses a mismatch
+        ITSAppUsesNonExemptEncryption: false   # HTTPS only
+        UILaunchScreen:
+          UIColorName: Paper   # the page's colour from the first frame, not white (or black) before it
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
-        NSRemindersFullAccessUsageDescription: Horizon writes your deadlines to a Reminders list called Horizon, so they still fire if you stop opening the app.
-        NSCalendarsFullAccessUsageDescription: Horizon reads your calendar to plan around classes and appointments.
+        NSRemindersFullAccessUsageDescription: Horizon writes your deadlines to a Reminders list called Horizon, so they still fire if you stop opening the app, and reads back what you check off there.
+        NSCalendarsFullAccessUsageDescription: Horizon reads your calendar to plan your day around classes and appointments. With planning by Claude turned on, the day's events are sent to Anthropic.
         NSCameraUsageDescription: Horizon scans printed syllabi and handouts with the camera.
         NSSupportsLiveActivities: true
         CFBundleURLTypes:
@@ -69,6 +73,7 @@ targets:
         UISupportsDocumentBrowser: false
         CFBundleDocumentTypes:
           - CFBundleTypeName: Course document
+            CFBundleTypeRole: Viewer
             LSHandlerRank: Alternate
             LSItemContentTypes: [com.adobe.pdf, public.image, public.plain-text, org.openxmlformats.wordprocessingml.document]
         LSApplicationCategoryType: public.app-category.education
@@ -85,14 +90,17 @@ targets:
         SUPPORTS_MACCATALYST: NO
         ENABLE_PREVIEWS: YES
         GENERATE_INFOPLIST_FILE: NO
-        # CloudKit mirroring needs a paid team: add HORIZON_CLOUDKIT here and iCloud entitlements when one exists.
+        # CloudKit mirroring needs a paid team: when one exists, define HORIZON_CLOUDKIT for the HorizonCore target in Package.swift
+        # (swiftSettings: [.define("HORIZON_CLOUDKIT")]; an app target's conditions never reach a package) and add the iCloud entitlements.
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited)
         # macOS: signed with the team's development identity but without the App Group entitlement (local store fallback),
         # so the app's identity is stable across builds and the Reminders and Calendar grants it is given persist.
         # An ad-hoc signature changes with every build, and TCC then treats each build as a new app and denies it unasked.
         "CODE_SIGN_IDENTITY[sdk=macosx*]": "Apple Development"
         "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": Apps/Horizon/Horizon-macOS.entitlements
-        "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": $(HORIZON_IOS_ENTITLEMENTS)   # Horizon-PCC.entitlements once the PCC entitlement is granted (Local.xcconfig)
+      configs:
+        Release:
+          EXCLUDED_SOURCE_FILE_NAMES: sample-syllabus.pdf   # the sample feeds DEBUG paths only (Settings ▸ Debug, --ingest-sample)
   HorizonShare:
     type: app-extension
     platform: iOS
@@ -105,6 +113,8 @@ targets:
       path: Apps/HorizonShare/Info.plist
       properties:
         CFBundleDisplayName: Horizon
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.share-services
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
@@ -131,6 +141,8 @@ targets:
       path: Apps/HorizonWidgets/Info.plist
       properties:
         CFBundleDisplayName: Horizon
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:

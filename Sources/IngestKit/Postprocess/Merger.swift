@@ -30,8 +30,13 @@ enum Merger {
         if let known = options.knownCourse, course == nil, known.code != nil || known.title != nil {
             course = ParsedCourse(code: known.code ?? "", title: known.title ?? "", instructor: nil, term: known.term, termStart: nil, termEnd: nil, room: nil, meetings: [])
         }
-        let year = DateResolver.year(inTerm: course?.term ?? options.knownCourse?.term, fallback: options.defaultYear ?? options.calendar.component(.year, from: Date()))
+        let term = course?.term ?? options.knownCourse?.term
+        let year = DateResolver.year(inTerm: term, fallback: options.defaultYear ?? options.calendar.component(.year, from: Date()))
         var resolver = DateResolver(calendar: options.calendar, defaultYear: year)
+        resolver.termYears = DateResolver.years(inTerm: term)
+        resolver.season = DateResolver.season(of: term, calendar: options.calendar)
+        // The document's own order for numeric dates, from its own evidence; never the device's region.
+        resolver.dayFirst = DateResolver.readsDayFirst(([document.fullText] + outcomes.compactMap(\.transcript)).joined(separator: "\n"), year: year, calendar: options.calendar)
         // Term boundaries: the document's own "classes begin … and end …" sentence first, then a model date the document
         // actually names (the model has put a term start a week off, which shifts every week-relative deadline); an
         // image page keeps the model's reading.
@@ -45,10 +50,13 @@ enum Merger {
             }
             return nil
         }
-        course?.termStart = options.termStart ?? termDay(source.termBoundary(.start, resolver), \.termStart) ?? options.knownCourse?.termStart
-        course?.termEnd = termDay(source.termBoundary(.end, resolver), \.termEnd) ?? options.knownCourse?.termEnd
-        resolver.termStart = course?.termStart ?? options.termStart ?? options.knownCourse?.termStart
-        resolver.termEnd = course?.termEnd ?? options.knownCourse?.termEnd
+        // The bounds hold for the dates whether or not the document named its course.
+        let termStart = options.termStart ?? termDay(source.termBoundary(.start, resolver), \.termStart) ?? options.knownCourse?.termStart
+        let termEnd = termDay(source.termBoundary(.end, resolver), \.termEnd) ?? options.knownCourse?.termEnd
+        course?.termStart = termStart
+        course?.termEnd = termEnd
+        resolver.termStart = termStart
+        resolver.termEnd = termEnd
 
         // Grade components: dedupe by name; recover a missing weight from the source line; ignore rows once weights total 100%.
         var components: [ParsedGradeComponent] = []
@@ -224,9 +232,16 @@ enum Merger {
                     if !facts.dateAsWritten.localizedCaseInsensitiveContains("due") {
                         if let rest = Source.withoutDaySpan(facts.dateAsWritten), !Source.hasDate(rest) { ambiguous = true }
                         else if spans.contains(where: { $0.start != $0.end }), !spans.contains(where: { $0.start == $0.end }) { ambiguous = true }
+                        // Several days printed and none marked due ("Dec 7 & Dec 9"), with the model choosing none of them or no
+                        // date at all: the resolver fell back on the last, which the wording does not say is the one.
+                        let printed = Set(spans.flatMap { [$0.start, $0.end] }.map { "\($0.month ?? 0)-\($0.day ?? 0)" })
+                        let chosen = facts.dueDate.flatMap { resolver.ymd(iso: $0) }.map { "\($0.month ?? 0)-\($0.day ?? 0)" }
+                        if printed.count >= 2, chosen.map({ !printed.contains($0) }) ?? true { ambiguous = true }
                     }
-                    if ambiguous { flags.append(.dateAmbiguous); confidence = min(confidence, options.reviewThreshold - 0.05) }
+                    if ambiguous, !flags.contains(.dateAmbiguous) { flags.append(.dateAmbiguous) }
                 }
+                // Ambiguous by the row or the wording, or by the resolver (a week named without its day): never ready.
+                if flags.contains(.dateAmbiguous) { confidence = min(confidence, options.reviewThreshold - 0.05) }
                 // A model/wording disagreement is ignored when it is a year slip or the model's date appears nowhere in the
                 // document and the wording names one corroborated date; otherwise it means review.
                 if flags.contains(.dateDisagreement) {
@@ -241,7 +256,9 @@ enum Merger {
                     }
                     if !yearSlip, modelOnRow || !(writtenInSource && spans.count == 1) { confidence -= 0.3 }
                 }
-                if flags.contains(.dateOutsideTerm) { confidence -= 0.15 }
+                // A date outside the term (two weeks before it to three after) is a wrong year or a wrong reading more often than
+                // a real deadline: review, as for a date lifted from another line.
+                if flags.contains(.dateOutsideTerm) { confidence = min(confidence, options.reviewThreshold - 0.05) }
                 // The document names the item and the date, but never together: the date was lifted from another line.
                 if strict, !spans.isEmpty, let date = resolution.date, source.titleShares(title, dateForms: resolver.mentions(date)) == false {
                     flags.append(.dateNotOnRow); confidence = min(confidence, options.reviewThreshold - 0.05)
@@ -289,7 +306,7 @@ enum Merger {
             let weaker = indices.min { obligations[$0].confidence < obligations[$1].confidence }!
             obligations[weaker].status = .needsReview
         }
-        if merged > 0 { warnings.append("\(merged) duplicate obligation(s) merged across chunks") }
+        if merged > 0 { warnings.append("\(merged) duplicate obligation(s) merged") }
         if superseded > 0 { warnings.append("\(superseded) undated obligation(s) superseded by a dated copy") }
         if dropped > 0 { warnings.append("\(dropped) obligation(s) dropped as unsupported by the document text") }
         if skippedTopics > 0 { warnings.append("\(skippedTopics) lecture topic, reading or session line(s) skipped") }
@@ -299,7 +316,7 @@ enum Merger {
             guard let name = ob.componentName, let component = components.first(where: { Normalize.key($0.name) == Normalize.key(name) }),
                   let weight = component.weight else { continue }
             let onFile = obligations.filter { $0.componentName.map(Normalize.key) == Normalize.key(name) }.count
-            obligations[i].pointsAtStake = PointsAtStake.perItem(weight: weight, expectedCount: component.expectedCount, cadence: component.cadence,
+            obligations[i].pointsAtStake = PointsAtStake.perItem(weight: weight, expectedCount: component.expectedCount, dropLowest: component.dropLowest, cadence: component.cadence,
                                                                   termStart: resolver.termStart, termEnd: resolver.termEnd, onFile: onFile)
         }
 
@@ -309,16 +326,17 @@ enum Merger {
         // is read from the document itself, the way a skipped grade-table row is. Without any text to check against
         // (a picture the device model read, with no transcript), the model's words are kept and marked as unchecked.
         var policies: [ParsedPolicy] = []
-        var droppedPolicies = 0
+        var droppedPolicies = 0, overflowingPolicies = 0
         func accept(_ text: String, kind: PolicyKind, verbatim: Bool) {
             let key = Normalize.key(text)
-            guard !key.isEmpty, text.count <= 320 else { return }
+            guard !key.isEmpty else { return }
+            guard text.count <= 320 else { overflowingPolicies += 1; return }
             if let i = policies.firstIndex(where: { key.contains(Normalize.key($0.text)) }) {   // the same rule, said longer: keep the longer
                 if Normalize.key(policies[i].text) != key { policies[i] = ParsedPolicy(kind: policies[i].kind, text: text, verbatim: verbatim) }
                 return
             }
             guard !policies.contains(where: { Normalize.key($0.text).contains(key) }) else { return }   // a fragment of one already kept
-            guard policies.filter({ $0.kind == kind }).count < 3, policies.count < 12 else { return }
+            guard policies.filter({ $0.kind == kind }).count < 3, policies.count < 12 else { overflowingPolicies += 1; return }   // three of a kind, twelve in all
             policies.append(ParsedPolicy(kind: kind, text: text, verbatim: verbatim))
         }
         for facts in extractions.flatMap(\.policies) where !Normalize.key(facts.text).isEmpty {
@@ -340,18 +358,22 @@ enum Merger {
             }
         }
         if droppedPolicies > 0 { warnings.append("\(droppedPolicies) policy sentence(s) dropped: not the document's words, or not about a rule") }
+        if overflowingPolicies > 0 { warnings.append("\(overflowingPolicies) policy sentence(s) left out: longer than a rule, or past three of a kind or twelve in all") }
 
         // No-class dates: the wording must appear in the source.
         var noClass: [ParsedNoClass] = []
-        for facts in extractions.flatMap(\.noClassDates) where !source.hasText || source.contains(facts.dateAsWritten) {
+        var droppedBreaks = 0
+        for facts in extractions.flatMap(\.noClassDates) {
+            guard !source.hasText || source.contains(facts.dateAsWritten) else { droppedBreaks += 1; continue }
             let range = resolver.dayRange(in: facts.dateAsWritten)
             let start = range?.first ?? resolver.resolveDay(iso: facts.startDate, asWritten: "")
             let end = range?.last ?? resolver.resolveDay(iso: facts.endDate, asWritten: "") ?? start
-            guard let start else { continue }
+            guard let start else { droppedBreaks += 1; continue }
             if !noClass.contains(where: { $0.start == start && $0.end == end }) {
                 noClass.append(ParsedNoClass(dateAsWritten: facts.dateAsWritten, start: start, end: end))
             }
         }
+        if droppedBreaks > 0 { warnings.append("\(droppedBreaks) no-class date(s) dropped: not in the document's words, or no day to them") }
 
         obligations.sort { ($0.due ?? .distantFuture, $0.title) < ($1.due ?? .distantFuture, $1.title) }
         let sourcePlatform = outcomes.contains { $0.kind == .image } && !outcomes.contains { $0.kind == .text } ? source.uniquePlatform : nil
@@ -790,13 +812,15 @@ enum Merger {
     /// "", "null", "none", "n/a": the model had no wording to copy, whatever date it then chose.
     static func isNoWording(_ s: String) -> Bool { ["", "null", "none", "nil", "n a", "na", "tbd null"].contains(Normalize.key(s)) }
 
+    /// The same item read twice. Dated: the same day, and names alike or one inside the other ("Election 2026 assignment"
+    /// and "ELECTION 2026: … — DUE"). Undated, a day proves nothing, so only the same name is the same item: "Final
+    /// Project" and "Final Project Presentation", both TBD, are two.
     static func isDuplicate(_ a: ParsedObligation, _ b: ParsedObligation, calendar: Calendar) -> Bool {
-        let sameDay: Bool = switch (a.due, b.due) {
-        case (nil, nil): true
-        case (let x?, let y?): calendar.isDate(x, inSameDayAs: y)
-        default: false
+        switch (a.due, b.due) {
+        case (nil, nil): return Normalize.key(a.title) == Normalize.key(b.title) || Normalize.similarity(a.title, b.title) >= 0.8
+        case (let x?, let y?): guard calendar.isDate(x, inSameDayAs: y) else { return false }
+        default: return false
         }
-        guard sameDay else { return false }
         if Normalize.similarity(a.title, b.title) >= 0.5 { return true }
         // "Election 2026 assignment" and "ELECTION 2026: POWER & POLITICS IN ACTION — DUE" on one day are one item.
         let filler: Set<String> = ["assignment", "due", "the", "of", "and", "a", "an", "deadline", "in"]

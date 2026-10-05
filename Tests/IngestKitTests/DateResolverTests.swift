@@ -12,7 +12,8 @@ struct DateResolverTests {
 
     @Test(arguments: [
         ("Wed 9/9", 2026, 9, 9), ("9/16", 2026, 9, 16), ("Sept 14", 2026, 9, 14), ("Sept 14th", 2026, 9, 14), ("Wednesday, October 7", 2026, 10, 7),
-        ("Oct 7, 11:59 PM", 2026, 10, 7), ("Sep 25, 2026 11:59 PM", 2026, 9, 25), ("Thu Dec 3", 2026, 12, 3), ("March 3rd", 2026, 3, 3),
+        ("Oct 7, 11:59 PM", 2026, 10, 7), ("Sep 25, 2026 11:59 PM", 2026, 9, 25), ("Thu Dec 3", 2026, 12, 3),
+        ("March 3rd", 2027, 3, 3),                                     // no year printed: the March after a Fall term, not the one before it
         ("Week 1 (Sep 2): HW 1 due Wed 9/9", 2026, 9, 9),            // date after "due" wins over earlier dates
         ("Wednesday, November 25 – Friday, November 27", 2026, 11, 27), // last date when no "due"
         ("Friday, December 18, 2026, 10:00 AM–12:00 PM, room TBA", 2026, 12, 18),   // "TBA" about the room, not the date
@@ -30,7 +31,8 @@ struct DateResolverTests {
         #expect(spring.day(in: text) == Self.ymd(2031, m, d), "\(text)")
     }
 
-    @Test(arguments: ["TBA", "TBD", "date TBA by the registrar", "to be announced", "TBA (December 16–22)"])
+    @Test(arguments: ["TBA", "TBD", "date TBA by the registrar", "to be announced", "TBA (December 16–22)", "Finals Week", "Date/Time per NYU Registrar",
+                      "to be confirmed", "TBC", "to be posted", "to be scheduled", "during the final exam period", "Finals week (December 16–22)"])
     func tbdIsNil(text: String) {
         #expect(resolver.day(in: text) == nil)
         #expect(DateResolver.isTBD(text))
@@ -124,6 +126,65 @@ struct DateResolverTests {
     @Test func termYear() {
         #expect(DateResolver.year(inTerm: "Spring 2027", fallback: 2026) == 2027)
         #expect(DateResolver.year(inTerm: nil, fallback: 2026) == 2026)
+        #expect(DateResolver.years(inTerm: "Academic Year 2026-2027") == 2026...2027 && DateResolver.years(inTerm: "2026–27") == 2026...2027)
+        #expect(DateResolver.years(inTerm: "Fall 2026") == nil && DateResolver.years(inTerm: "2026-2029") == nil)
+    }
+
+    @Test func aDateWithoutAYearTakesTheYearThatPutsItInTheTerm() {
+        // A Fall term's final in January is the January after it, and the model saying so is no disagreement.
+        let fall = DateResolver(calendar: Self.calendar, defaultYear: 2026, termStart: Self.date(2026, 9, 8), termEnd: Self.date(2026, 12, 18))
+        let final = fall.resolve(iso: "2027-01-08", asWritten: "January 8, 9:00 AM")
+        #expect(Self.calendar.dateComponents([.year, .month, .day, .hour], from: final.date!) == DateComponents(year: 2027, month: 1, day: 8, hour: 9) && final.flags.isEmpty)
+        #expect(fall.day(in: "September 15") == Self.ymd(2026, 9, 15) && fall.day(in: "1/8") == Self.ymd(2027, 1, 8))
+        // A label naming two years: autumn in the first, the rest in the second.
+        var academic = DateResolver(calendar: Self.calendar, defaultYear: 2026)
+        academic.termYears = 2026...2027
+        #expect(academic.day(in: "Essay 4 due March 12") == Self.ymd(2027, 3, 12) && academic.day(in: "October 2") == Self.ymd(2026, 10, 2))
+        // Only the label's season known: still the January after a Fall term.
+        var season = DateResolver(calendar: Self.calendar, defaultYear: 2026)
+        season.season = DateResolver.season(of: "Fall 2026", calendar: Self.calendar)
+        #expect(season.day(in: "Final Exam: January 8") == Self.ymd(2027, 1, 8) && season.day(in: "Dec 3") == Self.ymd(2026, 12, 3))
+        #expect(DateResolver.season(of: "Academic Year 2026-2027", calendar: Self.calendar) == nil)
+        // Nothing known about the term: the model's year, one either side of the default, stands where the wording has none.
+        let blind = DateResolver(calendar: Self.calendar, defaultYear: 2026)
+        let r = blind.resolve(iso: "2027-01-20", asWritten: "Jan 20")
+        #expect(Self.calendar.component(.year, from: r.date!) == 2027 && r.flags.isEmpty)
+        #expect(Self.calendar.component(.year, from: blind.resolve(iso: "2024-01-20", asWritten: "Jan 20").date!) == 2026)   // two years off is a slip, not a year
+    }
+
+    @Test func aLeapDayStaysTheTwentyNinth() {
+        let leap = DateResolver(calendar: Self.calendar, defaultYear: 2028)
+        #expect(leap.day(in: "Feb 29") == Self.ymd(2028, 2, 29) && leap.day(in: "2/29") == Self.ymd(2028, 2, 29) && leap.day(in: "Tuesday, February 29") == Self.ymd(2028, 2, 29))
+        let before = DateResolver(calendar: Self.calendar, defaultYear: 2027)   // the leap year beside it
+        #expect(before.day(in: "Feb 29") == Self.ymd(2028, 2, 29) && before.day(in: "2/29") == Self.ymd(2028, 2, 29))
+        let r = resolver.resolve(iso: nil, asWritten: "Feb 29")   // no leap year near a 2026 term: never 1 March, and out of the term
+        #expect(Self.calendar.dateComponents([.month, .day], from: r.date!) == DateComponents(month: 2, day: 29) && r.flags.contains(.dateOutsideTerm))
+    }
+
+    @Test func numericDatesFollowTheDocumentNeverTheRegion() {
+        // The detector reads "9/4" by the device's region; the resolver hands it every numeric date in that order itself.
+        #expect(resolver.day(in: "HW 3 due 9/4") == Self.ymd(2026, 9, 4) && resolver.day(in: "9/4/2026") == Self.ymd(2026, 9, 4) && resolver.day(in: "9/4/26") == Self.ymd(2026, 9, 4))
+        #expect(resolver.day(in: "9/4-9/11")?.day == 11 && resolver.dayRange(in: "9/4-9/11")?.first == Self.date(2026, 9, 4))
+        // A document proves day first by a first number over 12, or a weekday only that reading fits.
+        #expect(DateResolver.readsDayFirst("Quiz 1 13/9, Quiz 2 4/10", year: 2026, calendar: Self.calendar))
+        #expect(DateResolver.readsDayFirst("Lab 2 Thu 9/4", year: 2026, calendar: Self.calendar))        // 9 April 2026 is a Thursday; 4 September a Friday
+        #expect(!DateResolver.readsDayFirst("HW 3 due Fri 9/4, HW 4 due 9/23", year: 2026, calendar: Self.calendar))
+        #expect(!DateResolver.readsDayFirst("HW 3 due 9/4", year: 2026, calendar: Self.calendar))         // nothing decides: month first
+        var british = resolver
+        british.dayFirst = true
+        #expect(british.day(in: "Quiz 2 4/10") == Self.ymd(2026, 10, 4) && british.day(in: "13/9") == Self.ymd(2026, 9, 13))   // after a number, too
+        #expect(british.mentions(Self.date(2026, 10, 4)).contains("4 10") && !british.mentions(Self.date(2026, 10, 4)).contains("10 4"))
+    }
+
+    @Test func aWeekWithoutItsDayLeavesTheDayToTheModelInsideIt() {
+        let term = DateResolver(calendar: Self.calendar, defaultYear: 2026, termStart: Self.date(2026, 8, 31))
+        let inWeek = term.resolve(iso: "2026-09-18", asWritten: "due end of Week 3")
+        #expect(Self.calendar.component(.day, from: inWeek.date!) == 18 && inWeek.flags.isEmpty && inWeek.resolvedFromText)
+        let none = term.resolve(iso: nil, asWritten: "Week 3")
+        #expect(Self.calendar.component(.day, from: none.date!) == 14 && none.flags == [.dateAmbiguous])   // the Monday, for review
+        let outside = term.resolve(iso: "2026-09-25", asWritten: "Week 3")
+        #expect(Self.calendar.component(.day, from: outside.date!) == 14 && outside.flags.contains(.dateAmbiguous) && outside.flags.contains(.dateDisagreement))
+        #expect(term.resolve(iso: nil, asWritten: "Week 3, Thursday").flags.isEmpty)   // a day named: as before
     }
 
     @Test func mentions() {

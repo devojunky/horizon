@@ -22,6 +22,9 @@ public struct CourseCoverage: Sendable, Identifiable, Equatable {
     public var neverIngested: [PlatformGap]
     /// No document was ever read for the course and it has no items.
     public var nothingOnFile: Bool
+    /// Something is on file but no grade table: there are no rhythms or counts to check its items against, so "looks
+    /// covered" would claim what was never checked.
+    public var noGradeTable: Bool = false
     /// Higher is worse. Courses sort by this, never by name.
     public var suspicion: Double
     /// "Bio has been silent for 9 days and its syllabus implies weekly quizzes." The whole story in one sentence: what
@@ -36,13 +39,15 @@ public struct CourseCoverage: Sendable, Identifiable, Equatable {
         daysSinceUpdate.map { $0 == 0 ? "Updated today" : $0 == 1 ? "Updated yesterday" : "Updated \($0) days ago" }
     }
 
-    /// What says the app may be blind here, strongest first, one short line each: the silence, an empty course, the
-    /// rhythms the syllabus sets that the items on file do not keep, the sites never read. Empty when nothing does. A
-    /// site's grade rows are named only when no line before it names them all: a long row is not said twice.
+    /// What says the app may be blind here, strongest first, one short line each: the silence, an empty course, a
+    /// course with no grade table, the rhythms the syllabus sets that the items on file do not keep, the sites never
+    /// read. Empty when nothing does. A site's grade rows are named only when no line before it names them all: a long
+    /// row is not said twice.
     public var findings: [String] {
         var lines: [String] = []
         if isSilent, let days = daysSilent { lines.append("Silent for \(days) days while work fell due.") }
         if nothingOnFile { lines.append("Nothing on file.") }
+        if noGradeTable { lines.append("No grade table on file, so there is nothing to check its items against.") }
         lines += cadenceGaps.map(\.finding)
         let named = Set(cadenceGaps.map { Normalize.key($0.component) })
         lines += neverIngested.map { $0.finding(listing: !$0.components.allSatisfy { named.contains(Normalize.key($0)) }) }
@@ -158,7 +163,7 @@ public enum Coverage {
             let key = Normalize.key(component.name)
             let onFile = mine.filter { $0.componentName.map(Normalize.key) == key }
             let onFileInWindow = inWindow.filter { $0.componentName.map(Normalize.key) == key }.count
-            let termOver = course.termEnd.map { $0 < now } ?? false
+            let termOver = course.termEnd.flatMap { calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: $0)) }.map { $0 <= now } ?? false   // the last day still counts
             if let cadence = component.cadence, cadence != .once, !termOver {
                 let expectedInWindow = cadence == .weekly ? termDays / 7 : termDays / 14
                 if expectedInWindow > 0, onFileInWindow < expectedInWindow {
@@ -185,32 +190,38 @@ public enum Coverage {
             if let c = item.componentName, !componentsOn[item.platform, default: []].contains(where: { Normalize.key($0) == Normalize.key(c) }) { componentsOn[item.platform, default: []].append(c) }
         }
         // A page of the site has been read when a screenshot names it, or when an item came from a picture at all: a
-        // WebAssign page rarely spells its own name where Vision can read it.
+        // WebAssign page rarely spells its own name in its text, so the picture's reading may never say it.
         var ingestedFrom = Set(docs.compactMap(\.platform))
         let pictures = Set(docs.filter { imageKinds.contains($0.kind.lowercased()) }.map(\.id))
         for item in mine where item.sourceDocumentID.map(pictures.contains) == true { ingestedFrom.insert(item.platform) }
         let never = Platform.allCases.filter { named.contains($0) && !ingestedFrom.contains($0) }.map { PlatformGap(platform: $0, components: componentsOn[$0] ?? []) }
 
+        let noGradeTable = course.gradeComponents.isEmpty && !nothingOnFile
+
         var suspicion = 0.0
         if isSilent, let days = daysSilent { suspicion += min(Double(days), 30) * 0.05 }
         if nothingOnFile { suspicion += 1 }
+        if noGradeTable { suspicion += 0.3 }   // unchecked, so never ranked as the safest course
         suspicion += Double(gaps.count) * 0.4
         suspicion += Double(never.count) * 0.3
         if inWindow.isEmpty, !course.gradeComponents.isEmpty { suspicion += 0.3 }
 
         return CourseCoverage(course: course, daysSilent: daysSilent, isSilent: isSilent, daysSinceUpdate: daysSinceUpdate, upcoming14: inWindow.count,
-                              cadenceGaps: gaps, neverIngested: never, nothingOnFile: nothingOnFile, suspicion: suspicion,
-                              headline: headline(course: course, silentFor: isSilent ? daysSilent : nil, nothingOnFile: nothingOnFile, upcoming: inWindow.count, gaps: gaps, never: never))
+                              cadenceGaps: gaps, neverIngested: never, nothingOnFile: nothingOnFile, noGradeTable: noGradeTable, suspicion: suspicion,
+                              headline: headline(course: course, silentFor: isSilent ? daysSilent : nil, nothingOnFile: nothingOnFile, noGradeTable: noGradeTable,
+                                                 upcoming: inWindow.count, gaps: gaps, never: never))
     }
 
-    /// One sentence a person would say. The strongest signals only, each clause carrying its own subject.
-    static func headline(course: CourseSnapshot, silentFor: Int?, nothingOnFile: Bool, upcoming: Int, gaps: [CadenceGap], never: [PlatformGap]) -> String {
+    /// One sentence a person would say: every finding the page shows, in its order, each clause carrying its own
+    /// subject. What VoiceOver reads for the course, so it says no less than the page.
+    static func headline(course: CourseSnapshot, silentFor: Int?, nothingOnFile: Bool, noGradeTable: Bool = false, upcoming: Int, gaps: [CadenceGap], never: [PlatformGap]) -> String {
         let name = course.displayName
         var clauses: [String] = []
         if let days = silentFor { clauses.append("\(name) has been silent for \(days) days") }
         if nothingOnFile { clauses.append("\(name) has nothing on file") }
-        if let gap = gaps.first { clauses.append((clauses.isEmpty ? "\(name)'s " : "its ") + gap.sentence) }
-        if let gap = never.first { clauses.append(gap.sentence(name: name, first: clauses.isEmpty)) }
+        if noGradeTable { clauses.append((clauses.isEmpty ? name : "it") + " has no grade table to check its items against") }
+        for gap in gaps { clauses.append((clauses.isEmpty ? "\(name)'s " : "its ") + gap.sentence) }
+        for gap in never { clauses.append(gap.sentence(name: name, first: clauses.isEmpty)) }
         guard !clauses.isEmpty else {
             return upcoming == 0 ? "\(name) has nothing due in the next two weeks." : "\(name) looks covered: \(upcoming) due in the next two weeks."
         }

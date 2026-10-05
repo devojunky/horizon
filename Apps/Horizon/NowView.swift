@@ -43,7 +43,7 @@ struct NowView: View {
                     ToolbarSpacer(.fixed, placement: .primaryAction)   // the page's own, apart from the window's
                     ToolbarItemGroup(placement: .primaryAction) {   // every one of these is also in the Plan menu
                         Button { adding = true } label: { Label("Add Block", systemImage: "plus") }.help("Add a block to the plan")
-                        Button { telling = true } label: { Label("Tell the Planner", systemImage: "text.bubble") }.help("What the planner should respect (⌥⌘T)")
+                        Button { telling = true } label: { Label("Tell the Planner", systemImage: "text.bubble") }.help("What the planner should respect (⌥⌘P)")
                     }
                     if stage != .invitation {   // the invitation offers Plan Today itself: one prominent button on the page, not two
                         ToolbarItem(placement: .primaryAction) {
@@ -57,10 +57,13 @@ struct NowView: View {
                     }
                     #endif
                 }
-                .confirmationDialog("Replace the plan you edited?", isPresented: $confirmingReplan, titleVisibility: .visible) {
+                // An alert, not a dialog: asked from Plan Again at the top or Tonight Until at the foot, a popover's
+                // arrow pointed at whatever row it happened to be anchored on.
+                .alert("Replace the plan you edited?", isPresented: $confirmingReplan) {
                     Button("Plan Again", role: .destructive) { model.planAgain() }
+                    Button("Cancel", role: .cancel) {}
                 } message: {
-                    Text("Your changes to today's blocks are lost.")
+                    Text(model.pendingTonightEnd.map { "Planning again to \(PlanHours.label($0)) tonight loses your changes to today's blocks." } ?? "Your changes to today's blocks are lost.")
                 }
                 .onChange(of: confirmingReplan) { _, asking in if !asking { model.pendingTonightEnd = nil } }   // not planned again: tonight's end stays as it was
                 .sheet(item: $editing) { PlanBlockEditor(block: $0) }
@@ -109,7 +112,7 @@ struct NowView: View {
     /// block comes, and the foot becomes Tonight Until when the plan settles, so nothing below the rows jumps.
     private var stages: some View {
         let plan = model.plan
-        return TimelineView(.periodic(from: .now, by: 60)) { context in
+        return TimelineView(.everyMinute) { context in   // on the minute itself, not a minute after the page appeared
             PlanList(stage: stage, blocks: model.planning ? model.planDraft : plan?.blocks ?? [], note: model.planning ? nil : plan?.note,
                      now: context.date, asking: model.planning ? nil : plan?.awaitingAnswer(at: context.date)?.id,
                      streaming: model.planning, revealed: model.planning || model.planStreamed || revealed == plan?.id,
@@ -117,7 +120,10 @@ struct NowView: View {
                      planToday: { Task { await model.planToday() } }, tell: { telling = true },
                      edit: { editing = $0 }, delete: { model.deleteBlock($0) },
                      mark: { model.markBlock($0, done: $1) }, skip: { model.skipBlock($0, skipped: $1) }, chooseEnd: chooseEnd)
-                .onChange(of: context.date) { _, _ in Task { await model.syncActivity() } }   // the minute turns: the activity may have a new block on
+                .onChange(of: context.date) { _, _ in   // the minute turns: the activity may have a new block on, and a page left open overnight lets yesterday's plan go
+                    model.expirePlanIfStale()
+                    Task { await model.syncActivity() }
+                }
         }
         .onAppear { if let plan { reveal(plan.id) } }
         .onChange(of: plan?.id) { _, id in if let id { reveal(id) } }
@@ -174,7 +180,12 @@ private struct PlanList: View {
     var skip: (UUID, Bool) -> Void
     var chooseEnd: (Int) -> Void
 
-    private var done: Int { blocks.filter(\.isDone).count }
+    private var work: [PlanBlock] { blocks.filter(\.asksWhenOver) }   // what "x of y done" counts: not meals, rests or the calendar's events
+    private var done: Int { work.filter(\.isDone).count }
+
+    /// Whether setting it aside means anything: before it is over, or after it for a block that asks "finished?" (work
+    /// and study); a meal or a calendar event that is over was not "not finished". Taking a skip back always is.
+    private func canSkip(_ block: PlanBlock) -> Bool { block.isSkipped || now < block.end || block.asksWhenOver }
 
     /// Skip before a block is over; once it is, the same act answers "finished?" with no.
     private func skipTitle(_ block: PlanBlock) -> String {
@@ -188,13 +199,17 @@ private struct PlanList: View {
         blocks.map { block in block.id == asking ? 3 : !block.isOpen || now >= block.end ? 0 : now >= block.start ? 1 : 2 }
     }
 
-    /// The day and the time: one line, always, so the list under it never moves when something is done.
+    /// The day and the time: one line, always, so the list under it never moves when something is done; the day's
+    /// shorter form when the long one does not fit ("Monday, October 5", then "Mon, Oct 5").
     private var header: some View {
-        HStack {
-            Kicker(PlanHours.day(of: now, calendar: .current).formatted(.dateTime.weekday(.wide).month(.wide).day()))   // after midnight, the night's own day
-            Spacer()
-            Kicker(now.formatted(date: .omitted, time: .shortened))
+        let day = PlanHours.day(of: now, calendar: .current)   // after midnight, the night's own day
+        let time = Kicker(now.formatted(date: .omitted, time: .shortened))
+        return ViewThatFits(in: .horizontal) {
+            HStack { Kicker(day.formatted(.dateTime.weekday(.wide).month(.wide).day())); Spacer(); time }
+            HStack { Kicker(day.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())); Spacer(); time }
+            HStack { Kicker(day.formatted(.dateTime.month(.abbreviated).day())); Spacer(); time }
         }
+        .lineLimit(1)
         #if os(macOS)
         .frame(maxWidth: 820, alignment: .leading)   // the timetable's own measure (its rows keep it too)
         #endif
@@ -215,7 +230,7 @@ private struct PlanList: View {
                             .listRowSeparator(.hidden)
                     }
                     if done > 0, !streaming {
-                        Kicker(done == blocks.count ? "All done" : "\(done) of \(blocks.count) done")
+                        Kicker(done == work.count ? "All done" : "\(done) of \(work.count) done")
                             .contentTransition(.numericText())
                             .frame(maxWidth: 820, alignment: .leading)
                             .pageRow(top: 0, bottom: 8)
@@ -244,12 +259,12 @@ private struct PlanList: View {
                         .pageRow(top: 0, bottom: 0)
                         .listRowSeparator(.hidden)
                         .opacity(revealed ? 1 : 0)
-                        .offset(y: revealed ? 0 : 14)
+                        .offset(y: revealed || reduceMotion ? 0 : 14)   // with Reduce Motion the rows fade in where they stand
                         .animation(.spring(duration: 0.5).delay(reduceMotion ? 0 : Double(index) * 0.05), value: revealed)
                         .swipeActions(edge: .leading, allowsFullSwipe: !streaming) {
                             if !streaming {
-                                Button(block.isDone ? "Not Done" : "Done", systemImage: block.isDone ? "arrow.uturn.backward" : "checkmark") { mark(block.id, !block.isDone) }.tint(Design.accent)
-                                Button(skipTitle(block), systemImage: block.isSkipped ? "arrow.uturn.backward" : "forward.end") { skip(block.id, !block.isSkipped) }.tint(.gray)
+                                Button(block.isDone ? "Not Done" : "Done", systemImage: block.isDone ? "arrow.uturn.backward" : "checkmark") { mark(block.id, !block.isDone) }.tint(Design.accentInk)
+                                if canSkip(block) { Button(skipTitle(block), systemImage: block.isSkipped ? "arrow.uturn.backward" : "forward.end") { skip(block.id, !block.isSkipped) }.tint(.gray) }
                             }
                         }
                         .swipeActions(edge: .trailing, allowsFullSwipe: !streaming) {
@@ -258,14 +273,14 @@ private struct PlanList: View {
                         .contextMenu {
                             if !streaming {
                                 Button(block.isDone ? "Mark Not Done" : "Mark Done", systemImage: block.isDone ? "arrow.uturn.backward" : "checkmark") { mark(block.id, !block.isDone) }
-                                Button(skipTitle(block), systemImage: block.isSkipped ? "arrow.uturn.backward" : "forward.end") { skip(block.id, !block.isSkipped) }
-                                Button("Edit Block…") { edit(block) }
-                                Button("Delete Block", role: .destructive) { delete(block.id) }
+                                if canSkip(block) { Button(skipTitle(block), systemImage: block.isSkipped ? "arrow.uturn.backward" : "forward.end") { skip(block.id, !block.isSkipped) } }
+                                Button("Edit Block…", systemImage: "pencil") { edit(block) }
+                                Button("Delete Block", systemImage: "trash", role: .destructive) { delete(block.id) }
                             }
                         }
                         .accessibilityHint(streaming ? "" : "Opens the editor")
                     }
-                    if stage == .timetable, !streaming, blocks.isEmpty {
+                    if stage == .timetable, !streaming, blocks.isEmpty, note == nil {   // a note ("The day ended at 10 PM…") already says why, and what to do
                         Text("Nothing planned. Add a block, or plan again.").foregroundStyle(.secondary).pageRow(top: 14, bottom: 0).listRowSeparator(.hidden)
                     }
                     foot
@@ -315,7 +330,7 @@ private struct PlanList: View {
             if stage == .working {
                 WorkingLine(kicker: "Planning", line: "Reading your calendar and the coming weeks…")
                     .padding(.horizontal, -20)   // the line keeps its own 20 points; the row has the page's already
-                    .transition(.opacity)
+                    .transition(.fadeThrough)   // one place: the old out before the new in
             } else if streaming {
                 HStack(spacing: 10) {
                     ProgressView().controlSize(.small)
@@ -325,14 +340,14 @@ private struct PlanList: View {
                 .padding(.vertical, 14)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Planning the rest")
-                .transition(.opacity)
+                .transition(.fadeThrough)   // one place: the old out before the new in
             } else {
                 #if os(iOS)
                 // Where the plan stops, the choice of where it stops tonight.
                 TonightUntil(end: until, usual: usualEnd, choose: chooseEnd)
                     .padding(.leading, blocks.isEmpty ? 0 : 92 + 34)   // under the words, past the time column and the rail
                     .padding(.vertical, 14)
-                    .transition(.opacity)
+                    .transition(.fadeThrough)   // one place: the old out before the new in
                 #else
                 Color.clear.frame(height: 44).accessibilityHidden(true)
                 #endif
@@ -372,8 +387,10 @@ struct BlockRow: View {
                 Text(Self.clock(block.start)).font(.system(.title3, design: .serif, weight: .semibold)).monospacedDigit()
                 Text("to \(Self.clock(block.end))").font(.caption).foregroundStyle(.secondary).monospacedDigit()
             }
+            .lineLimit(1)                                       // a time is one figure: never "1:3 / 0 A / M"
+            .dynamicTypeSize(...DynamicTypeSize.accessibility1) // the column keeps its measure; the title beside it grows on
             .frame(width: 92, alignment: .trailing)
-            .minimumScaleFactor(0.8)
+            .minimumScaleFactor(0.6)
             .padding(.top, 14)
             .opacity(wordsIn ? 1 : 0)
             ZStack(alignment: .top) {
@@ -432,7 +449,7 @@ struct BlockRow: View {
         // was still growing.
         .contentShape(Rectangle())
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(Self.clock(block.start)) to \(Self.clock(block.end)), \(block.title)\(block.within.map { ", in \($0)" } ?? "")\(block.isDone ? ", done" : block.isSkipped ? (block.wasLeftUnfinished ? ", not finished" : ", skipped") : asking ? ", finished?" : phase == .current ? ", now" : "")")
+        .accessibilityLabel("\(Self.clock(block.start)) to \(Self.clock(block.end)), \(block.title)\(block.within.map { ", in \($0)" } ?? "")\(block.reason.isEmpty ? "" : ". \(block.reason)")\(block.isDone ? ", done" : block.isSkipped ? (block.wasLeftUnfinished ? ", not finished" : ", skipped") : asking ? ", finished?" : phase == .current ? ", now" : "")")
         .onAppear {
             guard arriving, !reduceMotion else { return }
             headDrawn = false; landed = false; wordsIn = false
@@ -495,12 +512,19 @@ struct TonightUntil: View {
     let usual: Int
     var choose: (Int) -> Void
 
+    /// The ends still ahead (at 2 AM, 6 PM to 2 AM are over), and the one chosen whatever it is.
+    private var choices: [Int] {
+        let calendar = Calendar.current, now = Date()
+        let into = calendar.dateComponents([.hour], from: PlanHours.day(of: now, calendar: calendar), to: now).hour ?? 0   // hours since the plan's day began, past midnight too
+        return PlanHours.ends.filter { $0 > into || $0 == end }
+    }
+
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 0) {   // the pop-up button brings its own inset
             Text("Tonight until").foregroundStyle(.secondary).accessibilityHidden(true)   // the pop-up says it
             // The system's pop-up button on both platforms: the time alone on the button, the usual end marked in the list.
-            Picker(selection: Binding(get: { end }, set: choose)) {
-                ForEach(PlanHours.ends, id: \.self) { hour in Text(PlanHours.choice(hour, usual: usual)).tag(hour) }
+            Picker(selection: Binding(get: { end }, set: { choose($0) })) {
+                ForEach(choices, id: \.self) { hour in Text(PlanHours.choice(hour, usual: usual)).tag(hour) }
             } label: {
                 Text("Tonight until")
             } currentValueLabel: {

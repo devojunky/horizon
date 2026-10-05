@@ -3,7 +3,7 @@ import IngestKit
 
 /// Writes obligations to Reminders. The only code path that creates, updates, or removes Horizon's reminders.
 /// It works from a fresh fetch of the Horizon list handed in by `SyncCoordinator`, never from local state
-/// (SPEC §4.4 idempotency), and only the device that created a row creates its reminder.
+/// (SPEC §4.4 idempotency), and with CloudKit mirroring only the device that created a row creates its reminder.
 public actor ReminderProjector {
     private let store: HorizonStore
     private let reminders: any ReminderStore
@@ -51,7 +51,7 @@ public actor ReminderProjector {
                     report.updated += 1
                 }
                 try await store.markProjected(id: obligation.id, externalID: match.externalID, title: draft.title, due: draft.due, notes: obligation.notes)
-            } else if !listGone, obligation.ekExternalID == nil, obligation.createdOn.isEmpty || obligation.createdOn == currentDevice {
+            } else if !listGone, obligation.ekExternalID == nil, Self.writes(obligation, on: currentDevice) {
                 let item = try await reminders.create(draft)
                 known.insert(item.externalID)
                 try await store.markProjected(id: obligation.id, externalID: item.externalID, title: draft.title, due: draft.due, notes: obligation.notes)
@@ -66,10 +66,24 @@ public actor ReminderProjector {
         for obligation in try await store.pendingCompletions() {
             guard let externalID = obligation.ekExternalID, known.contains(externalID) else { continue }
             guard try await reminders.setCompleted(externalID: externalID, obligation.completedAt != nil, at: obligation.completedAt) else { continue }
-            try await store.completionProjected(id: obligation.id)
+            try await store.completionProjected(id: obligation.id, wrote: obligation.completedAt != nil)
             report.checked += 1
         }
         return (report, known)
+    }
+
+    /// Whether this device makes the row's reminder. With CloudKit mirroring two devices share the rows, and only the
+    /// one that created a row writes its reminder, so the two never race. Without it (the store is this device's alone)
+    /// every row was written here, by the app, its share extension or the folder watcher, and a renamed Mac must still
+    /// write the rows it made under its old name.
+    static func writes(_ o: ObligationSnapshot, on device: String) -> Bool {
+        #if HORIZON_CLOUDKIT
+        // Before mirroring ships `createdOn` must become a per-install identifier (a UUID made once in the App Group's
+        // defaults): a device's name changes (a Mac renamed, " (2)" added by macOS), and on iOS it is only the model.
+        return o.createdOn.isEmpty || o.createdOn == device
+        #else
+        return true
+        #endif
     }
 
     public static func draft(for o: ObligationSnapshot) -> ReminderDraft {
@@ -124,9 +138,12 @@ public enum Reconciler {
             // A reminder that no longer says what we last wrote was edited by hand in Reminders.
             guard let projectedTitle = obligation.projectedTitle else { continue }
             let titleEdited = item.title != projectedTitle
+            // A date-only due is a day: one moved by hand is a whole day off. Less than half a day is the same day seen from
+            // a nearby time zone (EventKit hands it back at 23:59 in the zone the device is in now), not an edit; a farther
+            // move is put right by `DayAnchor`, which moves the store's days with the zone.
             let dueEdited: Bool = switch (item.due, obligation.projectedDue) {
                 case (nil, nil): false
-                case (let a?, let b?): item.hasTime ? abs(a.timeIntervalSince(b)) > 60 : !calendar.isDate(a, inSameDayAs: b)
+                case (let a?, let b?): item.hasTime ? abs(a.timeIntervalSince(b)) > 60 : !calendar.isDate(a, inSameDayAs: b) && abs(a.timeIntervalSince(b)) >= 12 * 3600
                 default: true
             }
             let userNotes = ReminderDraft.userText(in: item.notes)
@@ -154,10 +171,13 @@ public enum Reconciler {
         return !written.isEmpty && !written.contains(where: present.contains)
     }
 
-    /// "Homework 3 · MA-UY 1124" → "Homework 3" when the course suffix is intact.
+    /// "Homework 3 · Calculus II" → "Homework 3" when the course suffix is intact: the course as reminder titles name it
+    /// (`reminderTitle`: its name, else its code), or its code, as titles were once written.
     static func stripCourse(_ title: String, _ o: ObligationSnapshot) -> String {
-        guard let code = o.courseCode, title.hasSuffix(" · \(code)") else { return title }
-        return String(title.dropLast(code.count + 3))
+        for name in [o.courseName, o.courseCode].compactMap({ $0 }) where !name.isEmpty && title.hasSuffix(" · \(name)") {
+            return String(title.dropLast(name.count + 3))
+        }
+        return title
     }
 }
 
@@ -200,7 +220,8 @@ public struct DefaultsSeenIDs: SeenReminderIDs {
 }
 
 /// Foreground / EventKit-change entry point: reconcile, remove discarded, project. One run at a time; a request that
-/// arrives mid-run makes it run once more, so nothing confirmed during a parse waits for the next foreground.
+/// arrives mid-run (a rerun included) makes it run once more, so nothing confirmed during a parse waits for the next
+/// foreground.
 public actor SyncCoordinator {
     private let store: HorizonStore
     private let reminders: any ReminderStore
@@ -236,23 +257,29 @@ public actor SyncCoordinator {
         return try await reminders.fetchHorizonList()
     }
 
-    /// Runs `work` as the one sync in flight; a sync asked for meanwhile waits on it, and runs once more after it.
+    /// Runs `work` as the one sync in flight; a sync asked for meanwhile waits on it, and the task runs once more for
+    /// it, as often as one is asked for. The task owns its reruns and lets go of `inFlight` itself, on this actor, before
+    /// it completes: whoever waits on it resumes to find no sync in flight, never a finished one to spin on.
     private func exclusively(_ work: @escaping @Sendable () async throws -> ReminderProjector.Report) async throws -> ReminderProjector.Report {
-        let task = Task { try await work() }
-        inFlight = task
-        defer { inFlight = nil }
-        var report = try await task.value
-        if rerunRequested {
-            rerunRequested = false
-            report = try await run()
+        let task = Task { () async throws -> ReminderProjector.Report in
+            defer { self.inFlight = nil; self.rerunRequested = false }
+            var report = try await work()
+            while self.rerunRequested {
+                self.rerunRequested = false
+                report = try await self.run()
+            }
+            return report
         }
-        return report
+        inFlight = task
+        return try await task.value
     }
 
     /// Rows first, then the list: the rows whose reminders went with the old list forget them before any list exists.
+    /// With the list there (a stale Recreate), it is an ordinary sync: a reminder deleted by hand stays deleted.
     private func restore() async throws -> ReminderProjector.Report {
         let current = try await reminders.fetchHorizonList()
-        _ = try await store.forgetReminders(except: Set(current?.items.map(\.externalID) ?? []))
+        guard current == nil else { return try await run() }
+        _ = try await store.forgetReminders(except: [])
         try await reminders.ensureHorizonList()
         return try await run()
     }
@@ -268,8 +295,9 @@ public actor SyncCoordinator {
                 }
                 seenIDs.saveListID(list.id)
             }
+            let read = Date()
             let obligations = try await store.obligations(includeDeleted: true)
-            try await store.applyReconciliation(Reconciler.changes(obligations: obligations, reminders: list.items, seen: seen))
+            try await store.applyReconciliation(Reconciler.changes(obligations: obligations, reminders: list.items, seen: seen), since: read)
             seen.formUnion(list.items.map(\.externalID))
         }
         // A missing list deletes nothing. One this device wrote to (deleted wholesale, or its account signed out) is not

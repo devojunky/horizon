@@ -97,6 +97,7 @@ struct ClaudeClientTests {
         let seen = Seen()
         let completion = try await script.client().stream(Self.request) { text in seen.append(text) }
         #expect(completion.text == "{\"a\": 2}" && completion.attempts == 2 && script.slept == [0.5])
+        #expect(completion.inputTokens == 600 && completion.cachedTokens == 200)   // the attempt cut short was paid for too
         #expect(seen.value.first == "{\"a\": 1}" && seen.value.last == "{\"a\": 2}")   // the retry starts over; the caller replaces, never appends
     }
 
@@ -123,6 +124,56 @@ struct ClaudeClientTests {
         await #expect(throws: ClaudeError.modelNotFound("claude-sonnet-5")) { try await missing.client().stream(Self.request) }
         let malformed = Script([.reply(status: 400, lines: [#"{"type": "error", "error": {"type": "invalid_request_error", "message": "schema: bad"}}"#])])
         await #expect(throws: ClaudeError.badRequest("schema: bad")) { try await malformed.client().stream(Self.request) }
+        // An account out of credit, and a key the model or the region is closed to: each its own error, said plainly, never retried.
+        let broke = Script([.reply(status: 402, lines: [#"{"type": "error", "error": {"type": "billing_error", "message": "Your credit balance is too low."}}"#])])
+        await #expect(throws: ClaudeError.billing) { try await broke.client().stream(Self.request) }
+        #expect(broke.sent.count == 1 && Extractor.explainClaude(ClaudeError.billing).hasPrefix("the Anthropic account behind the key is out of credit"))
+        let closed = Script([.reply(status: 403, lines: [#"{"type": "error", "error": {"type": "permission_error", "message": "This organization does not have access to this model."}}"#])])
+        await #expect(throws: ClaudeError.forbidden(model: "claude-sonnet-5")) { try await closed.client().stream(Self.request) }
+        #expect(closed.sent.count == 1 && Extractor.explainClaude(ClaudeError.forbidden(model: "claude-sonnet-5")).hasPrefix("Anthropic does not let this key use Sonnet 5"))
+        #expect(ClaudeClient.apiError(status: 402, type: "", message: "", model: "m") == .billing && !ClaudeError.billing.isRetryable && !ClaudeError.forbidden(model: "m").isRetryable)
+    }
+
+    @Test func readingAsksForNoThinkingWhereTheModelTakesIt() async throws {
+        func thinking(_ model: ClaudeModelChoice, _ request: ClaudeClient.Request) async throws -> [String: Any]? {
+            let script = Script([.reply(status: 200, lines: Self.whole("{}"))])
+            _ = try await script.client(model: model).stream(request)
+            return script.body["thinking"] as? [String: Any]
+        }
+        var off = Self.request; off.thinking = .off
+        #expect(try await thinking(.sonnet5, off)?["type"] as? String == "disabled")
+        #expect(try await thinking(.opus5, off)?["type"] as? String == "disabled")
+        #expect(try await thinking(.haiku45, off) == nil)                     // thinks only when asked: nothing to send
+        var hard = off; hard.effort = "xhigh"
+        #expect(try await thinking(.opus5, hard) == nil)                        // Opus 5 refuses thinking off above high
+        #expect(try await thinking(.sonnet5, Self.request) == nil)              // adaptive: the API's own default, sent as nothing
+    }
+
+    @Test func eachPictureFollowsItsLabel() async throws {
+        let script = Script([.reply(status: 200, lines: Self.whole("{}"))])
+        _ = try await script.client().stream(ClaudeClient.Request(system: "sys", user: "read", images: [Data([1]), Data([2])], imageLabels: ["Page 1", "Page 3"], schema: ClaudeSchemas.extraction, maxOutputTokens: 500))
+        let content = ((script.body["messages"] as? [[String: Any]])?.first?["content"] as? [[String: Any]]) ?? []
+        #expect(content.map { $0["type"] as? String } == ["text", "image", "text", "image", "text"])
+        #expect(content.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil } == ["Page 1", "Page 3", "read"])
+    }
+
+    @Test func anEventHoldingALineSeparatorIsOneLine() async throws {
+        // A policy quoted with a Word soft break (U+2028) and a NEL: JSON need not escape either, and the stream splits at LF alone.
+        let event = "data: {\"type\": \"content_block_delta\", \"index\": 0, \"delta\": {\"type\": \"text_delta\", \"text\": \"Late work\u{2028}is penalised \u{0085} 10%\"}}\r\ndata: {\"type\": \"message_stop\"}\n"
+        let bytes = AsyncStream<UInt8> { continuation in for byte in Array(event.utf8) { continuation.yield(byte) }; continuation.finish() }
+        var lines: [String] = []
+        try await ClaudeTransport.eventLines(of: bytes) { lines.append($0) }
+        #expect(lines.count == 2 && lines.allSatisfy { (try? JSONSerialization.jsonObject(with: Data($0.dropFirst(5).utf8))) != nil })
+    }
+
+    @Test func aCancelThatCutsTheLastAttemptIsACancellation() async throws {
+        let transport = ClaudeTransport { _ in
+            withUnsafeCurrentTask { $0?.cancel() }   // the user's Cancel lands while the reply streams
+            throw URLError(.networkConnectionLost)
+        }
+        var policy = ClaudeClient.Policy(); policy.attempts = 1
+        let client = ClaudeClient(configuration: ClaudeConfiguration(apiKey: "sk-ant-test"), transport: transport, policy: policy, sleep: { _ in })
+        await #expect(throws: CancellationError.self) { try await client.stream(Self.request) }
     }
 
     @Test func aRequestTooLargeIsItsOwnError() async throws {
@@ -153,7 +204,7 @@ struct ClaudeClientTests {
     @Test func theProbeAsksForOneWord() async throws {
         let script = Script([.reply(status: 200, lines: Self.whole(#"{"answer": "OK"}"#))])
         #expect(try await script.client().probe() == "Sonnet 5 answered.")
-        #expect(script.body["max_tokens"] as? Int == 16)
+        #expect(script.body["max_tokens"] as? Int == 16 && (script.body["thinking"] as? [String: Any])?["type"] as? String == "disabled")   // sixteen tokens leave no room to think
         let bad = Script([.reply(status: 401, lines: [#"{"type": "error", "error": {"type": "authentication_error", "message": "no"}}"#])])
         await #expect(throws: ClaudeError.unauthorized) { try await bad.client().probe() }
     }
@@ -183,6 +234,15 @@ struct ClaudeClientTests {
         let e = try ExtractionJSON.decode(text)
         #expect(e.course?.title == nil && e.course?.meetings.first?.start == nil && e.gradeComponents.first?.count == nil && e.obligations.first?.dueDate == nil && e.noClassDates.first?.endDate == nil)
         #expect(e.obligations.first?.title == "Quiz 1" && e.policies.first?.kind == "late_work")
+    }
+
+    @Test func aMalformedOrHugeReplyNeitherHangsNorCrashes() {
+        // A "}" where an array element should be: the snapshot stops there instead of spinning on it.
+        #expect(PartialJSON.snapshot(#"{"obligations": [{"title": "HW 1"} }"#).arrays["obligations"]?.count == 1)
+        // A count too large for an Int is no count.
+        let huge = ExtractionJSON.salvage(#"{"gradeComponents": [{"name": "Quizzes", "count": 99999999999999999999, "dropLowest": 1e300, "cadence": "weekly", "platform": "lms"}], "obligations": []"#)
+        #expect(huge?.gradeComponents.first?.name == "Quizzes" && huge?.gradeComponents.first?.count == nil && huge?.gradeComponents.first?.dropLowest == nil)
+        #expect(ExtractionJSON.integer(12.0) == 12 && ExtractionJSON.integer(12.5) == nil)
     }
 
     @Test func thePlanDecodes() throws {
@@ -225,6 +285,8 @@ struct ReadProgressTests {
     @Test func theOutlineComesFirstAndSetsTheTotals() {
         let sizing = ExtractionJSON.progress(#"{"outline": {"obligationTitles": ["HW 1", "HW"#)
         #expect(sizing.stage == .sizing && sizing.outline == nil && sizing.done == 1)   // the names counted as they arrive
+        let odd = ExtractionJSON.progress(#"{"outline": {"obligationTitles": ["Quiz \"A\"", "Ñandú — 9/23 \\", "Problem Set [3]", "HW 4"], "gradeR"#)
+        #expect(odd.done == 4)   // a name may hold a bracket or an escaped quote
         let measured = ExtractionJSON.progress(Self.outline + #", "course": {"code": "MA"#)
         #expect(measured.stage == .course && measured.outline?.titles == ["HW 1", "HW 2", "Quiz 1"] && measured.outline?.gradeRows == 2)
         #expect(ExtractionJSON.progress("").stage == .sizing && ExtractionJSON.progress("{").stage == .sizing)

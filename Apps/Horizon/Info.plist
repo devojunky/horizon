@@ -16,6 +16,8 @@
 		<dict>
 			<key>CFBundleTypeName</key>
 			<string>Course document</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
 			<key>LSHandlerRank</key>
 			<string>Alternate</string>
 			<key>LSItemContentTypes</key>
@@ -38,7 +40,7 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -51,17 +53,19 @@
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.education</string>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
 	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>Horizon reads your calendar to plan around classes and appointments.</string>
+	<string>Horizon reads your calendar to plan your day around classes and appointments. With planning by Claude turned on, the day's events are sent to Anthropic.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Horizon scans printed syllabi and handouts with the camera.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
-	<string>Horizon writes your deadlines to a Reminders list called Horizon, so they still fire if you stop opening the app.</string>
+	<string>Horizon writes your deadlines to a Reminders list called Horizon, so they still fire if you stop opening the app, and reads back what you check off there.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>UIBackgroundModes</key>
@@ -70,7 +74,10 @@
 		<string>fetch</string>
 	</array>
 	<key>UILaunchScreen</key>
-	<dict/>
+	<dict>
+		<key>UIColorName</key>
+		<string>Paper</string>
+	</dict>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

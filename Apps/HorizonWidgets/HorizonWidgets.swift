@@ -111,7 +111,8 @@ private struct LockScreenPlan: View {
                     Spacer()
                     Countdown(block: block, on: on).font(.system(.title3, design: .serif, weight: .semibold))
                 }
-                Text(block.title).font(.system(.title2, design: .serif, weight: .semibold)).lineLimit(2)
+                // The banner has about 160 points (HIG): the title comes first, the reason gets what is left.
+                Text(block.title).font(.system(.title2, design: .serif, weight: .semibold)).lineLimit(2).layoutPriority(1)
                 if !block.reason.isEmpty { Text(block.reason).font(.footnote).foregroundStyle(.secondary).lineLimit(2) }
                 HStack(spacing: 12) {
                     if on {
@@ -123,7 +124,7 @@ private struct LockScreenPlan: View {
                     }
                     ActivityActions(phase: phase)
                 }
-                if on, let line = then(after: block) { Text(line).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                if on, block.reason.isEmpty, let line = then(after: block) { Text(line).font(.caption).foregroundStyle(.secondary).lineLimit(1) }   // "Then …" only where the reason left room
             }
         case .asking(let block):
             VStack(alignment: .leading, spacing: 8) {
@@ -143,7 +144,7 @@ private struct LockScreenPlan: View {
             VStack(alignment: .leading, spacing: 6) {
                 ActivityKicker("Done", accent: true)
                 Text("Today's plan is done.").font(.system(.title2, design: .serif, weight: .semibold))
-                Text("\(state.done) of \(state.total) blocks done.").font(.footnote).foregroundStyle(.secondary)
+                Text("\(state.done) of \(state.total) done.").font(.footnote).foregroundStyle(.secondary)
             }
         }
     }
@@ -216,10 +217,9 @@ private struct Countdown: View {
 }
 
 /// The time in a word, for the island's slots beside the camera (52 to 62 points) and the minimal presentation (36 to
-/// 45): "39m" left, or "1h 5m"; "in 2h" or "in 39m" for the block ahead; "Done?" while a block asks. No seconds: at a
-/// glance a minute is the grain. Both figures are system styles the island keeps ticking by itself; the time left
-/// counts whole minutes up (a block with 40 seconds to go says "1m", never "0m"), the time ahead rounds to its one
-/// largest unit. The time left above an hour takes two units ("1h 5m"): the two ways to a bare "1h" that counts down,
+/// 45): "39m" left, or "1h 5m"; "in 39m" or "in 2h 5m" for the block ahead; "Done?" while a block asks. No seconds: at
+/// a glance a minute is the grain. Both figures are system styles the island keeps ticking by itself, and both count
+/// whole minutes up (a block with 40 seconds to go says "1m", never "0m") and stop at zero. The time left above an hour takes two units ("1h 5m"): the two ways to a bare "1h" that counts down,
 /// the one-unit `Duration` style and a format style of the app's own, each stopped the whole activity from drawing in
 /// the simulator (a blank banner, a placeholder). Framed like `Countdown`: the widest figure it can show, hidden, and
 /// the live one against its trailing edge.
@@ -235,8 +235,11 @@ private struct ShortTime: View {
                 Text(.dateRange(endingAt: end), format: .components(style: .narrow, fields: [.hour, .minute]))
             }
         case .upNext(let block):
-            framed(widest: "in 00m") {
-                Text(.currentDate, format: Date.AnchoredRelativeFormatStyle(anchor: block.start, presentation: .numeric, unitsStyle: .narrow))
+            // Counted the way the time left is (whole minutes, up), and stopping at "in 0m": a relative style ran on
+            // past the start ("6s ago") when nothing drew the activity again at its stale date (seen in the simulator).
+            let start = block.start.addingTimeInterval(59)
+            framed(widest: start.timeIntervalSinceNow >= 3600 ? "in 0h 00m" : "in 00m") {
+                Text("in \(Text(.dateRange(endingAt: start), format: .components(style: .narrow, fields: [.hour, .minute])))")
             }
         case .asking:
             if minimal { Image(systemName: "questionmark").foregroundStyle(ActivityDesign.accent) }
@@ -260,7 +263,7 @@ private struct DoneButton: View {
             Label("Done", systemImage: "checkmark").font(.subheadline.weight(.semibold))
         }
         .buttonStyle(.borderedProminent)
-        .tint(ActivityDesign.accent)
+        .tint(ActivityDesign.ink)   // white on the deeper amber reads at 5:1; on the bright orange it was under 2:1
         .controlSize(.small)
     }
 }
@@ -291,6 +294,8 @@ private struct ActivityKicker: View {
 
 enum ActivityDesign {
     static let accent = Color(red: 1.0, green: 0.68, blue: 0.26)
+    /// The app's `Design.accentInk` in light: a fill under white words.
+    static let ink = Color(red: 0.659, green: 0.353, blue: 0.0)
 }
 
 enum Clock {
