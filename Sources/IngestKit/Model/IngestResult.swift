@@ -141,7 +141,8 @@ public enum ParseFlag: String, Codable, Sendable {
 public struct ParsedPolicy: Codable, Sendable {
     public var kind: PolicyKind
     public var text: String
-    /// False when the model's quote could not be matched to the document's own sentences.
+    /// False only when there was no text to check the quote against (pictures the device model read, with no
+    /// transcript): a quote that is not the document's own words is dropped, never kept unchecked.
     public var verbatim: Bool
 
     public init(kind: PolicyKind, text: String, verbatim: Bool = true) { self.kind = kind; self.text = text; self.verbatim = verbatim }

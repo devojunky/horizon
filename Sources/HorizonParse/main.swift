@@ -86,6 +86,7 @@ if titleOnly {
     case .titled(let title): print(title); exit(0)
     case .nothing: fail("no title worth keeping; the app would show: \(DocumentName.tidy(file.lastPathComponent))")
     case .unavailable: fail("the device model is not available to name it")
+    case .notYet: fail("nothing to name it from yet: a picture is named from what is read of it; the app would show: \(DocumentName.tidy(file.lastPathComponent))")
     }
 }
 if options.route == .claude {

@@ -12,8 +12,9 @@ struct TextChunk: Sendable {
     struct PageStart: Sendable, Equatable { var offset: Int; var page: Int }
 }
 
-/// Packs page text into chunks that fit a token budget. Token cost is estimated from a
-/// characters-per-token ratio calibrated against the real tokenizer; the extractor verifies each chunk.
+/// Packs page text into chunks that fit a token budget. Token cost is estimated from a characters-per-token ratio:
+/// on the device, measured against the real tokenizer, and each chunk counted again before it is sent (`Extractor.extract`);
+/// for Claude a fixed 3.5, not checked.
 enum Chunker {
     /// `pages` carries each text page with its index in the source document, so provenance survives image pages in between.
     static func chunks(pages: [(page: Int, text: String)], budgetTokens: Int, charsPerToken: Double) -> [TextChunk] {

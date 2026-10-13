@@ -168,6 +168,8 @@ struct CoverageTests {
         #expect(c.facts == ["2 due in the next two weeks", "7 days silent", "Updated 7 days ago"])
         // A site whose rows no line names lists them, as printed.
         #expect(PlatformGap(platform: .myLab, components: ["Pearson MyLab Readings", "Lab Reports"]).finding(listing: true) == "MyLab (Pearson MyLab Readings, Lab Reports): nothing read yet.")
+        // A row named for its site says nothing the site does not (the owner's Calc II syllabus grades a row "WebAssign").
+        #expect(PlatformGap(platform: .webAssign, components: ["WebAssign"]).finding(listing: true) == "WebAssign: nothing read yet.")
         #expect(CadenceGap(component: "Essays", cadence: nil, expectedInWindow: 0, onFileInWindow: 0, onFileTotal: 1, expectedTotal: 4).finding == "Essays: 1 of 4 on file.")
         // Silence the page says is a finding, and the figures leave it out; nothing flagged reads as covered (the view).
         let bio = course("BIO-UA 11", components: Self.exams, lastIngested: Fixture.day(9, 21), createdAt: Fixture.day(9, 7))

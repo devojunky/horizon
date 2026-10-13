@@ -6,14 +6,15 @@ import AppKit
 #endif
 
 /// The look (SPEC §9, leaned into): an editorial page. Warm paper, ink, hairline rules, serif display type under caps
-/// kickers, confident numerals, and one accent (a marker orange) used only for weight and urgency. It follows the
-/// system appearance (the user asked for no forced dark mode), so every colour here has a light and a dark face.
+/// kickers, confident numerals, and one accent (a marker orange) for weight and urgency, and for the app's selection and
+/// controls. It follows the system appearance (the user asked for no forced dark mode), so every colour here has a
+/// light and a dark face.
 enum Design {
     static let accent = Color(red: 1.0, green: 0.68, blue: 0.26)
     static let accentSoft = accent.opacity(0.16)
     /// The accent for words: on light paper the orange itself reads at about 1.7:1, so text in it is set in a deeper
-    /// amber (4.7:1, HIG's 4.5:1 for text); at night the orange already reads at about 10:1 and stays. Marks, rings,
-    /// fills and the tint keep `accent`.
+    /// amber (4.7:1, HIG's 4.5:1 for text); at night the orange already reads at about 10:1 and stays. It is also the
+    /// tint (and the asset's AccentColor); marks, rings and fills keep `accent`.
     static let accentInk = dynamic(light: (0.659, 0.353, 0.0), dark: (1.0, 0.68, 0.26), increased: (light: (0.55, 0.27, 0.0), dark: (1.0, 0.76, 0.42)))
     static let quiet = Color.secondary
     /// The page behind everything.
@@ -46,6 +47,14 @@ enum Design {
         if short { return hasTime ? date.formatted(.dateTime.month(.abbreviated).day().hour().minute()) : date.formatted(.dateTime.month(.abbreviated).day()) }
         return hasTime ? date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute())
                        : date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
+    }
+
+    /// "Calculus II · Thu, Oct 9 · 2%": what a row says under an item's name, in the app, Siri's snippets and
+    /// Spotlight. Here rather than on `ItemEntity`: a call to the entity's own static from the Mac search page's rows
+    /// crashed Xcode 27.0's type checker ("type binding has invalid type").
+    static func itemLine(course: String?, due: Date?, hasTime: Bool, weight: Double?) -> String {
+        [course, due.map { Self.due($0, hasTime: hasTime) } ?? "No date yet", weight.map { "\($0.formatted(.number.precision(.fractionLength(0...1))))%" }]
+            .compactMap { $0 }.joined(separator: " · ")
     }
 
     /// A colour with a light and a dark face, and optionally the faces Increase Contrast asks for.

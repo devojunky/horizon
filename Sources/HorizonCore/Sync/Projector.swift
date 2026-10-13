@@ -99,9 +99,7 @@ public actor ReminderProjector {
 
     static func differs(_ item: ReminderItem, _ draft: ReminderDraft, calendar: Calendar) -> Bool {
         if item.title != draft.title || item.hasTime != draft.hasTime { return true }
-        if ReminderDraft.userText(in: draft.notes) != ReminderDraft.userText(in: item.notes) { return true }
-        let generated = (item.notes ?? "").components(separatedBy: "\n").filter { line in ReminderDraft.generatedPrefixes.contains { line.hasPrefix($0) } }
-        if generated != draft.notes.components(separatedBy: "\n").filter({ line in ReminderDraft.generatedPrefixes.contains { line.hasPrefix($0) } }) { return true }
+        if (item.notes ?? "") != (draft.notes(over: item.notes) ?? "") { return true }   // the notes as the write would leave them
         switch (item.due, draft.due) {
         case (nil, nil): return false
         case (let a?, let b?): return draft.hasTime ? abs(a.timeIntervalSince(b)) > 60 : !calendar.isDate(a, inSameDayAs: b)
@@ -135,9 +133,10 @@ public enum Reconciler {
             if obligation.ekExternalID != item.externalID { changes.append(.repairExternalID(obligation.id, item.externalID)) }
             // Reminders owns completion, except while the user's own check in the app is on its way there (the projector writes it next).
             if item.isCompleted != (obligation.completedAt != nil), !obligation.completionPending { changes.append(.completion(obligation.id, item.isCompleted ? item.completionDate ?? Date() : nil)) }
-            // A reminder that no longer says what we last wrote was edited by hand in Reminders.
+            // A reminder that no longer says what we last wrote was edited by hand in Reminders. A title that reads just as
+            // Horizon would write it now is Horizon's own (a write that landed when its record did not), not the user's.
             guard let projectedTitle = obligation.projectedTitle else { continue }
-            let titleEdited = item.title != projectedTitle
+            let titleEdited = item.title != projectedTitle && item.title != obligation.reminderTitle
             // A date-only due is a day: one moved by hand is a whole day off. Less than half a day is the same day seen from
             // a nearby time zone (EventKit hands it back at 23:59 in the zone the device is in now), not an edit; a farther
             // move is put right by `DayAnchor`, which moves the store's days with the zone.
@@ -146,11 +145,14 @@ public enum Reconciler {
                 case (let a?, let b?): item.hasTime ? abs(a.timeIntervalSince(b)) > 60 : !calendar.isDate(a, inSameDayAs: b) && abs(a.timeIntervalSince(b)) >= 12 * 3600
                 default: true
             }
-            let userNotes = ReminderDraft.userText(in: item.notes)
-            let notesEdited = userNotes != (obligation.projectedNotes ?? "")   // against what we last wrote, not what the app holds now
+            // Notes are compared against what we last wrote, not what the app holds now: notes that still hold as written were
+            // not touched, and only notes that do not are read for the user's text.
+            let userNotes = ReminderDraft.userText(in: item.notes, component: obligation.componentName)
+            let notesEdited = !ReminderDraft.holdsAsWritten(item.notes, userText: obligation.projectedNotes)
+                && userNotes != ReminderDraft.trimmingBlankLines(obligation.projectedNotes).joined(separator: "\n")
             if titleEdited || dueEdited || notesEdited {
                 changes.append(.userEdited(obligation.id, title: titleEdited ? Self.stripCourse(item.title, obligation) : nil,
-                                           due: dueEdited ? item.due : nil, hasTime: item.hasTime, notes: notesEdited ? userNotes : nil))
+                                           due: dueEdited ? item.due : nil, hasTime: item.hasTime, notes: notesEdited ? userNotes : nil, reminderTitle: item.title))
             }
         }
         for obligation in obligations where obligation.deletedAt == nil && !present.contains(obligation.id) {
@@ -172,9 +174,12 @@ public enum Reconciler {
     }
 
     /// "Homework 3 · Calculus II" → "Homework 3" when the course suffix is intact: the course as reminder titles name it
-    /// (`reminderTitle`: its name, else its code), or its code, as titles were once written.
+    /// (`reminderTitle`: its name, else its code), its code, as titles were once written, or the course as the reminder
+    /// was last written with it (`projectedTitle`), which a course renamed since leaves there until the reminder is
+    /// next written (an item in review waits for its confirmation).
     static func stripCourse(_ title: String, _ o: ObligationSnapshot) -> String {
-        for name in [o.courseName, o.courseCode].compactMap({ $0 }) where !name.isEmpty && title.hasSuffix(" · \(name)") {
+        let written = o.projectedTitle.flatMap { $0.hasPrefix(o.title + " · ") ? String($0.dropFirst(o.title.count + 3)) : nil }
+        for name in [o.courseName, o.courseCode, written].compactMap({ $0 }) where !name.isEmpty && title.hasSuffix(" · \(name)") {
             return String(title.dropLast(name.count + 3))
         }
         return title

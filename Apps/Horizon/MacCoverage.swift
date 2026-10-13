@@ -3,8 +3,8 @@ import SwiftUI
 import SwiftData
 import HorizonCore
 
-/// Coverage on a Mac (SPEC §6.1): the stories side by side, as many columns as the window holds, most suspicious
-/// first. A phone reads them down one column; a window sets them like a front page, so every course is in view at
+/// Coverage on a Mac (SPEC §6.1): the stories side by side, as many columns as the window holds, in the user's order
+/// (the sidebar's), else most suspicious first. A phone reads them down one column; a window sets them like a front page, so every course is in view at
 /// once. Each story has, under its figures, its term week by week: a week with something on file is a cell in the
 /// strip's colour (deeper as more of the grade is at stake), a week with nothing an empty one, so where the app may be
 /// blind shows before a word of it is read. A story opens its course (the sidebar follows); its menu edits or deletes it.

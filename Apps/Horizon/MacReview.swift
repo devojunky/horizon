@@ -131,7 +131,7 @@ struct MacReviewPage: View {
             .alignment(.trailing)
         }
         .paperTable()
-        .takesKeyboard($tableFocused, hasRows: true)   // ↑ and ↓ go through the items, ⌘↩ and ⌘⌫ act on them: the pointer is needed only to edit
+        .takesKeyboard($tableFocused, hasRows: true)   // ↑ and ↓ go through the items, ⌘↩ and ⌘⌫ act on them, ↩ edits: only Use <date> needs the pointer or the menu
         .animation(.default, value: rows.map(\.id))   // a confirmed or discarded row leaves as a Mac table's rows do, the rest closing up
         .contextMenu(forSelectionType: UUID.self) { ids in
             let items = pending.filter { ids.contains($0.id) }
@@ -152,7 +152,7 @@ struct MacReviewPage: View {
             if ids.count == 1, let id = ids.first { editing = pending.first { $0.id == id } }
         }
         .onDeleteCommand { discard(discardable) }
-        .focusedValue(\.reviewActions, actions)   // the table's, not the page's: a sheet over it keeps ⌘⌫ and ⌘↩ for its fields
+        .focusedValue(\.reviewActions, actions)   // the table's; it stays published under a sheet, so the commands check `keyboardIsElsewhere` before acting
     }
 
     private func confirm(_ ids: Set<UUID>) {
@@ -172,7 +172,7 @@ struct MacReviewPage: View {
     private func discard(_ ids: Set<UUID>) {
         guard !ids.isEmpty else { return }
         let next = following(ids)
-        for id in ids { Task { await model.discard(id) } }
+        Task { await model.discard(Array(ids)) }   // one undo for them all
         selection = next.map { [$0] } ?? []
     }
 
@@ -294,8 +294,8 @@ private struct ShortcutLabel: View {
 /// The page an item was read from, named and drawn small: for a PDF, the page where its date is written, found by
 /// its words (the part a read began with is all `sourcePage` knows, and Claude reads a whole PDF as one part), those
 /// words marked in the accent; a picture as it is. When the words are nowhere in a PDF (a scan with no text), the
-/// page the part began with is drawn under the document's name alone, without claiming a page number. Nothing is
-/// drawn for a document with no pages (Word, text), or one whose file is on another device. The file is opened and
+/// page the part began with is drawn under the document's name alone, without claiming a page number. For a document
+/// with no pages (Word, text), or one whose file is on another device, only its name is drawn. The file is opened and
 /// searched off the main thread.
 private struct SourcePage: View {
     let document: SourceDocument

@@ -6,16 +6,17 @@ import IngestKit
 import AppKit
 
 /// What a window shows, and what the menu bar's commands act on: one per window, handed to the commands through the
-/// focused scene, so a command reaches the window in front and is dimmed when there is none.
+/// focused scene, so a command reaches the window in front; one that needs a window is dimmed when there is none.
 @MainActor @Observable final class MacNavigation {
     enum Page: String, CaseIterable, Identifiable {
-        case coverage, horizon, now, review, documents, recentlyDeleted
+        /// `search` has no row of its own: the sidebar's search field shows it while it holds words.
+        case coverage, horizon, now, review, documents, recentlyDeleted, search
         var id: String { rawValue }
         var title: String {
-            switch self { case .coverage: "Coverage"; case .horizon: "Horizon"; case .now: "Now"; case .review: "Review"; case .documents: "Documents"; case .recentlyDeleted: "Recently Deleted" }
+            switch self { case .coverage: "Coverage"; case .horizon: "Horizon"; case .now: "Now"; case .review: "Review"; case .documents: "Documents"; case .recentlyDeleted: "Recently Deleted"; case .search: "Search" }
         }
         var symbol: String {
-            switch self { case .coverage: "eye"; case .horizon: "chart.bar.xaxis"; case .now: "sun.horizon"; case .review: "checkmark.circle"; case .documents: "doc.text"; case .recentlyDeleted: "trash" }
+            switch self { case .coverage: "eye"; case .horizon: "chart.bar.xaxis"; case .now: "sun.horizon"; case .review: "checkmark.circle"; case .documents: "doc.text"; case .recentlyDeleted: "trash"; case .search: "magnifyingglass" }
         }
     }
     /// A page of the app, or a course's own page: what the sidebar has selected.
@@ -34,6 +35,9 @@ import AppKit
     /// Asks the sidebar for the keyboard (`keyboardToSidebar`): the page chosen has no rows to move through.
     private(set) var sidebarKeyboardAsked = 0
     func keyboardToSidebar() { sidebarKeyboardAsked += 1 }
+    /// Asks for the sidebar's search field (Edit ▸ Find ▸ Find…, ⌘F), showing the sidebar first when it is hidden.
+    private(set) var findAsked = 0
+    func find() { findAsked += 1 }
 
     var importing = false
     var addingItem = false
@@ -49,6 +53,10 @@ import AppKit
     /// An item a `horizon://obligation/<id>` link asked for: the page that lists it (Review, or its course's) selects
     /// it and clears this.
     var reveal: UUID?
+    /// What the Horizon page was asked to show (an intent's "show Calc on Horizon", a widget's day): it narrows to the
+    /// course and chooses the day, then clears this.
+    var horizonRequest: HorizonRequest?
+    struct HorizonRequest: Equatable { var course: UUID?; var day: Date? }
 }
 
 /// Where the keyboard goes as a page appears, when the page was chosen with the pointer or the menu bar
@@ -88,8 +96,9 @@ extension View {
     func keyboardStaysInSidebar() -> some View { modifier(PageKeyboard(list: nil, hasRows: false)) }
 }
 
-/// The item selected in a table of items, for the menu bar's Item commands. Published only while the table has the
-/// keyboard (`focusedValue`, not the scene's): a sheet's field then has it, and ⌘⌫ there deletes words, not the item.
+/// The item selected in a table of items, for the menu bar's Item commands. Published as the table's own focused value;
+/// it stays published under a sheet, so the commands that act on it check `HorizonCommands.keyboardIsElsewhere` first
+/// (⌘⌫ in a sheet's field deletes words, not the item).
 struct SelectedItem: Equatable {
     var id: UUID
     var done: Bool
@@ -158,14 +167,23 @@ struct MacRootView: View {
     @State private var dropping = false
     /// An item a link asked for that no page lists (no course, nothing to review): its editor, over the window.
     @State private var linkedItem: Obligation?
+    /// A document's file asked for (an intent, a Spotlight result): Quick Look, over the window.
+    @State private var preview: URL?
+    @State private var photos: ImportPickers.Photos?
+    @State private var noFiles = false
+    @State private var noScan = false
+    @FocusState private var searchFocused: Bool
 
     private var shownCourse: Course? { nav.course.flatMap { id in courses.first { $0.id == id } } }
     private var editedCourse: Course? { nav.editingCourse.flatMap { id in courses.first { $0.id == id } } }
 
     var body: some View {
         @Bindable var nav = nav
+        @Bindable var model = model
         NavigationSplitView(columnVisibility: $columns) {
             Sidebar(nav: nav)
+                .searchable(text: $model.searchText, placement: .sidebar, prompt: "Search")   // the app's one search, at the sidebar's head (HIG)
+                .searchFocused($searchFocused)
         } detail: {
             detail
                 .environment(nav)   // a page asks it whether to take the keyboard as it appears
@@ -213,7 +231,18 @@ struct MacRootView: View {
         .onChange(of: courses.map(\.id)) { _, ids in   // the course on show was deleted (here, or on another device): back to Coverage
             if let id = nav.course, !ids.contains(id) { nav.show(.coverage) }
         }
-        .onChange(of: model.linkedObligationID) { _, id in show(linked: id) }
+        .onChange(of: model.destination) { _, destination in route(destination) }
+        .onChange(of: model.searchText) { _, text in   // words in the field show what matches; an empty field, where the window was
+            let searching = !text.trimmingCharacters(in: .whitespaces).isEmpty
+            if searching, nav.page != .search { nav.destination = .page(.search) } else if !searching, nav.page == .search { nav.show(.coverage) }
+        }
+        .onChange(of: nav.findAsked) {
+            guard columns != .all else { searchFocused = true; return }
+            columns = .all
+            Task { @MainActor in searchFocused = true }   // once the sidebar holding the field is back
+        }
+        .quickLookPreview($preview)
+        .modifier(ImportPickers(courseID: nil, files: $noFiles, photos: $photos, scanning: $noScan))   // the file importer is ⌘O's (`nav.importing`)
         .handlesExternalEvents(preferring: ["*"], allowing: ["*"])   // a link or a file opened from outside comes to this window, not a new one
         .onAppear {
             if MainTabs.debugFlag("--tab-horizon") { nav.show(.horizon) }
@@ -223,7 +252,7 @@ struct MacRootView: View {
             if MainTabs.debugFlag("--open-review") { nav.show(.review) }
             if MainTabs.debugFlag("--open-course"), let first = Coverage.stories(courses: courses, obligations: [], documents: []).first { nav.show(course: first.course.id) }   // DEBUG: a course's page without a click
             if MainTabs.debugFlag("--open-settings") { openSettings() }
-            show(linked: model.linkedObligationID)   // a link that launched the app
+            route(model.destination)   // a link or an intent that launched the app
             #if DEBUG
             if let i = CommandLine.arguments.firstIndex(of: "--open-link"), i + 1 < CommandLine.arguments.count, let url = URL(string: CommandLine.arguments[i + 1]) {
                 Task { await model.open(url) }   // DEBUG: a horizon:// link without a reminder to click
@@ -234,11 +263,43 @@ struct MacRootView: View {
         }
     }
 
+    /// Where the app was asked to go (`AppModel.destination`: a link, an intent, Spotlight), in the window that takes
+    /// it first; the app comes forward. Settings is its own window, Search the sidebar's field.
+    private func route(_ destination: AppDestination?) {
+        guard let destination else { return }
+        model.destination = nil
+        switch destination {
+        case .page(.coverage): nav.show(.coverage)
+        case .page(.horizon): nav.show(.horizon)
+        case .page(.now): nav.show(.now)
+        case .page(.review): nav.show(.review)
+        case .page(.documents): nav.show(.documents)
+        case .page(.recentlyDeleted): nav.show(.recentlyDeleted)
+        case .page(.settings): openSettings()
+        case .page(.search), .search: if !model.searchText.isEmpty { nav.destination = .page(.search) }
+        case .course(let id), .policies(let id):
+            if courses.contains(where: { $0.id == id }) { nav.show(course: id) } else { model.lastError = "That course is no longer in Horizon." }
+        case .item(let id): show(linked: id)
+        case .document(let id):
+            if let document = try? context.fetch(FetchDescriptor<SourceDocument>(predicate: #Predicate { $0.id == id && $0.deletedAt == nil })).first {
+                preview = model.previewFile(for: document)
+            }
+        case .horizon(let course, let day):
+            nav.horizonRequest = .init(course: course, day: day)
+            nav.show(.horizon)
+        case .importDocument(let choice):
+            switch choice {
+            case .files, .camera: nav.importing = true   // no document camera on a Mac
+            case .photos: photos = .images
+            case .screenshots: photos = .screenshots
+            }
+        }
+        NSApp.activate()
+    }
+
     /// A `horizon://obligation/<id>` link (the link on every reminder): the item where it lives, selected. Review when it
     /// waits there, else its course's page; an item neither lists opens in its editor.
-    private func show(linked id: UUID?) {
-        guard let id else { return }   // the reset below fires this again with nil
-        model.linkedObligationID = nil
+    private func show(linked id: UUID) {
         guard let item = try? context.fetch(FetchDescriptor<Obligation>(predicate: #Predicate { $0.id == id && $0.deletedAt == nil })).first else { return }   // deleted since its reminder was written
         if item.state == .pendingReview, item.completedAt == nil {
             nav.reveal = id; nav.show(.review)
@@ -258,6 +319,7 @@ struct MacRootView: View {
         case .page(.review): MacReviewPage()
         case .page(.documents): DocumentsTable()
         case .page(.recentlyDeleted): RecentlyDeletedTable()
+        case .page(.search): MacSearchPage(nav: nav).keyboardStaysInSidebar()
         case .course:
             if let shownCourse { MacCoursePage(course: shownCourse).id(shownCourse.id) } else { MacCoveragePage(nav: nav).keyboardStaysInSidebar() }
         }
@@ -278,8 +340,9 @@ private struct Sidebar: View {
 
     private var toReview: Int { obligations.filter { $0.state == .pendingReview && $0.completedAt == nil }.count }   // done needs no review
     private var binned: Int { binnedCourses.count + deletedDocuments.filter(\.isBinned).count }
-    /// The user's own order, then by name: a sidebar row stays where it is (Coverage puts the most suspicious
-    /// first, which moves as items are checked off; a place to go to must not).
+    /// The user's own order, then by name: a sidebar row stays where it is (Coverage, which follows the same order once
+    /// there is one, puts the courses without one most suspicious first, which moves as items are checked off; a place
+    /// to go to must not).
     private var ordered: [Course] {
         courses.sorted { a, b in
             switch (a.sortOrder, b.sortOrder) {
@@ -354,8 +417,8 @@ private struct SidebarIcon: View {
     }
 }
 
-/// Documents as a table: sortable, alternating rows, a context menu and the Delete key on the selection, and the same
-/// actions in the File menu while the table has the keyboard.
+/// Documents as a table on the paper (`paperTable()`: no stripes): sortable, a context menu and the Delete key on the
+/// selection, and the same actions in the File menu while the table has the keyboard.
 struct DocumentsTable: View {
     @Environment(AppModel.self) private var model
     @FocusState private var focused: Bool
@@ -718,6 +781,12 @@ struct HorizonCommands: Commands {
             Button("Recreate Horizon List in Reminders") { Task { await model.recreateRemindersList() } }.disabled(!model.remindersListGone)
             Button("Show Inbox Folder in Finder") { NSWorkspace.shared.activateFileViewerSelecting([WatchedFolder.url]) }
         }
+        CommandGroup(after: .textEditing) {
+            Menu("Find") {   // HIG: Edit ▸ Find ▸ Find… (⌘F); the app's one search is the sidebar's field
+                Button("Find…") { if NSApp.keyWindow?.sheetParent == nil { nav?.find() } }   // under a sheet, the sheet keeps the keyboard
+                    .keyboardShortcut("f").disabled(nav == nil)
+            }
+        }
         CommandGroup(after: .sidebar) {
             Divider()
             pageItem(.coverage, "1")
@@ -753,19 +822,19 @@ struct HorizonCommands: Commands {
             }
             .keyboardShortcut(.delete, modifiers: .command).disabled(review?.discard == nil && item == nil)
         }
-        CommandMenu("Plan") {
+        CommandMenu("Plan") {   // each needs a window: an edited plan asks there before it is replaced
             Button(model.plan == nil ? "Plan Today" : "Plan Again") {
                 if model.planEdited, model.plan != nil { nav?.confirmingReplan = true } else { Task { await model.planToday() } }
             }
-            .keyboardShortcut("p", modifiers: [.command, .shift]).disabled(model.planning)
+            .keyboardShortcut("p", modifiers: [.command, .shift]).disabled(model.planning || nav == nil || model.storeFailure != nil)
             // ⌥⌘P, beside Plan Today: ⌥⌘T is the system's Show/Hide Toolbar (HIG keyboards), which View already has.
             Button("Tell the Planner…") { nav?.tellingPlanner = true }.keyboardShortcut("p", modifiers: [.command, .option]).disabled(nav == nil)
             Button("Add Block…") { nav?.addingBlock = true }.disabled(nav == nil)
             Divider()
             Picker("Tonight Until", selection: Binding(get: { model.tonightEnd }, set: { if model.chooseTonightEnd($0) { nav?.confirmingReplan = true } })) {
-                ForEach(PlanHours.ends, id: \.self) { Text(PlanHours.choice($0, usual: model.usualPlanHours.end)).tag($0) }
+                ForEach(PlanHours.endsAhead(including: model.tonightEnd), id: \.self) { Text(PlanHours.choice($0, usual: model.usualPlanHours.end)).tag($0) }   // only the ends still ahead, as Now's pop-up
             }
-            .disabled(model.planning)
+            .disabled(model.planning || nav == nil || model.storeFailure != nil)
         }
         #if DEBUG
         CommandMenu("Debug") {

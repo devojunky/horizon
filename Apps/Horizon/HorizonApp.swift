@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import AppIntents
 import HorizonCore
 import os
 #if os(iOS)
@@ -24,6 +25,9 @@ struct HorizonApp: App {
             container = try! HorizonContainer.inMemory()
         }
         let model = AppModel(container: container, storeFailure: failure)
+        // The intents' way to the model (`@Dependency`), in place before any can run: one launched for an intent runs
+        // this init and no scene.
+        AppDependencyManager.shared.add(dependency: model)
         #if DEBUG
         // `--claude-key <key>` stores a key and reads with Claude, to exercise the route and its failures without typing;
         // `--read-on-device` / `--read-with-claude` set the route. Set here, before the first drain can read the route.
@@ -72,7 +76,7 @@ struct HorizonApp: App {
                         await model.importFiles([URL(fileURLWithPath: CommandLine.arguments[i + 1])]); return
                     }
                     #endif
-                    await model.drainAndSync()
+                    await Task { await model.drainAndSync() }.value   // the app's, not the window's: closing a Mac's window must not pause the read
                     #if DEBUG
                     // `--read-first-waiting-on-device`: the confirmation's outcome without a tap (a document waiting for Claude is read on the device).
                     if CommandLine.arguments.contains("--read-first-waiting-on-device"),
@@ -146,26 +150,33 @@ struct StoreFailure: View {
 /// Drains the inbox when iOS gives the app background time, so a document shared at night is in Reminders by morning,
 /// and a read paused when the user left goes on from its checkpoint.
 enum BackgroundIngest {
+    /// The launch handler runs on the main queue (`using: .main`): it is written on the main actor, and Swift checks that
+    /// it runs there, so on the default background queue the first background launch would stop the app. The expiration
+    /// handler is the system's to call from anywhere: it only cancels and reports, which may happen on any thread.
     @MainActor static func register(model: AppModel) {
-        BGTaskScheduler.shared.register(forTaskWithIdentifier: Identifiers.backgroundIngestTask, using: nil) { task in
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: Identifiers.backgroundIngestTask, using: .main) { task in
             let work = Task { @MainActor in
                 await model.drainAndSync()
                 task.setTaskCompleted(success: !Task.isCancelled)
             }
-            task.expirationHandler = {
+            nonisolated(unsafe) let task = task   // BGTask's completion may be reported from any thread
+            task.expirationHandler = { @Sendable in
                 work.cancel()   // reaches the read under way: the part being read is lost, the checkpoint keeps the rest, the document stays queued
                 task.setTaskCompleted(success: false)
             }
         }
     }
 
-    /// `needsNetwork`: a read with Claude is only worth starting with the network there.
+    /// `needsNetwork`: a read with Claude is only worth starting with the network there. Submitted off the main thread,
+    /// as the SDK asks.
     static func schedule(needsNetwork: Bool) {
-        let request = BGProcessingTaskRequest(identifier: Identifiers.backgroundIngestTask)
-        request.requiresNetworkConnectivity = needsNetwork
-        request.requiresExternalPower = false
-        BGTaskScheduler.shared.submitTaskRequest(request) { error in   // submission is asynchronous now; a refusal is worth a log line
-            if let error { Logger(subsystem: Identifiers.bundlePrefix, category: "ingest").error("background ingest not scheduled: \(error.localizedDescription, privacy: .public)") }
+        Task.detached {
+            let request = BGProcessingTaskRequest(identifier: Identifiers.backgroundIngestTask)
+            request.requiresNetworkConnectivity = needsNetwork
+            request.requiresExternalPower = false
+            BGTaskScheduler.shared.submitTaskRequest(request) { error in   // submission is asynchronous now; a refusal is worth a log line
+                if let error { Logger(subsystem: Identifiers.bundlePrefix, category: "ingest").error("background ingest not scheduled: \(error.localizedDescription, privacy: .public)") }
+            }
         }
     }
 }
@@ -177,13 +188,14 @@ enum BackgroundIngest {
 /// one before.
 enum ActivityRefresh {
     @MainActor static func register(model: AppModel) {
-        BGTaskScheduler.shared.register(forTaskWithIdentifier: Identifiers.activityRefreshTask, using: nil) { task in
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: Identifiers.activityRefreshTask, using: .main) { task in   // on the main queue: see `BackgroundIngest.register`
             let work = Task { @MainActor in
                 model.expirePlanIfStale()     // a plan from another day goes, and its activity with it
                 await model.syncActivity()
                 task.setTaskCompleted(success: true)
             }
-            task.expirationHandler = {
+            nonisolated(unsafe) let task = task
+            task.expirationHandler = { @Sendable in
                 work.cancel()
                 task.setTaskCompleted(success: false)
             }

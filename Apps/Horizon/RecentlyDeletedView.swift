@@ -4,8 +4,9 @@ import HorizonCore
 
 /// Recently Deleted: courses and documents wait here for 30 days, restorable, then go for good. A course deleted with
 /// its documents is one entry; restoring it brings back exactly what its deletion took (items, their reminders,
-/// documents), nothing the user had deleted by hand before. Deleting from here is the one deletion that asks first,
-/// since it cannot be undone.
+/// documents), nothing the user had deleted by hand before. Deleting from here asks first, since it cannot be undone;
+/// the only other deletion that asks is the item editor's Delete Item (from an editor the intent is less sure than a
+/// swipe), and that one can be undone.
 struct RecentlyDeletedView: View {
     @Environment(AppModel.self) private var model
     @Query(filter: #Predicate<Course> { $0.deletedAt != nil && $0.erasedAt == nil }, sort: \Course.deletedAt, order: .reverse) private var courses: [Course]

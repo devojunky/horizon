@@ -32,6 +32,8 @@ public struct ObligationSnapshot: Sendable, Identifiable, Equatable {
     public var sourcePage: Int?
     /// Checked off (or back on) in the app, and Reminders not yet told.
     public var completionPending: Bool = false
+    /// Another date the same item was given by a later document, surfaced in Review (`Obligation.conflictingDate`).
+    public var conflictingDate: Date? = nil
 
     public var link: URL { Identifiers.link(for: id) }
     /// The course as the app names it: its name, falling back to the code.
@@ -55,23 +57,46 @@ public struct CourseSnapshot: Sendable, Identifiable, Equatable {
     public var deletedAt: Date? = nil
     /// When the course came into the app: where its silence starts counting before anything is completed.
     public var createdAt: Date? = nil
+    public var instructor: String? = nil
+    public var room: String? = nil
+    public var meetings: [MeetingSlot] = []
+    /// Days without class (holidays, breaks): a series of items announced as a rhythm skips them (`ItemSeries`).
+    public var noClassDates: [ClosedDateRange] = []
 
     public init(id: UUID = UUID(), code: String, title: String, term: String? = nil, termStart: Date? = nil, termEnd: Date? = nil,
                 gradeComponents: [GradeComponent] = [], platforms: [String] = [], lastIngested: Date? = nil, sortOrder: Int? = nil, deletedAt: Date? = nil,
-                createdAt: Date? = nil) {
+                createdAt: Date? = nil, instructor: String? = nil, room: String? = nil, meetings: [MeetingSlot] = [], noClassDates: [ClosedDateRange] = []) {
         self.id = id; self.code = code; self.title = title; self.term = term; self.termStart = termStart; self.termEnd = termEnd
         self.gradeComponents = gradeComponents; self.platforms = platforms; self.lastIngested = lastIngested; self.sortOrder = sortOrder; self.deletedAt = deletedAt
-        self.createdAt = createdAt
+        self.createdAt = createdAt; self.instructor = instructor; self.room = room; self.meetings = meetings; self.noClassDates = noClassDates
     }
 
     public init(_ c: Course) {
         self.init(id: c.id, code: c.code, title: c.title, term: c.term, termStart: c.termStart, termEnd: c.termEnd,
                   gradeComponents: c.gradeComponents, platforms: c.platforms, lastIngested: c.lastIngested, sortOrder: c.sortOrder, deletedAt: c.deletedAt,
-                  createdAt: c.createdAt)
+                  createdAt: c.createdAt, instructor: c.instructor, room: c.room, meetings: c.meetings, noClassDates: c.noClassDates)
     }
 
     /// What the app calls the course: its name, falling back to the code.
     public var displayName: String { title.isEmpty ? code : title }
+}
+
+/// A policy as the store holds it: the syllabus's own words (SPEC §5: never paraphrased), the kind the reader filed it
+/// under, and its course.
+public struct PolicySnapshot: Sendable, Identifiable, Equatable {
+    public var id: UUID
+    public var kind: PolicyKind
+    public var text: String
+    public var verbatim: Bool
+    public var courseID: UUID?
+    public var courseName: String?
+    public init(id: UUID, kind: PolicyKind, text: String, verbatim: Bool, courseID: UUID?, courseName: String?) {
+        self.id = id; self.kind = kind; self.text = text; self.verbatim = verbatim; self.courseID = courseID; self.courseName = courseName
+    }
+
+    public init(_ p: Policy) {
+        self.init(id: p.id, kind: p.kind, text: p.text, verbatim: p.verbatim, courseID: p.course?.id, courseName: p.course?.displayName)
+    }
 }
 
 /// Hand edits to a course. Each set field becomes a user override that later documents do not overwrite.
@@ -138,8 +163,11 @@ extension ObligationSnapshot {
                   userOverrides: o.userOverrides, ekExternalID: o.ekExternalID, projectedTitle: o.projectedTitle, projectedDue: o.projectedDue,
                   projectedNotes: o.projectedNotes, completedAt: o.completedAt, deletedAt: o.deletedAt, changeNote: o.changeNote, createdOn: o.createdOn,
                   courseID: o.course?.id, courseCode: o.course?.code, courseTitle: o.course?.title, sourceDocumentID: o.sourceDocument?.id, sourcePage: o.sourcePage,
-                  completionPending: o.completionPending)
+                  completionPending: o.completionPending, conflictingDate: o.conflictingDate)
     }
+
+    /// The date Review offers in place of Discard ("Use <the other date>"): a later document re-dated the item.
+    public var otherDate: Date? { changeNote == nil ? nil : conflictingDate }
 }
 
 /// Hand edits from the review queue or the manual editor. Nil means "leave as is".

@@ -12,8 +12,9 @@ public enum HorizonContainer {
     /// 2 (2026-10-05): `Obligation.documentWords`, `SourceDocument.failureIsPermanent`.
     public static let storeGeneration = 2
 
-    /// The shared store: App Group container so the share extension and the macOS folder watcher write to the same
-    /// database as the app. CloudKit mirroring is compiled in with `HORIZON_CLOUDKIT` (needs a paid team). Throws
+    /// The shared store: on iOS in the App Group container, so the share extension writes to the same database as the
+    /// app; on a Mac, which has no App Group (its Inbox folder is read by the app itself), a store of its own in
+    /// Application Support/Horizon. CloudKit mirroring is compiled in with `HORIZON_CLOUDKIT` (needs a paid team). Throws
     /// `StoreTooNew` when a newer build has opened the store: nothing is opened, and the app must say so, never fall
     /// back to an empty store.
     public static func shared() throws -> ModelContainer {
@@ -47,7 +48,8 @@ public enum HorizonContainer {
         return container
     }
 
-    /// Beside the store: `Horizon.store.generation`, holding the number alone.
+    /// Beside the store, its name and `.generation` (`default.store.generation` in the App Group, `Horizon.store.generation`
+    /// in Application Support or a scratch folder), holding the number alone.
     static func generationMarker(for store: URL) -> URL { store.appendingPathExtension("generation") }
 
     static func recordedGeneration(at marker: URL) -> Int? {

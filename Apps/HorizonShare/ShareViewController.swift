@@ -5,7 +5,8 @@ import SwiftData
 import HorizonCore
 
 /// Share sheet entry (SPEC §4.1). Copies what was shared into the App Group inbox and records it; the app parses it next
-/// time it runs (or in the background). Nothing is parsed here, so the sheet closes in a second.
+/// time it runs (or in the background). Nothing is parsed here, so the work takes a second; the sheet then says what
+/// was added (or turned away) and closes on Done.
 final class ShareViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()

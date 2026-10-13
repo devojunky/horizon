@@ -2,22 +2,28 @@ import SwiftUI
 import SwiftData
 import HorizonCore
 
-/// The app's screens (SPEC §6): Coverage, the Horizon strip, and Now.
+/// The app's screens (SPEC §6): Coverage, the Horizon strip, and Now; on iOS, Search as the tab bar's search tab
+/// (HIG: one place to search the whole app, at the bar's trailing end).
 struct MainTabs: View {
     @Environment(AppModel.self) private var model
-    /// `--tab-horizon` / `--tab-now` (DEBUG) open on a tab, for screenshots from the command line.
-    @State private var tab = Self.debugFlag("--tab-horizon") ? 1 : Self.debugFlag("--tab-now") ? 2 : 0
+    /// `--tab-horizon` / `--tab-now` / `--tab-search` (DEBUG) open on a tab, for screenshots from the command line.
+    @State private var tab = Self.debugFlag("--tab-horizon") ? 1 : Self.debugFlag("--tab-now") ? 2 : Self.debugFlag("--tab-search") ? 3 : 0
 
     var body: some View {
         #if os(iOS)
+        @Bindable var model = model
         TabView(selection: $tab) {
             Tab("Coverage", systemImage: "eye", value: 0) { RootView() }
             Tab("Horizon", systemImage: "chart.bar.xaxis", value: 1) { HorizonStripView() }
             Tab("Now", systemImage: "sun.horizon", value: 2) { NowView() }
+            Tab(value: 3, role: .search) { SearchPage() }
         }
-        .onChange(of: model.openNowRequested) { _, wanted in   // a tap on the plan's Live Activity
-            if wanted { tab = 2; model.openNowRequested = false }
-        }
+        // On the tab bar, not the page: the Search tab's field then stands at the foot of the screen whenever the tab is
+        // open (iOS 26+), where the thumb is; on the page it hid in the navigation bar until pulled down.
+        .searchable(text: $model.searchText, prompt: "Items, courses, policies, documents")
+        .onSubmit(of: .search) { model.rememberSearch() }   // a search submitted is one of the page's recent searches
+        .tabViewSearchActivation(.searchTabSelection)
+        .modifier(AppRouter(tab: $tab))
         #else
         MacRootView()
         #endif
@@ -101,7 +107,8 @@ private struct RestingPage {
 /// Where things sit in the strip. Top to bottom: an axis of two tiers (a month's name where it begins; under it each
 /// bar's own date, so nothing is ever drawn over anything), one row per band (what a roomy band has to spare, then
 /// its name's line seated on its cells, then a gap), and a foot for "Today". Left to right: bars of one width, a week
-/// or a day each, never narrower than the HIG's control size (`Strip.barWidth`).
+/// or a day each: a week as wide as the term across the screen allows, a day never narrower than the HIG's control
+/// size (`Strip.barWidth`).
 private struct StripGeometry: Equatable {
     var rows: Int
     var rowHeight: CGFloat
@@ -413,7 +420,9 @@ struct HorizonStripView: View {
                     if MainTabs.debugOnce("--check-first-coming-up"), let first = listed.first {   // DEBUG: a check without a tap, to see the row linger and leave
                         Task { try? await Task.sleep(for: .seconds(2)); mark(first.id, true) }
                     }
+                    go(model.destination, data: data)   // asked for before the strip was laid out (the tab's first showing)
                 }
+                .onChange(of: model.destination) { _, destination in if placed { go(destination, data: data) } }
             }
             .background(Design.paper.ignoresSafeArea())
             .navigationTitle("Horizon")
@@ -468,7 +477,7 @@ struct HorizonStripView: View {
         }
         return Stretch(motion: motion) {
             OverviewCanvas(data: data, g: g, today: calendar.startOfDay(for: Date()), calendar: calendar)
-                .equatable()   // drawn again when the term changes, not on every pass of the page (a check, a choice)
+                .equatable()   // drawn again when its cells change (the term, a check, an edit), not on every pass of the page (a choice, a scroll)
                 .dynamicTypeSize(...DynamicTypeSize.large)   // the chart's own words: its tiers and cells are sized for them
                 .frame(width: width, height: g.height)
         }
@@ -587,6 +596,20 @@ struct HorizonStripView: View {
 
     /// The semester to days or back, keeping a date where it was on the screen: the one under the fingers for a
     /// pinch; for the range's stops the chosen period's, else the one in the middle, brought to the middle.
+    /// The strip the app was asked for (a link, an intent: "show Calc's week on Horizon"): narrowed to the course when it
+    /// has dated work, and at the day asked for, chosen at the days level, in the same transaction a tap makes.
+    private func go(_ destination: AppDestination?, data: StripData) {
+        guard case .horizon(let course, let day)? = destination else { return }
+        model.destination = nil
+        let kind: Band.Kind = course.map { .course($0) } ?? .all
+        filter = data.choices.contains { $0.kind == kind } ? kind : .all
+        guard let day else { return }
+        let period = Strip.period(containing: day, level: .days, calendar: calendar)
+        held = period.start
+        motion.landing = .init(date: period.start, place: .fraction(0.2))
+        withAnimation(levelChange) { chosen = period; level = .days }
+    }
+
     private func setLevel(_ new: Strip.Level, data: StripData, g: StripGeometry, width: CGFloat, anchorX: CGFloat? = nil) {
         guard new != level, !data.periods.isEmpty else { return }
         let kept: Date, fraction: CGFloat

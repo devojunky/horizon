@@ -8,7 +8,7 @@ import AppKit
 #endif
 
 /// A document reduced to pages of either text (PDFKit/plain text) or raster images (screenshots, scanned pages). No
-/// OCR of our own: Claude reads a picture and transcribes it (`PageReading`), which is what the deterministic guards in
+/// OCR of our own: Claude reads a picture and transcribes it (`ClaudeSchemas.pageReading`), which is what the deterministic guards in
 /// `Merger` check against; the device model has the system's text tool. A PDF keeps its bytes so a text page can also
 /// be shown to Claude as a picture, where the text layer garbles a table.
 public struct NormalizedDocument: @unchecked Sendable {
@@ -95,8 +95,14 @@ enum DocumentNormalizer {
         }
         if fileURL.pathExtension.lowercased() == "docx" {
             #if canImport(AppKit)
-            let attributed = try NSAttributedString(
-                data: data, options: [.documentType: NSAttributedString.DocumentType.officeOpenXML], documentAttributes: nil)
+            // A Word document the converter cannot open is the file's own failure, like a broken PDF: unreadable, so it is
+            // not offered Retry (AppKit's error, let through as it stood, was taken for one a retry could get past).
+            let attributed: NSAttributedString
+            do {
+                attributed = try NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.officeOpenXML], documentAttributes: nil)
+            } catch {
+                throw IngestError.unreadable("\(name) could not be opened as a Word document")
+            }
             return normalize(text: attributed.string, name: name, kind: .docx, data: data)
             #else
             throw IngestError.unsupportedFile("docx (macOS only)")

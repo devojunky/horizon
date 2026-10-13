@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import FoundationModels
 @testable import IngestKit
 
 /// A document's name for the user: the device model's title when the document's words carry it, else the file's name, tidied.
@@ -48,5 +49,27 @@ struct DocumentTitleTests {
         #expect(digest == "MA-UY 1124 Calculus II\nFall 2026\nSite: webassign\nItems: HW 3, Sep 23")
         let transcribed = ExtractionOutcome(kind: .image, page: 0, extraction: facts, transcript: "WebAssign · My Assignments\nHW 3 due Sep 23", usage: usage)
         #expect(DocumentName.digest(of: [transcribed]) == "WebAssign · My Assignments\nHW 3 due Sep 23")   // Claude's transcript is the picture's own words
+        let blank = ExtractionOutcome(kind: .image, page: 1, extraction: facts, transcript: " \n", usage: usage)
+        #expect(DocumentName.digest(of: [blank]) == digest)                                                // a transcript with no words in it is none
+    }
+
+    @Test func aPictureNotYetReadIsNamedAfterItsRead() async {
+        // A picture waiting for Claude has no words yet. Nobody was asked, so it is not marked as having no name (stored
+        // as "", never asked again): it is named once it has been read, from what was read. Nor is the device model taken
+        // to be away (`.unavailable`), which would end the naming of every document after it.
+        #expect(await Extractor.title(from: "", request: DocumentTitleRequest(filename: "IMG_2041.png"), log: { _ in }) == .notYet)
+        #expect(await Extractor.title(from: " \n", request: DocumentTitleRequest(filename: "IMG_2041.png"), log: { _ in }) == .notYet)
+    }
+
+    @Test func onlyAFailureThatWouldRecurEndsTheAsking() {
+        // Declined, or a document this model cannot name: asking again would go the same way, so it is not asked again.
+        #expect(Extractor.titleFailureIsFinal(LanguageModelError.refusal(.init(explanation: "No.", debugDescription: "refused"))))
+        #expect(Extractor.titleFailureIsFinal(LanguageModelError.guardrailViolation(.init(debugDescription: "unsafe"))))
+        #expect(Extractor.titleFailureIsFinal(LanguageModelError.unsupportedLanguageOrLocale(.init(languageCode: Locale.LanguageCode("ga"), debugDescription: "Irish"))))
+        // Slow, loading, or in the way of another request: the title is asked for another time, never given up for good.
+        #expect(!Extractor.titleFailureIsFinal(LanguageModelError.timeout(.init(debugDescription: "slow"))))
+        #expect(!Extractor.titleFailureIsFinal(SystemLanguageModel.Error.assetsUnavailable(.init(debugDescription: "loading"))))
+        #expect(!Extractor.titleFailureIsFinal(LanguageModelSession.Error.concurrentRequests))
+        #expect(!Extractor.titleFailureIsFinal(CocoaError(.xpcConnectionInterrupted)))
     }
 }

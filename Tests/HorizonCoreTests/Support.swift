@@ -1,5 +1,8 @@
 import Foundation
 import SwiftData
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 import IngestKit
 @testable import HorizonCore
 
@@ -26,17 +29,18 @@ actor FakeReminderStore: ReminderStore {
         listID = "list-\(lists)"
     }
 
+    // Notes are written as EventKit's store writes them (`ReminderDraft.notes(over:)`), over whatever the reminder holds.
     func create(_ draft: ReminderDraft) async throws -> ReminderItem {
         makeList()
         counter += 1
-        let item = ReminderItem(externalID: "ext-\(counter)", title: draft.title, due: draft.due, hasTime: draft.hasTime, notes: draft.notes, url: draft.url)
+        let item = ReminderItem(externalID: "ext-\(counter)", title: draft.title, due: draft.due, hasTime: draft.hasTime, notes: draft.notes(over: nil), url: draft.url)
         items.append(item)
         return item
     }
 
     func update(externalID: String, with draft: ReminderDraft) async throws -> ReminderItem? {
         guard let i = items.firstIndex(where: { $0.externalID == externalID }) else { return nil }
-        items[i].title = draft.title; items[i].due = draft.due; items[i].hasTime = draft.hasTime; items[i].notes = draft.notes; items[i].url = draft.url
+        items[i].title = draft.title; items[i].due = draft.due; items[i].hasTime = draft.hasTime; items[i].notes = draft.notes(over: items[i].notes); items[i].url = draft.url
         return items[i]
     }
 
@@ -173,6 +177,19 @@ extension Fixture {
     static func file(_ name: String, _ text: String = UUID().uuidString) throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString.prefix(6))-\(name)")
         try text.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    /// A picture of its own, a blank page with no words in it, for a coordinator to enqueue.
+    static func picture(_ name: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString.prefix(6))-\(name)")
+        let page = CGContext(data: nil, width: 64, height: 64, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        page.setFillColor(CGColor(gray: 1, alpha: 1))
+        page.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
+        let file = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil)!
+        CGImageDestinationAddImage(file, page.makeImage()!, nil)
+        guard CGImageDestinationFinalize(file) else { throw CocoaError(.fileWriteUnknown) }
         return url
     }
 }

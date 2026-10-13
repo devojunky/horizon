@@ -27,6 +27,9 @@ public actor IngestCoordinator {
     private let progress: @Sendable (DocumentProgress) -> Void
     /// The read under way: its document, and the task reading it (stopped when the user deletes the document).
     private var reading: (id: UUID, task: Task<IngestResult, any Error>)?
+    /// Documents found with nothing to name them from while they wait to be read (a picture, a scan): not opened again to
+    /// be named, a decode or a render each time, until they have been read.
+    private var nothingToNameYet: Set<UUID> = []
 
     public struct Report: Sendable, Equatable {
         public var document: DocumentSnapshot
@@ -96,6 +99,23 @@ public actor IngestCoordinator {
         }
     }
 
+    /// Whether a wait for Claude stops the drain: every document behind it would get the same answer (no key, a key
+    /// refused, no connection, an account out of credit, a model Anthropic does not have or will not let the key use, a
+    /// request it refused), so they wait with it rather than each spending a request on that answer. A rate limit or an
+    /// overload the client has already waited out does not: the next document may pass. The reason is known by its words
+    /// (`ClaudeError`'s, through `Extractor.explainClaude`), since they are what a waiting document keeps.
+    public static func stopsDrain(_ why: String) -> Bool {
+        isKeyOrModelProblem(why) || why.hasPrefix("no connection") || why.contains("out of credit")
+    }
+
+    /// Whether a wait for Claude is the key's or the model's, for Settings to put right rather than another try: no key, a
+    /// key refused, a model Anthropic does not have or will not let the key use, or a request it refused (sent again
+    /// unchanged, it would be refused again).
+    public static func isKeyOrModelProblem(_ why: String) -> Bool {
+        why == "no API key" || why.contains("missing or was rejected") || why.contains("does not let this key") || why.contains("has no model named")
+            || why.hasPrefix("Anthropic rejected the request")
+    }
+
     // MARK: Recently Deleted (the store decides; this removes the files once something is gone for good)
 
     /// The document being read now, if any.
@@ -137,18 +157,25 @@ public actor IngestCoordinator {
 
     /// Names the documents on file that nobody has tried to name: those read before titles existed, or while the
     /// device model was away. A few per call, quietly; a document the model has no name for is marked so, and a model
-    /// that is not there ends the pass until another time.
+    /// that is not there ends the pass until another time. A document with nothing to name it from yet (a picture
+    /// waiting for Claude) is passed over, not counted, and named once it has been read; one read to the end with still
+    /// nothing to go on is marked as having no name.
     public func nameUntitled(limit: Int = 4) async {
         guard let untitled = try? await store.untitledDocuments() else { return }
-        for doc in untitled.prefix(limit) {
-            if Task.isCancelled { return }
+        var asked = 0
+        for doc in untitled {
+            if Task.isCancelled || asked == limit { return }
             guard storage.exists(sha256: doc.sha256, extension: doc.kind) else { continue }   // read on another device
+            if doc.status != .parsed, nothingToNameYet.contains(doc.id) { continue }
             var course: KnownCourse?
             if let courseID = doc.courseID { course = try? await store.knownCourse(for: courseID) }
             let request = DocumentTitleRequest(filename: doc.filename, course: course.flatMap { $0.title ?? $0.code })
             switch await name(storage.url(sha256: doc.sha256, extension: doc.kind), request, try? await store.digest(for: doc.id)) {
-            case .titled(let title): try? await store.setDocumentTitle(id: doc.id, title: title)
-            case .nothing: try? await store.setDocumentTitle(id: doc.id, title: "")
+            case .titled(let title): asked += 1; try? await store.setDocumentTitle(id: doc.id, title: title)
+            case .nothing: asked += 1; try? await store.setDocumentTitle(id: doc.id, title: "")
+            case .notYet:   // as it is now: it may have been read, or queued again, meanwhile
+                if (try? await store.document(id: doc.id))?.status == .parsed { try? await store.setDocumentTitle(id: doc.id, title: "") }
+                else { nothingToNameYet.insert(doc.id) }
             case .unavailable: return
             }
         }
@@ -197,8 +224,7 @@ public actor IngestCoordinator {
                     // user's word to read it on the device). Never read on the device unasked.
                     try? await store.markDocument(id: doc.id, status: .awaitingCloudParse, failure: why)
                     reports.append(Report(document: doc, summary: nil, failure: "Waiting for Claude: \(why)"))
-                    // The same will stop every document behind it: no key, a key refused, no connection, no credit, a model the key may not use.
-                    if why == "no API key" || why.hasPrefix("no connection") || why.contains("rejected") || why.contains("out of credit") || why.contains("does not let this key") { break documents }
+                    if Self.stopsDrain(why) { break documents }   // the same answer waits for every document behind it
                 case is CancellationError, _ where Task.isCancelled:
                     try? await store.markDocument(id: doc.id, status: .queued, failure: nil)   // paused: the checkpoint holds the parts read so far; it goes on next time
                     break documents

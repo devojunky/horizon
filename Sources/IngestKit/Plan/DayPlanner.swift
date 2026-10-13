@@ -469,7 +469,8 @@ public actor DayPlanner {
 
     /// The events that are coursework time, and the course each is for, as the model reads the calendar; none when it
     /// cannot be asked, and every event then stays a hard stop. Same route as the plan: Claude when asked for (the
-    /// device if Claude fails), else the device.
+    /// device if Claude fails), and when the device has no model ready and Claude was given (the app gives it only
+    /// when the user turned planning with Claude on); else the device.
     func readCalendar(_ events: [PlanBusy], input: PlanInput, ranked: [PlanObligation], route: IngestOptions.RoutePolicy, claude: ClaudeConfiguration?) async -> CourseworkTime {
         let courses = Self.courses(of: ranked)
         let prompt = Self.calendarPrompt(events, courses: courses, calendar: input.calendar)

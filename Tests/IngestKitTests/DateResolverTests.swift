@@ -107,6 +107,29 @@ struct DateResolverTests {
         #expect(r.hasTime && Self.calendar.component(.hour, from: r.date!) == 17)
     }
 
+    /// A date's last number is never the hour of the time after it: "Oct 7 - 11:59 PM" was read as a range from 7 with 11
+    /// for its minute (7:11 PM), "Fri 10/2 – 5 PM" as 2 PM, and each shipped as the item's time. Real ranges still give
+    /// their start.
+    @Test(arguments: [
+        ("Oct 7 - 11:59 PM", 23, 59), ("Fri 10/2 – 5 PM", 17, 0), ("Mon 9/14 - 11:59pm", 23, 59),
+        ("Oct 7–11:59 PM", 23, 59), ("Fri 10/2-5 PM", 17, 0),             // a tight dash after a date starts no range either
+        ("Friday 9 October 5pm", 17, 0),                                   // a day before its month leaves the hour after it alone
+        ("2:00–3:50 PM", 14, 0), ("9-10 am", 9, 0), ("Tue 2–4 PM", 14, 0), ("12:30-1:45 PM", 12, 30),   // a range is its start
+        ("11:00–12:15 PM", 11, 0),                                         // a range that ends after noon starts before it
+        ("9 - 10 am", 10, 0),                                              // spaced and without minutes, the 9 may be a day's or an item's: the time written whole
+        ("due 11:59 pm", 23, 59), ("5pm", 17, 0), ("noon", 12, 0), ("9:30", 9, 30),
+    ])
+    func aDateIsNeverTheHourOfTheTimeAfterIt(text: String, hour: Int, minute: Int) {
+        let clock = DateResolver.time(in: text)
+        #expect(clock?.hour == hour && clock?.minute == minute, "\(text): \(clock.map { "\($0.hour):\($0.minute)" } ?? "none")")
+    }
+
+    @Test func aTimeAfterADashKeepsItsDay() {
+        let r = resolver.resolve(iso: "2026-10-07", asWritten: "Wed Oct 7 - 11:59 PM")
+        #expect(r.hasTime && r.flags.isEmpty)
+        #expect(Self.calendar.dateComponents([.month, .day, .hour, .minute], from: r.date!) == DateComponents(month: 10, day: 7, hour: 23, minute: 59))
+    }
+
     @Test func outsideTermIsFlagged() {
         #expect(resolver.resolve(iso: "2027-03-01", asWritten: "March 1, 2027").flags.contains(.dateOutsideTerm))
     }

@@ -26,15 +26,16 @@ public enum Strip {
     /// Points at stake from which an item counts as heavy: a pileup needs two of these within a day of each other.
     public static let heavyPoints = 10.0
 
-    /// Visual mass in 0...1, square-root scaled so a 4% problem set is a hairline and a 30% final dominates.
-    /// An item with no stated weight reads light.
+    /// An item's weight in 0...1, square-root scaled, so a 4% problem set reads faint and a 30% final full: what `heat`
+    /// turns into colour (load is colour, never size). An item with no stated weight reads light.
     public static func mass(points: Double?) -> Double {
         let p = max(points ?? 2, 0.5)
         return min(1, (p / 35).squareRoot())
     }
 
-    /// Two or more heavy items within a day of each other (a calendar day: 25 hours across the autumn's change of clocks),
-    /// called out by the day the first one falls on.
+    /// Two or more heavy items, each within a day of the one before it (a calendar day: 25 hours across the autumn's
+    /// change of clocks), so a run of them can span several days; of one course or several. Called out by the day the
+    /// first one falls on.
     public struct Collision: Identifiable, Sendable, Equatable {
         public var id: Date { day }
         public var day: Date

@@ -22,18 +22,19 @@ public enum HorizonSchemaV1: VersionedSchema {
         public var meetings: [MeetingSlot] = []
         public var gradeComponents: [GradeComponent] = []
         public var noClassDates: [ClosedDateRange] = []
-        /// `Platform` raw values ever seen for this course, for the Coverage screen.
+        /// `Platform` raw values ever seen for this course: written by every read and read by nothing. Coverage's sites
+        /// stand on the live items and grade rows instead, never on this history (DECISIONS 2026-09-07).
         public var platforms: [String] = []
         public var lastIngested: Date?
         public var createdAt: Date = Date()
-        /// Course fields the user edited by hand ("title", "code", "term", "termStart", "termEnd", "instructor"): a later
-        /// document does not overwrite them.
+        /// Course fields the user edited by hand ("title", "code", "term", "termStart", "termEnd", "instructor", "room",
+        /// "meetings", "gradeComponents", "noClassDates"): a later document does not overwrite them (`HorizonStore.applyFacts`).
         public var userOverrides: [String] = []
         /// Soft delete: the course sits in Recently Deleted with its items and documents, restorable for `Bin.age`;
         /// a document naming it again revives it.
         public var deletedAt: Date?
         /// Gone for good (from the bin, or the bin expiring): its documents are removed and its tombstones retired; the
-        /// row itself stays a tombstone until the purge, as every synced record does.
+        /// row itself stays a tombstone until the purge, as an item's does (a document's record is removed outright).
         public var erasedAt: Date?
         /// The user's own order (Coverage, the Mac's sidebar); courses without one follow (on Coverage most suspicious
         /// first, in the sidebar by name). Kept through the bin, so a restored course is back in its place.

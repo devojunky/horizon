@@ -1,5 +1,6 @@
 import Foundation
 import EventKit
+import IngestKit
 
 /// One reminder in the Horizon list, as seen from EventKit.
 public struct ReminderItem: Sendable, Equatable, Identifiable {
@@ -35,7 +36,8 @@ public struct ReminderDraft: Sendable, Equatable {
     public var title: String
     public var due: Date?
     public var hasTime: Bool
-    /// Horizon's own lines. Text the user typed into the reminder is preserved around them on update.
+    /// Horizon's lines (`ReminderProjector.draft(for:)`: what the item is worth, its grade row, its site, its page), then
+    /// the user's text as the app holds it.
     public var notes: String
     public var url: URL
     /// 1 = high … 9 = low, 0 = none. Points at stake drive it.
@@ -44,12 +46,78 @@ public struct ReminderDraft: Sendable, Equatable {
         self.title = title; self.due = due; self.hasTime = hasTime; self.notes = notes; self.url = url; self.priority = priority
     }
 
-    /// Lines Horizon generates; anything else in a reminder's notes belongs to the user.
-    public static let generatedPrefixes = ["Worth ", "Counts toward ", "On ", "From the document"]
+    /// What a reminder's notes become when this draft is written over the ones it holds (`existing`): the draft's, whole,
+    /// and nothing of the old. The draft carries the user's text as the app holds it, which the reconcile at the start of
+    /// the same sync brought up to date with whatever was typed in Reminders; keeping the old text as well wrote the
+    /// user's words twice, the next reconcile took the doubled text in as theirs, and it doubled again on every write.
+    /// Both stores write through this, so the tests' fake writes what EventKit does.
+    public func notes(over existing: String?) -> String? { notes.isEmpty ? nil : notes }
+}
 
-    public static func userText(in notes: String?) -> String {
-        (notes ?? "").components(separatedBy: "\n").filter { line in !generatedPrefixes.contains { line.hasPrefix($0) } && !line.isEmpty }.joined(separator: "\n")
+/// Horizon's lines in a reminder's notes, told from the user's text. Horizon writes its lines first, each at most once and
+/// in one order (`ReminderProjector.draft(for:)`), and the user's text under them; the user may type anywhere.
+extension ReminderDraft {
+    /// Horizon's lines, in the order it writes them.
+    enum HorizonLine: Int, Comparable {
+        case worth, countsToward, site, page
+        static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
     }
+
+    /// Which of Horizon's lines `line` reads as, matched whole against what the projector writes: "Worth 1.5% of the
+    /// grade" (the figure in the device's own number format), "Counts toward" and a grade row, "On" and a site Horizon
+    /// names, "From the document, page 3". A line of the user's that only begins the same way ("On Canvas, as a PDF",
+    /// "Worth asking about in office hours") is none of them. A grade row can be any words, so whose a "Counts toward"
+    /// line is depends on where it stands (`userText`).
+    static func horizonLine(_ line: String) -> HorizonLine? {
+        if line.wholeMatch(of: /Worth \d+(?:[^\d\s%]\d+)?% of the grade/) != nil { return .worth }
+        if line.hasPrefix("Counts toward "), !line.dropFirst(14).allSatisfy(\.isWhitespace) { return .countsToward }
+        if Platform.allCases.contains(where: { $0 != .syllabusOnly && line == "On \(ReminderProjector.platformName($0))" }) { return .site }
+        if line.wholeMatch(of: /From the document, page \d+/) != nil { return .page }
+        return nil
+    }
+
+    /// The user's text in notes Horizon wrote: what is left once its lines are taken out. Horizon writes each of them
+    /// once, so only the first line reading as each is its own (a second "On WebAssign" is the user's). A "Counts toward"
+    /// line is Horizon's when it names the item's grade row (`component`), else when it stands where Horizon writes one,
+    /// opening the notes or under its "Worth" line (the row the item was in when its reminder was last written); any
+    /// other is the user's. Blank lines inside the user's text stay, those around it go.
+    public static func userText(in notes: String?, component: String?) -> String {
+        let lines = (notes ?? "").components(separatedBy: "\n")
+        let ownRow = component.map { "Counts toward \($0)" }
+        let counts = lines.firstIndex { $0 == ownRow }
+            ?? lines.indices.first { horizonLine(lines[$0]) == .countsToward && ($0 == 0 || horizonLine(lines[$0 - 1]) == .worth) }
+        var taken: Set<HorizonLine> = []
+        var user: [String] = []
+        for (i, line) in lines.enumerated() {
+            if let kind = horizonLine(line), kind != .countsToward || i == counts, taken.insert(kind).inserted { continue }
+            user.append(line)
+        }
+        return trimmingBlankLines(user).joined(separator: "\n")
+    }
+
+    /// Whether a reminder's notes still say what Horizon last wrote there: its own lines, in its order, then exactly the
+    /// user's text it wrote (`written`, the item's `projectedNotes`). Its own lines may read differently by now (the
+    /// points worked out again, another page); the user's text may not. Notes that hold as written were not edited in
+    /// Reminders, so a line the user typed in the app that reads like one of Horizon's is never taken for it.
+    static func holdsAsWritten(_ notes: String?, userText written: String?) -> Bool {
+        var lines = trimmingBlankLines(notes)
+        let user = trimmingBlankLines(written)
+        guard lines.count >= user.count, lines.suffix(user.count).elementsEqual(user) else { return false }
+        lines.removeLast(user.count)
+        var last: HorizonLine?
+        for line in lines where !isBlank(line) {
+            guard let kind = horizonLine(line), last.map({ $0 < kind }) ?? true else { return false }
+            last = kind
+        }
+        return true
+    }
+
+    /// The lines of `text` without the blank ones at either end.
+    static func trimmingBlankLines(_ text: String?) -> [String] { trimmingBlankLines((text ?? "").components(separatedBy: "\n")) }
+
+    static func trimmingBlankLines(_ lines: [String]) -> [String] { Array(lines.drop(while: isBlank).reversed().drop(while: isBlank).reversed()) }
+
+    static func isBlank(_ line: String) -> Bool { line.allSatisfy(\.isWhitespace) }
 }
 
 /// The only surface through which Horizon touches Reminders. `EventKitReminderStore` is the real one; tests use a fake.
@@ -78,7 +146,8 @@ public enum ReconcileChange: Sendable, Equatable {
     /// Completion state differs: EventKit wins, unless the user's own check in the app is still on its way there.
     case completion(UUID, Date?)
     /// The user changed the title, due date, or notes in Reminders: adopt it and mark the field as overridden.
-    case userEdited(UUID, title: String?, due: Date?, hasTime: Bool, notes: String?)
+    /// `reminderTitle`: the reminder's title as it reads, course and all, which is what Reminders now says.
+    case userEdited(UUID, title: String?, due: Date?, hasTime: Bool, notes: String?, reminderTitle: String)
     /// A reminder matched by its deep link before its external identifier had synced.
     case repairExternalID(UUID, String)
 }
@@ -131,7 +200,7 @@ public final class EventKitReminderStore: ReminderStore, @unchecked Sendable {
         guard hasAccess else { throw ReminderStoreError.accessDenied }
         let reminder = EKReminder(eventStore: store)
         reminder.calendar = try listForWriting()
-        Self.write(draft, to: reminder, keeping: nil)
+        Self.write(draft, to: reminder)
         try store.save(reminder, commit: true)
         return Self.item(reminder)
     }
@@ -139,7 +208,7 @@ public final class EventKitReminderStore: ReminderStore, @unchecked Sendable {
     public func update(externalID: String, with draft: ReminderDraft) async throws -> ReminderItem? {
         guard hasAccess else { throw ReminderStoreError.accessDenied }
         guard let reminder = store.calendarItems(withExternalIdentifier: externalID).compactMap({ $0 as? EKReminder }).first else { return nil }
-        Self.write(draft, to: reminder, keeping: reminder.notes)
+        Self.write(draft, to: reminder)
         try store.save(reminder, commit: true)
         return Self.item(reminder)
     }
@@ -161,10 +230,9 @@ public final class EventKitReminderStore: ReminderStore, @unchecked Sendable {
         try store.remove(reminder, commit: true)
     }
 
-    private static func write(_ draft: ReminderDraft, to reminder: EKReminder, keeping existingNotes: String?) {
+    private static func write(_ draft: ReminderDraft, to reminder: EKReminder) {
         reminder.title = draft.title
-        let userText = ReminderDraft.userText(in: existingNotes)
-        reminder.notes = userText.isEmpty ? draft.notes : draft.notes + "\n" + userText
+        reminder.notes = draft.notes(over: reminder.notes)
         reminder.url = draft.url
         reminder.priority = draft.priority
         if let due = draft.due {

@@ -1,6 +1,7 @@
 import Foundation
 
-/// Every identifier the app, the share extension and the store agree on. Change them together with `project.yml`.
+/// The identifiers the app, its extensions and the store agree on. Change them together with `project.yml` (which also
+/// holds the extensions' bundle ids, and the widget extension's `horizon://` links are written out where they are made).
 public enum Identifiers {
     public static let bundlePrefix = "com.daniel.horizon"
     public static let appGroup = "group.com.daniel.horizon"

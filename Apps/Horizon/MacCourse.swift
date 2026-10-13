@@ -40,7 +40,7 @@ struct MacCoursePage: View {
     }
 
     var body: some View {
-        let listed = obligations.filter { showsDone || $0.completedAt == nil || lingering.contains($0.id) }
+        let listed = obligations.filter { showsDone || $0.completedAt == nil || lingering.contains($0.id) || $0.id == revealed }
         let rows = listed.map { ItemRow($0, lingering: lingering) }.sorted(using: sortOrder)
         HStack(alignment: .top, spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
@@ -61,7 +61,7 @@ struct MacCoursePage: View {
                           reveal: revealed,
                           mark: { id, done in lingering.mark(id, done: done); Task { await model.setCompleted(id, done) } },
                           edit: { id in editing = obligations.first { $0.id == id } },
-                          delete: { ids in for id in ids { Task { await model.discard(id) } }; selection.subtract(ids) })
+                          delete: { ids in Task { await model.discard(Array(ids)) }; selection.subtract(ids) })   // one undo for them all
             }
             .frame(minWidth: 420, maxWidth: .infinity)
             CourseRail(course: course, story: story, documents: documents, obligations: obligations, preview: $preview)
@@ -70,6 +70,7 @@ struct MacCoursePage: View {
         .background(Design.paper)
         .animation(.default, value: rows.map(\.id))
         .navigationTitle(course.displayName)
+        .showsEntity(CourseEntity.self, id: course.id, title: course.displayName)   // Siri's "this course"
         .toolbar(removing: .title)   // the window keeps the name (the Window menu, Mission Control); the page shows it once, in its masthead
         .toolbar {   // Add Document is the window's, and on this page files under the course
             ToolbarSpacer(.fixed, placement: .primaryAction)
@@ -90,12 +91,11 @@ struct MacCoursePage: View {
 }
 
 extension MacCoursePage {
-    /// Selects the item a link asked for, when it is this course's, and brings it into view; a done item shows the
-    /// done ones, so it is there to be seen.
+    /// Selects the item a link asked for, when it is this course's, and brings it into view; a done item is listed for
+    /// the while, Show Done left as the user set it (it is kept with the app's settings, for every course).
     private func reveal() {
-        guard let id = nav.reveal, let item = obligations.first(where: { $0.id == id }) else { return }
+        guard let id = nav.reveal, obligations.contains(where: { $0.id == id }) else { return }
         nav.reveal = nil
-        if item.completedAt != nil { showsDone = true }
         selection = [id]
         revealed = id
     }

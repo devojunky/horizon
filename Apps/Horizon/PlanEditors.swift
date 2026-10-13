@@ -2,7 +2,8 @@ import SwiftUI
 import IngestKit
 
 /// Edits one block of today's plan, or adds one. Cancel leads, Save trails and is off until something changed and
-/// the times make sense; swiping the sheet away with changes asks first (HIG sheets), like the item editor.
+/// the times make sense; with changes the sheet will not swipe away, and Cancel asks first (HIG sheets), like the
+/// item editor.
 struct PlanBlockEditor: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss

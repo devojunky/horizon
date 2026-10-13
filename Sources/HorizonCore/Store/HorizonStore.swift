@@ -2,28 +2,36 @@ import Foundation
 import SwiftData
 import IngestKit
 
-/// All reads and writes to the model store. One actor, so field ownership and soft deletes are enforced in one place.
+/// Every write to the model store, and the reads the app's work needs (views read through `@Query`). One actor, so
+/// field ownership and soft deletes are enforced in one place.
 @ModelActor
 public actor HorizonStore {
     public static let tombstoneAge: TimeInterval = 180 * 86400
 
     // MARK: Ingest
 
-    /// Folds an `IngestResult` into the store (SPEC §4.4 field ownership). Existing obligations are matched by title
-    /// and due day; document-owned fields update unless the user overrode them, and any change to an item the user may
-    /// be relying on goes back to review with a `changeNote` rather than moving silently.
+    /// Folds an `IngestResult` into the store (SPEC §4.4 field ownership). Existing obligations are matched by what the
+    /// document said of them (`documentWords`: its title and day as printed, whatever the user has made of the row), among
+    /// the course's rows and the rows moved out of its documents; document-owned fields update unless the user overrode
+    /// them, and a changed title, date or site goes back to review with a `changeNote` rather than moving silently.
     public func ingest(_ result: IngestResult, documentID: UUID, calendar: Calendar = .current) throws -> IngestSummary {
         var summary = IngestSummary(warnings: result.warnings)
         guard let document = try fetchDocument(id: documentID) else { throw StoreError.missingDocument }
         // Deleted while it was read (on its own, or with its course): nothing comes back from the bin and nothing is
         // folded in. The document waits there with its checkpoint, so a restore reads it again from the parts read.
         if document.deletedAt != nil { summary.binned = true; return summary }
-        // A document filed under a course by the user stays there; its facts apply only if it names no other course.
+        // A document filed under a course by the user stays there; its facts apply only if it names no other course. A
+        // course made by hand without a code has none to differ: the first document filed there gives it its code, and
+        // its facts, unless another course on file has that code.
         let course: Course?
         if let hinted = document.course {
             if wentAfterQueueing(hinted, document) { return try setAside(document, with: hinted, summary) }
             let named = result.course?.code.map(Normalize.collapseWhitespace) ?? ""
-            if named.isEmpty || Normalize.key(named) == Normalize.key(hinted.code) { applyFacts(from: result, to: hinted) }
+            var applies = named.isEmpty || Normalize.key(named) == Normalize.key(hinted.code)
+            if !applies, hinted.code.isEmpty {
+                applies = try !fetchCourses().contains { $0.id != hinted.id && $0.deletedAt == nil && Normalize.key($0.code) == Normalize.key(named) }
+            }
+            if applies { applyFacts(from: result, to: hinted) }
             else { summary.warnings.append("The document names \(named); filed under \(hinted.displayName) as asked") }
             revive(hinted)
             course = hinted
@@ -148,6 +156,17 @@ public actor HorizonStore {
         for case let course? in courses where !done.contains(course.id) { done.append(course.id); recomputePoints(for: course) }
     }
 
+    /// The course's name changed (by hand, or a document's longer one): every reminder of its items carries it ("HW 1 ·
+    /// Calculus II"), so each item already written there is written again by the next sync. An item in review or waiting
+    /// for a date takes the new name when it is next written; meanwhile the reconcile still reads the old one on its
+    /// reminder as the course's (`Reconciler.stripCourse`).
+    private func rewriteReminders(of course: Course) {
+        for item in course.obligations ?? [] where item.deletedAt == nil && item.state == .projected {
+            item.state = .readyToProject
+            item.updatedAt = Date()
+        }
+    }
+
     /// "Updated N days ago" counts only documents still on file: the last read of one, nil when none is left.
     private func refreshLastIngested(_ course: Course, excluding gone: UUID? = nil) {
         course.lastIngested = (course.documents ?? []).filter { $0.id != gone && $0.deletedAt == nil && $0.status == .parsed }.compactMap(\.ingestedAt).max()
@@ -166,7 +185,8 @@ public actor HorizonStore {
                            termStart: course.termStart, termEnd: course.termEnd, components: components)
     }
 
-    /// Files a parsed document (and the items it produced without a course) under a course.
+    /// Files a parsed document (and the items it produced without a course) under a course. Their reminders carry the
+    /// course's name from then on, so the ones already written are written again.
     public func assignDocument(id: UUID, to courseID: UUID) throws {
         guard let document = try fetchDocument(id: id), let course = try fetchCourse(id: courseID) else { return }
         document.course = course
@@ -176,14 +196,15 @@ public actor HorizonStore {
             if item.componentName == nil || !names.contains(where: { Normalize.key($0) == Normalize.key(item.componentName ?? "") }) {
                 item.componentName = ComponentNames.infer(title: item.title, among: names) ?? item.componentName
             }
+            if item.state == .projected { item.state = .readyToProject }
             item.updatedAt = Date()
         }
         recomputePoints(for: course)
         try modelContext.save()
     }
 
-    /// The course a document names: the same course when the code matches; a title that reads the same only when
-    /// neither side has a code; else a new one. Nil when it names none. The caller revives and fills it.
+    /// The course a document names: the same course when the code matches; a title that reads the same when either side
+    /// has no code; else a new one. Nil when it names none. The caller revives and fills it.
     private func upsertCourse(from result: IngestResult) throws -> Course? {
         let parsed = result.course
         let code = parsed?.code.map(Normalize.collapseWhitespace) ?? ""
@@ -219,13 +240,17 @@ public actor HorizonStore {
         for item in document.obligations ?? [] where item.deletedAt != nil { item.retiredWithSource = true }
     }
 
-    /// What a document says about its course, except where the user's hand edits stand.
+    /// What a document says about its course, except where the user's hand edits stand. A course without a code takes the
+    /// document's whatever its overrides say: an empty code is no edit of the user's to keep (a course made by hand once
+    /// had its code marked as theirs, given or not, and then never took one).
     private func applyFacts(from result: IngestResult, to course: Course) {
         let parsed = result.course
         let code = parsed?.code.map(Normalize.collapseWhitespace) ?? ""
         let title = parsed?.title.map(Normalize.collapseWhitespace) ?? ""
         let kept = Set(course.userOverrides)   // hand-edited fields stay
-        if course.code.isEmpty, !kept.contains("code") { course.code = code }
+        let name = course.displayName
+        defer { if course.displayName != name { rewriteReminders(of: course) } }
+        if course.code.isEmpty { course.code = code }
         if !kept.contains("title"), course.title.isEmpty || (!title.isEmpty && Normalize.key(course.title) != Normalize.key(title) && course.title.count < title.count) { course.title = title }
         if let p = parsed {
             if !kept.contains("instructor") { course.instructor = p.instructor ?? course.instructor }
@@ -761,15 +786,18 @@ public actor HorizonStore {
     /// Hand edits to a course; each edited field becomes an override a later document leaves alone.
     public func updateCourse(id: UUID, edits: CourseEdits) throws {
         guard let course = try fetchCourse(id: id) else { return }
+        let name = course.displayName
         Self.apply(edits, to: course)
+        if course.displayName != name { rewriteReminders(of: course) }   // its items' reminders carry the name
         recomputePoints(for: course)   // weights, counts and the term's dates set the points at stake
         try modelContext.save()
     }
 
-    /// A course entered by hand (the fallback for a course with no document yet). Every field given is an override.
+    /// A course entered by hand (the fallback for a course with no document yet). Every field given is an override; a
+    /// name or code left empty is none, so the first document filed under the course fills it in.
     public func addCourse(_ edits: CourseEdits) throws -> CourseSnapshot {
         let course = Course(code: edits.code ?? "", title: edits.title ?? "")
-        course.userOverrides = ["title", "code"]
+        for (field, value) in [("title", edits.title), ("code", edits.code)] where !(value ?? "").allSatisfy(\.isWhitespace) { course.userOverrides.append(field) }
         Self.apply(edits, to: course)
         modelContext.insert(course)
         try modelContext.save()
@@ -790,7 +818,7 @@ public actor HorizonStore {
         if let breaks = edits.noClassDates { course.noClassDates = breaks; keep("noClassDates") }
     }
 
-    /// The user's order for the Coverage screen; every course listed gets its position, the rest keep none.
+    /// The user's order, for Coverage and the Mac's sidebar alike; every course listed gets its position, the rest keep none.
     public func reorderCourses(_ ids: [UUID]) throws {
         let all = try modelContext.fetch(FetchDescriptor<Course>())
         for course in all { course.sortOrder = ids.firstIndex(of: course.id) }
@@ -860,7 +888,7 @@ public actor HorizonStore {
                 ob.due = item.due; ob.dueHasTime = item.hasTime
                 ob.projectedTitle = item.title; ob.projectedDue = item.due
                 ob.completedAt = item.completionDate
-                ob.notes = ReminderDraft.userText(in: item.notes).nilIfEmpty
+                ob.notes = ReminderDraft.trimmingBlankLines(item.notes).joined(separator: "\n").nilIfEmpty   // Horizon never wrote to it: every line is the user's
                 ob.projectedNotes = ob.notes
                 ob.userOverrides = [.title, .due, .notes]   // the user's own words: a document naming the same thing does not rewrite them
                 modelContext.insert(ob)
@@ -868,9 +896,11 @@ public actor HorizonStore {
                 if let ob = try fetchObligation(id: id), ob.deletedAt == nil { ob.deletedAt = Date(); ob.ekExternalID = nil; ob.updatedAt = Date(); courses.append(ob.course) }
             case .completion(let id, let date):
                 if let ob = try fetchObligation(id: id), !ob.completionPending { ob.completedAt = date }
-            case .userEdited(let id, let title, let due, let hasTime, let notes):
+            case .userEdited(let id, let title, let due, let hasTime, let notes, let reminderTitle):
                 if let ob = try fetchObligation(id: id), since.map({ ob.updatedAt <= $0 }) ?? true {
-                    if let title { ob.title = title; ob.projectedTitle = ObligationSnapshot(ob).reminderTitle; ob.userOverrides.appendIfMissing(.title) }   // as the reminder now reads, course and all
+                    // Recorded as the reminder reads, course and all: a course renamed since leaves its old name there until the
+                    // reminder is next written, and a title made from the new one would read as another edit on the next pass.
+                    if let title { ob.title = title; ob.projectedTitle = reminderTitle; ob.userOverrides.appendIfMissing(.title) }
                     if let due { ob.due = due; ob.dueHasTime = hasTime; ob.projectedDue = due; ob.userOverrides.appendIfMissing(.due) }
                     if let notes { ob.notes = notes.nilIfEmpty; ob.projectedNotes = notes.nilIfEmpty; ob.userOverrides.appendIfMissing(.notes) }
                     ob.updatedAt = Date()
@@ -923,6 +953,21 @@ public actor HorizonStore {
 
     public func courses() throws -> [CourseSnapshot] {
         try modelContext.fetch(FetchDescriptor<Course>(predicate: #Predicate { $0.deletedAt == nil }, sortBy: [SortDescriptor(\.code)])).map(CourseSnapshot.init)
+    }
+
+    /// A live course, or nil (gone to the bin, erased, or never there).
+    public func course(id: UUID) throws -> CourseSnapshot? {
+        try fetchCourse(id: id).flatMap { $0.deletedAt == nil ? CourseSnapshot($0) : nil }
+    }
+
+    /// A live item, or nil.
+    public func obligation(id: UUID) throws -> ObligationSnapshot? {
+        try fetchObligation(id: id).flatMap { $0.deletedAt == nil ? snapshot($0) : nil }
+    }
+
+    /// The live courses' policies.
+    public func policies() throws -> [PolicySnapshot] {
+        try modelContext.fetch(FetchDescriptor<Policy>()).filter { $0.course?.deletedAt == nil && $0.course != nil }.map(PolicySnapshot.init)
     }
 
     /// Where the app is probably blind, per course, most suspicious first (SPEC §6.1).

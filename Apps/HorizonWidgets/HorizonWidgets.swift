@@ -7,6 +7,10 @@ import AppIntents
 struct HorizonWidgets: WidgetBundle {
     var body: some Widget {
         PlanLiveActivity()
+        NextItemWidget()
+        WeekWidget()
+        ReadScreenshotControl()
+        PlanDayControl()
     }
 }
 
@@ -288,7 +292,8 @@ private struct ActivityKicker: View {
     var accent = false
     init(_ text: String, accent: Bool = false) { self.text = text; self.accent = accent }
     var body: some View {
-        Text(text).font(.caption2).textCase(.uppercase).kerning(1).foregroundStyle(accent ? ActivityDesign.accent : .secondary)
+        // Words take the ink, not the orange: on the light Lock Screen the orange reads at about 1.8:1 (the app's rule).
+        Text(text).font(.caption2).textCase(.uppercase).kerning(1).foregroundStyle(accent ? GlanceDesign.ink : .secondary)
     }
 }
 

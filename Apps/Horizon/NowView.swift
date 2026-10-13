@@ -92,7 +92,7 @@ struct NowView: View {
     }
 
     /// On a Mac the day's context sits in a column beside the plan (tonight's end, what the planner was told, what
-    /// is due soon); a phone keeps them under the plan.
+    /// is due soon); a phone keeps Tonight Until under the plan, and what the planner was told under the invitation.
     @ViewBuilder private var content: some View {
         #if os(macOS)
         HStack(alignment: .top, spacing: 0) {
@@ -513,11 +513,7 @@ struct TonightUntil: View {
     var choose: (Int) -> Void
 
     /// The ends still ahead (at 2 AM, 6 PM to 2 AM are over), and the one chosen whatever it is.
-    private var choices: [Int] {
-        let calendar = Calendar.current, now = Date()
-        let into = calendar.dateComponents([.hour], from: PlanHours.day(of: now, calendar: calendar), to: now).hour ?? 0   // hours since the plan's day began, past midnight too
-        return PlanHours.ends.filter { $0 > into || $0 == end }
-    }
+    private var choices: [Int] { PlanHours.endsAhead(including: end) }
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 0) {   // the pop-up button brings its own inset
@@ -545,4 +541,11 @@ extension PlanHours {
     }
     /// An end in a list of them: the usual one says so.
     static func choice(_ hour: Int, usual: Int) -> String { hour == usual ? "\(label(hour)) (Usual)" : label(hour) }
+
+    /// The night's ends still ahead of `now` (at 2 AM, 6 PM to 2 AM are over), and `chosen` whatever it is: what Now's
+    /// pop-up, the Mac's Plan menu and Siri offer. Counted by the clock, so the night the clocks go back loses no end.
+    static func endsAhead(including chosen: Int? = nil, now: Date = .now, calendar: Calendar = .current) -> [Int] {
+        let day = PlanHours.day(of: now, calendar: calendar)
+        return PlanHours.ends.filter { hour in hour == chosen || (moment(hour, on: day, calendar: calendar).map { $0 > now } ?? false) }
+    }
 }

@@ -464,6 +464,19 @@ struct MergerTests {
         #expect(r.obligations.count == 1 && r.obligations[0].status == .needsReview)
     }
 
+    @Test func anEmptyTranscriptIsNoTranscript() {
+        // Claude's reply can come back with its transcript empty (decoded or salvaged as ""): there is still nothing to
+        // check the picture's facts against, so its items go to review like the device model's, never out as ready.
+        for transcript in ["", " \n "] {
+            let r = Self.merge([Self.outcome(0, kind: .image, transcript: transcript, obligations: [Self.ob("Reaction Paper 1", "Oct 9, 2026 11:59 PM", iso: "2026-10-09")])], text: "")
+            #expect(r.obligations.count == 1 && r.obligations[0].status == .needsReview && r.obligations[0].flags.contains(.dateNotInSource), "\(transcript.debugDescription)")
+        }
+        // Beside a page that was transcribed, the blank one's items are still its own to review.
+        let pages = Self.merge([Self.outcome(0, kind: .image, transcript: Self.source, obligations: [Self.ob("HW 1", "Wed 9/9", iso: "2026-09-09")]),
+                                Self.outcome(1, kind: .image, transcript: "", obligations: [Self.ob("Quiz 1", "Thu 9/17", iso: "2026-09-17")])], text: "")
+        #expect(pages.obligations.first { $0.title == "HW 1" }?.status == .ready && pages.obligations.first { $0.title == "Quiz 1" }?.status == .needsReview)
+    }
+
     @Test func emptyWordingGoesToReview() {
         let r = Self.merge([Self.outcome(0, obligations: [Self.ob("HW 1", "", iso: "2026-09-09")])])
         #expect(r.obligations.count == 1 && r.obligations[0].status == .needsReview && Self.day(r.obligations[0].due) == 9)

@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import QuickLook
+import AppIntents
 import HorizonCore
 import IngestKit
 
@@ -26,12 +27,14 @@ struct CourseView: View {
     // its own, and only a query redraws for that (read through the relationship, an item deleted stayed on the page).
     @Query private var items: [Obligation]
     @Query private var files: [SourceDocument]
+    @Query private var policies: [Policy]
 
     init(course: Course) {
         self.course = course
         let id = course.id
         _items = Query(filter: #Predicate<Obligation> { $0.deletedAt == nil && $0.course?.id == id })
         _files = Query(filter: #Predicate<SourceDocument> { $0.deletedAt == nil && $0.course?.id == id })
+        _policies = Query(filter: #Predicate<Policy> { $0.course?.id == id })   // a re-read that changes only the policies redraws the page too
     }
 
     /// Every document on file for the course, newest first: what its items, its grade table and its policies came from.
@@ -70,7 +73,7 @@ struct CourseView: View {
                 else if toDo.isEmpty { Text("Everything on file is done.").foregroundStyle(.secondary) }
             }
             .onPaper()
-            if let policies = course.policies, !policies.isEmpty {
+            if !policies.isEmpty {
                 PageSection("Policies") {
                     ForEach(policies) { policy in
                         VStack(alignment: .leading, spacing: 2) {
@@ -80,6 +83,7 @@ struct CourseView: View {
                             }
                             Text(policy.text)
                         }
+                        .appEntityIdentifier(EntityIdentifier(for: PolicyEntity.self, identifier: policy.id))   // "what does this say about makeups?"
                     }
                 }
                 .onPaper()
@@ -95,6 +99,7 @@ struct CourseView: View {
                                 Button("Delete", systemImage: "trash", role: .destructive) { Task { await model.deleteDocument(doc.id) } }
                             }
                             .accessibilityHint("Opens the document")
+                            .appEntityIdentifier(EntityIdentifier(for: DocumentEntity.self, identifier: doc.id))
                     }
                 }
                 .onPaper()
@@ -129,14 +134,15 @@ struct CourseView: View {
         .sheet(isPresented: $addingItem) { ObligationEditor(mode: .manual, courses: courses, preferredCourse: course.id) }   // added here: this course
         .sheet(isPresented: $editingCourse) { CourseEditor(course: course) }
         .quickLookPreview($preview)
+        .showsEntity(CourseEntity.self, id: course.id, title: course.displayName)   // Siri's "this course"
         .onChange(of: course.deletedAt) { _, gone in if gone != nil { dismiss() } }
-        .onAppear {
-            if MainTabs.debugFlag("--open-item") { editing = obligations.first }
+        .onAppear {   // once per launch: a sheet closed must not open again as the page reappears
+            if MainTabs.debugOnce("--open-item") { editing = obligations.first }
             if MainTabs.debugOnce("--check-first-item"), let first = toDo.first {   // DEBUG: a check without a tap, to see the row linger, then move down to Done
                 Task { try? await Task.sleep(for: .seconds(2)); lingering.mark(first.id, done: true); await model.setCompleted(first.id, true) }
             }
-            if MainTabs.debugFlag("--open-course-editor") { editingCourse = true }
-            if MainTabs.debugFlag("--add-item") { addingItem = true }
+            if MainTabs.debugOnce("--open-course-editor") { editingCourse = true }
+            if MainTabs.debugOnce("--add-item") { addingItem = true }
         }
     }
 

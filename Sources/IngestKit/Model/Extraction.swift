@@ -96,16 +96,9 @@ struct NoClassFacts {
     @Guide(description: "YYYY-MM-DD, same as startDate for one day")
     var endDate: String?
 }
-/// What Claude returns for a picture (a screenshot, a scanned page): the page's text, transcribed, and then the facts.
-/// The transcript stands in for the document text the deterministic guards check against, the way a PDF's text layer
-/// does; it is generated first so the facts are read off it. The device model never sees this type (its context is
-/// too small for a transcript, and the system's OCR tool serves it instead).
-@Generable(description: "A picture of a course document, transcribed, and the facts stated in it.")
-struct PageReading {
-    @Guide(description: "Every line of text visible in the picture, top to bottom, in reading order; a table row is one line with its cells separated by two spaces.")
-    var transcript: String
-    var facts: ChunkExtraction
-}
+// A picture Claude reads is transcribed first, then its facts (`ClaudeSchemas.pageReading`, decoded by `PageReadingJSON`):
+// the transcript stands in for the document text the guards check against. The device model has no such step (its
+// context is too small for a transcript; the system's OCR tool serves it instead).
 
 // A finished chunk's facts are kept as a checkpoint (`IngestCheckpoint`) so a read that stops can go on from there.
 extension ChunkExtraction: Codable, Equatable {}

@@ -6,6 +6,13 @@ enum Merger {
     static func merge(outcomes: [ExtractionOutcome], document: NormalizedDocument, route: ModelRoute,
                       options: IngestOptions, warnings: [String]) -> IngestResult {
         var warnings = warnings
+        // A transcript with no words in it (Claude's reply can close with it empty) is no transcript: the picture's facts
+        // have nothing to be checked against, and go to review like the device model's.
+        let outcomes = outcomes.map { outcome in
+            var outcome = outcome
+            if outcome.transcript?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true { outcome.transcript = nil }
+            return outcome
+        }
         let extractions = outcomes.map(\.extraction)
         // The document's own words: its text layers, and every picture as Claude transcribed it (the device model
         // transcribes nothing, so its pictures are checked against nothing and go to review).

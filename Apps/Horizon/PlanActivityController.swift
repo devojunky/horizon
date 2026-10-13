@@ -40,7 +40,8 @@ import os
     }
 
     /// Brings the activity in step with `plan` at `now`. Returns the next moment what it shows changes by itself, for
-    /// the background refresh that brings it in step again then; nil when there is none (no activity, or it ended).
+    /// the background refresh that brings it in step again then; nil when there is none (no activity: it ended, the user
+    /// removed it, or it could not start).
     @discardableResult
     func sync(plan: DayPlan?, day: Date?, now: Date = Date()) async -> Date? {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { Self.log("not enabled"); return nil }
@@ -58,6 +59,7 @@ import os
         } else if activity?.activityState == .dismissed || dismissed == plan.id {
             dismissed = plan.id   // the user removed it from the Lock Screen: not again for this plan (a new plan may start one)
             activity = nil
+            return nil            // and no background refresh for an activity that is not there
         } else {
             do {
                 activity = try Activity.request(attributes: PlanActivityAttributes(day: day), content: content, pushType: nil)
@@ -65,6 +67,7 @@ import os
             } catch {
                 Self.log("could not start: \(error)")
                 shown = nil
+                return nil        // started from the foreground or not at all: a refresh in the background could not either
             }
         }
         return change
@@ -83,7 +86,12 @@ import os
         }
     }
     private var ending: Set<String> = []
-    private var dismissed: UUID?
+    /// The plan whose activity the user removed. Kept with the app's settings: iOS ends a backgrounded app, and the next
+    /// launch's sync would otherwise start the removed activity again for the same plan.
+    private var dismissed: UUID? {
+        get { AppModel.defaults.string(forKey: "dismissedPlanActivity").flatMap(UUID.init(uuidString:)) }
+        set { AppModel.defaults.set(newValue?.uuidString, forKey: "dismissedPlanActivity") }
+    }
 
     static func state(of plan: DayPlan, at now: Date) -> PlanActivityAttributes.ContentState {
         let focus = plan.focus(at: now)

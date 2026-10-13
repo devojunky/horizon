@@ -112,7 +112,7 @@ public actor Ingestor {
     public static func probe(claude configuration: ClaudeConfiguration) async throws -> String { try await Extractor.probe(claude: configuration) }
 
     /// Names a document already on file, from its first lines (or, for a picture, from `digest`: what was read from
-    /// it). The device model's task, like every title.
+    /// it). The device model's task, like every title. A picture with nothing read from it yet is `.notYet`.
     public static func title(fileURL: URL, request: DocumentTitleRequest, digest: String? = nil, log: @escaping @Sendable (String) -> Void = { _ in }) async -> DocumentTitleOutcome {
         guard let document = try? DocumentNormalizer.normalize(fileURL: fileURL) else { return .nothing }
         let opening = DocumentName.opening(of: document)
@@ -161,12 +161,13 @@ public actor Ingestor {
         return result
     }
 
-    /// A title reaches the caller as an event; a model that is not there to ask says nothing, so it is asked another time.
+    /// A title reaches the caller as an event; a model that is not there to ask, or a document with nothing to name it
+    /// from yet, says nothing, so it is asked another time.
     private static func report(_ outcome: DocumentTitleOutcome, to progress: @Sendable (IngestEvent) -> Void) {
         switch outcome {
         case .titled(let title): progress(.named(title: title))
         case .nothing: progress(.named(title: nil))
-        case .unavailable: break
+        case .unavailable, .notYet: break
         }
     }
 

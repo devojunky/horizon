@@ -60,16 +60,22 @@ private struct EscapeCancels: ViewModifier {
     let cancel: () -> Void
     @State private var window: NSWindow?
     @State private var monitor: Any?
+    /// What Cancel does now. The monitor lives as long as the sheet, so it calls through this, set at every evaluation:
+    /// a closure kept from the sheet's opening would see it unchanged for ever, and Escape closed an edited sheet unasked.
+    @State private var current = Current()
+    final class Current { var cancel: () -> Void = {} }
 
     func body(content: Content) -> some View {
-        content
+        current.cancel = cancel
+        return content
             .background(WindowFinder { window = $0 })
             .onAppear {
+                let current = current
                 monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                     guard event.keyCode == 53, event.modifierFlags.isDisjoint(with: [.command, .option, .control, .shift]),   // Escape alone
                           let window, event.window === window,
                           !((window.firstResponder as? NSTextView)?.hasMarkedText() ?? false) else { return event }
-                    cancel()
+                    current.cancel()
                     return nil
                 }
             }

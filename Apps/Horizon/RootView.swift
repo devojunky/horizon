@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import AppIntents
 import HorizonCore
 #if canImport(UIKit)
 import UIKit
@@ -12,6 +13,8 @@ enum Route: Hashable {
     case documents
     case recentlyDeleted
     case settings
+    /// Review as a page of its own, for the app's destinations; the list's own row still pushes it by a link.
+    case review
 }
 
 /// Pushes a route on the home stack; pages down the stack (Documents, Recently Deleted) use it instead of links. The closure
@@ -25,8 +28,9 @@ extension EnvironmentValues {
     @Entry var openRoute = OpenRouteAction { _ in }
 }
 
-/// What intake has to say, above the stories: the document being read, Reminders access turned off, a document that
-/// could not be read (from the store, so it stays until the document reads or is retried), or the sync's status line.
+/// What intake has to say, above the stories: the document being read, else one notice at a time (documents waiting for
+/// Claude, Reminders access turned off, the Horizon list gone, a document that could not be read: from the store, so it
+/// stays until the document reads or is retried), with the sync's status line in a row under it.
 struct IntakeStatus: View {
     @Environment(AppModel.self) private var model
     @Query(filter: #Predicate<SourceDocument> { $0.deletedAt == nil }) private var documents: [SourceDocument]
@@ -51,14 +55,15 @@ struct IntakeStatus: View {
     /// The wait is over the key or the model (none, one Claude refused, a model the key may not use): trying again cannot
     /// help, Settings can. (Out of credit is the Anthropic Console's to fix, then Try Again.)
     private func keyProblem(_ document: SourceDocument) -> Bool {
-        guard let failure = document.failure else { return false }
-        return failure == "no API key" || failure.contains("rejected") || failure.contains("does not let this key")
+        document.failure.map(IngestCoordinator.isKeyOrModelProblem) ?? false   // the drain's own test: a retired model is the key's page's too
     }
 
     #if os(macOS)
     private static let device = "Mac"   // what the Mac's own pages call it (Documents: "Read on This Mac")
+    private static let deviceInText = "Mac"   // a proper noun mid-sentence keeps its capital
     #else
     private static let device = "Device"
+    private static let deviceInText = "device"
     #endif
 
     /// What stands on the page until it is dealt with, one at a time, in this order.
@@ -96,7 +101,7 @@ struct IntakeStatus: View {
             }
             .listRowSeparator(.hidden)
             .onPaper()
-            .confirmationDialog("Read on this \(Self.device.lowercased()) instead?", isPresented: Binding(get: { confirmDevice != nil }, set: { if !$0 { confirmDevice = nil } }), titleVisibility: .visible) {
+            .confirmationDialog("Read on this \(Self.deviceInText) instead?", isPresented: Binding(get: { confirmDevice != nil }, set: { if !$0 { confirmDevice = nil } }), titleVisibility: .visible) {
                 Button(waitingForClaude.count == 1 ? "Read on This \(Self.device)" : "Read All on This \(Self.device)") {
                     let ids = waitingForClaude.map(\.id)
                     Task { for id in ids { await model.readOnDevice(documentID: id) } }
@@ -159,7 +164,7 @@ struct IntakeStatus: View {
 
 #if os(iOS)
 /// The home screen is Coverage (SPEC §6.1). Intake status and the review queue sit above it; the strip and the day
-/// plan arrive in M4 and M5. Pulling the page down reads what is queued and syncs with Reminders.
+/// plan are the next tabs. Pulling the page down reads what is queued and syncs with Reminders.
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @Query(sort: \Obligation.due) private var obligations: [Obligation]
@@ -170,7 +175,6 @@ struct RootView: View {
     @Query(filter: #Predicate<SourceDocument> { $0.deletedAt != nil }) private var deletedDocuments: [SourceDocument]
     @State private var addingByHand = false
     @State private var addingCourse = false
-    @State private var linked: Obligation?
     @State private var path: [Route] = []
     @State private var editing: EditMode = .inactive   // owned here and handed to the list, so the toolbar and the rows agree
 
@@ -181,6 +185,25 @@ struct RootView: View {
     private func open(_ route: Route) {
         guard !path.contains(route) else { return }
         path.append(route)
+    }
+
+    /// A page the app was asked for (`AppModel.destination`: a link, an intent, Spotlight): the stack becomes that page
+    /// alone over Coverage, whatever was pushed before.
+    private func go(_ destination: AppDestination?) {
+        let route: Route?
+        switch destination {
+        case .page(.coverage): route = nil
+        case .page(.review): route = .review
+        case .page(.documents): route = .documents
+        case .page(.recentlyDeleted): route = .recentlyDeleted
+        case .page(.settings): route = .settings
+        case .course(let id), .policies(let id):
+            guard courses.contains(where: { $0.id == id }) else { model.destination = nil; model.lastError = "That course is no longer in Horizon."; return }
+            route = .course(id)
+        default: return
+        }
+        model.destination = nil
+        path = route.map { [$0] } ?? []
     }
     private var pending: [Obligation] { live.filter { $0.state == .pendingReview && $0.completedAt == nil } }   // done needs no review
 
@@ -244,9 +267,11 @@ struct RootView: View {
                 case .documents: DocumentsView()
                 case .recentlyDeleted: RecentlyDeletedView()
                 case .settings: SettingsView()
+                case .review: ReviewView()
                 }
             }
             .environment(\.openRoute, OpenRouteAction(open: open))
+            .onChange(of: model.destination, initial: true) { _, destination in go(destination) }
             .onChange(of: courses.map(\.id)) { _, ids in   // a course deleted while its page is open: the page goes too
                 let gone = path.contains { if case .course(let id) = $0 { !ids.contains(id) } else { false } }
                 if gone { withAnimation { path.removeAll { if case .course(let id) = $0 { !ids.contains(id) } else { false } } } }
@@ -254,13 +279,18 @@ struct RootView: View {
             .onChange(of: courses.count, initial: true) { _, count in
                 if MainTabs.debugFlag("--open-course"), count > 0, path.isEmpty, let first = courses.first { open(.course(first.id)) }
             }
-            .onAppear {
-                if MainTabs.debugFlag("--open-documents") { open(.documents) }
-                if MainTabs.debugFlag("--open-settings") { open(.settings) }
-                if MainTabs.debugFlag("--open-recently-deleted") { open(.recentlyDeleted) }
-                if MainTabs.debugFlag("--delete-first-course"), let first = courses.first { Task { await model.deleteCourse(first.id) } }   // DEBUG: the bin without a tap
-                if MainTabs.debugFlag("--restore-first-course"), let first = binnedCourses.first { Task { await model.restoreCourse(first.id) } }
-                if MainTabs.debugFlag("--restore-first-document"), let first = deletedDocuments.first(where: \.isBinned) { Task { await model.restoreDocument(first.id) } }
+            .onAppear {   // once per launch: coming back to Coverage must not push or bin again
+                if MainTabs.debugOnce("--open-documents") { open(.documents) }
+                if MainTabs.debugOnce("--open-settings") { open(.settings) }
+                if MainTabs.debugOnce("--open-recently-deleted") { open(.recentlyDeleted) }
+                if MainTabs.debugOnce("--delete-first-course"), let first = courses.first { Task { await model.deleteCourse(first.id) } }   // DEBUG: the bin without a tap
+                if MainTabs.debugOnce("--restore-first-course"), let first = binnedCourses.first { Task { await model.restoreCourse(first.id) } }
+                if MainTabs.debugOnce("--restore-first-document"), let first = deletedDocuments.first(where: \.isBinned) { Task { await model.restoreDocument(first.id) } }
+                #if DEBUG
+                // SiriOnDeviceTests' own course, set up and cleared without Siri (which took "add a course" for a search).
+                if MainTabs.debugOnce("--seed-siri-test"), !courses.contains(where: { $0.displayName == AppModel.siriTestCourse }) { Task { await model.seedSiriTest() } }
+                if MainTabs.debugOnce("--clear-siri-test") { for course in courses where course.displayName == AppModel.siriTestCourse { Task { await model.deleteCourse(course.id) } } }
+                #endif
             }
             .navigationTitle("Coverage")
             #if os(iOS)
@@ -286,15 +316,9 @@ struct RootView: View {
                 }
             }
             .environment(\.editMode, $editing)
-            .onAppear { if MainTabs.debugFlag("--edit-courses") { editing = .active } }
+            .onAppear { if MainTabs.debugOnce("--edit-courses") { editing = .active } }
             .sheet(isPresented: $addingByHand) { ObligationEditor(mode: .manual, courses: courses) }
             .sheet(isPresented: $addingCourse) { CourseEditor(course: nil) }
-            .sheet(item: $linked) { ObligationEditor(mode: .review($0), courses: courses) }
-            .onChange(of: model.linkedObligationID) { _, id in
-                guard let id else { return }   // the reset below fires this again with nil; it must not close the sheet
-                linked = live.first { $0.id == id }
-                model.linkedObligationID = nil
-            }
         }
     }
 }
@@ -407,7 +431,7 @@ struct ReadingSection: View {
 }
 
 /// The reading bar: the real figure, creeping toward the end of the current part while nothing arrives, so it never
-/// stands still (`ProgressCreep` is the arithmetic; a timeline draws it thirty times a second while it is on screen).
+/// stands still (`ProgressCreep` is the arithmetic; a timeline draws it every frame while it is on screen).
 private struct CreepingProgressBar: View {
     let real: Double
     let mark: Double
@@ -459,8 +483,8 @@ struct ObligationRow: View {
                             if !course.isEmpty { Text(course).lineLimit(1) }
                             due.lineLimit(1)
                         }
-                        VStack(alignment: .leading, spacing: 1) {
-                            if !course.isEmpty { Text(course).lineLimit(1).truncationMode(.middle) }
+                        VStack(alignment: .leading, spacing: 1) {   // the date alone decides: a long course gives way, it does not cost the weekday
+                            if !course.isEmpty { Text(course).lineLimit(1).truncationMode(.middle).frame(minWidth: 0, idealWidth: 0, maxWidth: .infinity, alignment: .leading) }
                             due.lineLimit(1)
                         }
                         VStack(alignment: .leading, spacing: 1) {   // the largest sizes: the date without its weekday, whole
@@ -479,6 +503,7 @@ struct ObligationRow: View {
         .animation(.snappy, value: done)
         .accessibilityElement(children: .contain)
         .accessibilityValue(done ? "Done" : "")
+        .appEntityIdentifier(EntityIdentifier(for: ItemEntity.self, identifier: obligation.id))   // Siri's "this": the item on the row (WWDC26: view annotations)
     }
 }
 
@@ -527,7 +552,7 @@ struct DoneMark: View {
 
 extension View {
     /// What a row of an obligation offers wherever it is listed: a leading swipe to check it off (or back on), a
-    /// trailing swipe to the bin, and the same in a menu with the editor.
+    /// trailing swipe that deletes it (undoable: items do not go to the bin), and the same in a menu with the editor.
     func obligationActions(done: Bool, mark: @escaping (Bool) -> Void, edit: @escaping () -> Void, delete: @escaping () -> Void) -> some View {
         self
             .swipeActions(edge: .leading) {

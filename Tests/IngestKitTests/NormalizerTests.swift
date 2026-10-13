@@ -78,6 +78,18 @@ struct NormalizerTests {
         #expect(doc.info.kind == .docx && doc.fullText.contains("Progression 1 Final Essay due Monday, October 5"))
     }
 
+    #if canImport(AppKit)
+    @Test func aBrokenWordDocumentIsUnreadable() throws {
+        // AppKit's own error used to come through as it stood: not a failure of the file's own, so the document was offered
+        // Retry for ever. Unreadable is for good, as for a broken PDF.
+        try FileManager.default.createDirectory(at: Self.tmp, withIntermediateDirectories: true)
+        let broken = Self.tmp.appendingPathComponent("essay.docx")
+        try Data("not a Word document".utf8).write(to: broken)
+        let error = #expect(throws: IngestError.self) { try DocumentNormalizer.normalize(fileURL: broken) }
+        guard case .unreadable? = error else { Issue.record("expected unreadable, got \(String(describing: error))"); return }
+    }
+    #endif
+
     @Test func repeatedLinesCollapse() {
         let text = "Exams\nmust be taken within one week of the original exam date\nmust be taken within one week of the original exam date\nmust be taken within one week of the original exam date\nmust be takenmust be takenmust be takenmust be taken within a week\nExam 1 Tuesday, October 6th, 2026\n1\n1"
         // A whole sentence stuttered seventeen times, twice on one line, and a short word run.

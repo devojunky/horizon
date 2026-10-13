@@ -276,9 +276,9 @@ actor Extractor {
     }
 
     /// One call to Claude, streamed into the same partial rows and salvaged the same way when the output budget cuts
-    /// it. A picture is transcribed first (`PageReading`), so the guards have text to check against. A request too
-    /// large is a context overflow (the chunk splits); anything the client could not get past is `claudeUnavailable`,
-    /// and the document waits.
+    /// it. A picture is transcribed first (`ClaudeSchemas.pageReading`, read back by `PageReadingJSON`), so the guards
+    /// have text to check against. A request too large is a context overflow (the chunk splits); anything the client
+    /// could not get past is `claudeUnavailable`, and the document waits.
     private func respondClaude(chunk: Int, page: Int, kind: ExtractionOutcome.Kind, call: Int, text: String, pictures: [NormalizedDocument.Picture],
                                pictureEdge: Int, start: ContinuousClock.Instant) async throws -> ExtractionOutcome? {
         guard let claude else { throw IngestError.claudeUnavailable("no client") }

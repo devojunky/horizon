@@ -29,10 +29,24 @@ final class AppModel {
     var statusLine: String?
     var lastError: String?
     var reports: [IngestCoordinator.Report] = []
-    /// Set by a `horizon://obligation/<id>` link (the provenance link on every reminder); RootView opens it.
-    var linkedObligationID: UUID?
-    /// Set by a `horizon://now` link (a tap on the plan's Live Activity); the tabs open Now.
-    var openNowRequested = false
+    /// Where a link, an intent, a widget or a Spotlight result asked the app to go (`navigate(to:)`): the iOS tabs or
+    /// the Mac's window in front take it and clear it. One router for all of them, so each place opens the same way.
+    var destination: AppDestination?
+    /// What Search looks for: the iOS Search tab's field, the Mac's sidebar field, or Siri's "search Horizon for…".
+    var searchText = ""
+    /// The searches the user ran on the iOS Search tab, newest first, shown there before anything is typed: a search is
+    /// kept when it is submitted or one of its results is opened. This device's own, in the app's defaults.
+    var recentSearches: [String] = AppModel.defaults.stringArray(forKey: "recentSearches") ?? [] {
+        didSet { AppModel.defaults.set(recentSearches, forKey: "recentSearches") }
+    }
+    func rememberSearch() { recentSearches = SearchSuggestions.remembering(searchText, in: recentSearches) }
+    /// Items an intent changed or deleted, perhaps while one is open in an editor: the editor loads them again, so its
+    /// Save cannot write the fields it opened with back over the change.
+    var changedElsewhere: ChangedItems?
+    /// Spotlight's index, the widgets' glance and App Shortcuts' parameters, brought up to date as the store changes.
+    @ObservationIgnored let systemViews = SystemViews()
+    /// The model, for the few places App Intents' dependency injection cannot reach (an entity's file export).
+    @ObservationIgnored static weak var current: AppModel?
     /// What the parser is reading right now, item by item as the model streams. Nil when idle.
     var reading: Reading?
     /// Where documents are read: Claude (the target model, with the user's own key) or the device's own model (nothing
@@ -91,8 +105,8 @@ final class AppModel {
         /// The obligations promised by the outline for the part being read, when Claude has said.
         var promised: Int? { progress?.outline?.titles.count }
     }
-    /// Today's plan (SPEC §6.3), with the user's edits. Kept for the day, so a relaunch does not lose an edited plan;
-    /// discarded once the day ends. Tomorrow starts from nothing.
+    /// Today's plan (SPEC §6.3), with the user's edits. Kept for the day, so a relaunch does not lose an edited plan:
+    /// until 4 AM after it, or while a block of it is still on or asking (`DayPlan.kept`). Tomorrow starts from nothing.
     private(set) var plan: DayPlan?
     private(set) var planEdited = false
     /// The items the last plan chose from, for the block editor's picker.
@@ -132,7 +146,7 @@ final class AppModel {
     /// under way goes on in the background. When that time runs out the read is paused, not cancelled: the checkpoint
     /// keeps every part read so far, and the read goes on the moment the app is back, or in a background task.
     private var backgroundTime: UIBackgroundTaskIdentifier = .invalid
-    private var paused = false   // background time ran out mid-read; nothing restarts until the app is active again
+    private var paused = false   // background time ran out mid-read: the drain does not repeat until the app is active again (a background task, an intent or a Reminders change may still run one pass)
     #endif
 
     static let deviceName: String = {
@@ -143,10 +157,6 @@ final class AppModel {
         #endif
     }()
 
-    /// DEBUG `--scratch-store <dir>`: the app on a copy of a store (`dir/Horizon.store`, copied there first) with its
-    /// files in `dir/Documents`, and nothing leaves it: nothing is read, Reminders is never reached, the inbox folder
-    /// is not watched. Every run of the app on real data for testing goes this way, never on the user's own store
-    /// (`HorizonContainer.at` refuses theirs). Nil in a release build.
     /// Where the app's settings and the day's plan are kept: the user's own defaults, or for a scratch run a domain of
     /// its own, so testing on a copy never reads or rewrites the user's plan, hours or route (`.defaultAppStorage` puts
     /// the views' `@AppStorage` there too).
@@ -155,6 +165,12 @@ final class AppModel {
         return UserDefaults(suiteName: Identifiers.bundlePrefix + ".scratch") ?? .standard
     }()
 
+    /// DEBUG `--scratch-store <dir>`: the app on a copy of a store (`dir/Horizon.store`, copied there first) with its
+    /// files in `dir/Documents`: nothing is read, Reminders is never reached, the inbox folder is not watched, nothing is
+    /// indexed in Spotlight and no glance is written for the widgets. The calendar is the device's own: a plan made in a
+    /// scratch run reads it (and sends it to Anthropic with a key and "Plan the day with Claude" on). Every run of the
+    /// app on real data for testing goes this way, never on the user's own store (`HorizonContainer.at` refuses theirs).
+    /// Nil in a release build.
     static let scratchStore: URL? = {
         #if DEBUG
         guard let i = CommandLine.arguments.firstIndex(of: "--scratch-store"), i + 1 < CommandLine.arguments.count else { return nil }
@@ -193,12 +209,21 @@ final class AppModel {
                                         progress: { p in Task { @MainActor in box.model?.apply(p) } })
         box.model = self
         loadPlan()
+        Self.current = self
+        if storeFailure == nil {
+            // Every save the store makes (a read, a check, an edit, a sync) reaches Spotlight and the widgets a moment later.
+            NotificationCenter.default.addObserver(forName: ModelContext.didSave, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self.map { $0.systemViews.storeChanged($0) } }
+            }
+            systemViews.storeChanged(self)   // the first pass indexes everything afresh
+        }
         #if os(iOS)
         activities.adopt()
         // The activity is brought in step before the intent returns: iOS may suspend an app it woke only for the
         // intent as soon as `perform()` is done, and an update left in a task of its own would never be drawn.
         PlanCommands.markDone = { [weak self] id in self?.markBlock(id, done: true, syncing: false); await self?.syncActivity() }
         PlanCommands.skip = { [weak self] id in self?.skipBlock(id, skipped: true, syncing: false); await self?.syncActivity() }
+        PlanCommands.planDay = { [weak self] progress in await self?.planToday(reporting: progress) }
         PlanCommands.log = { Self.log($0) }
         Task { await syncActivity() }
         #endif
@@ -259,7 +284,7 @@ final class AppModel {
     #endif
 
     private static let logger = Logger(subsystem: Identifiers.bundlePrefix, category: "ingest")
-    private static func log(_ message: String) {
+    static func log(_ message: String) {
         // The lines carry the user's own words (titles, calendar events, file names): readable in a DEBUG build, where
         // they are how the app is tested, and private in a release, where the unified log keeps them.
         #if DEBUG
@@ -319,12 +344,21 @@ final class AppModel {
         do { remindersAuthorized = try await reminders.requestAccess() } catch { remindersAuthorized = false; lastError = error.localizedDescription }
     }
 
-    /// A `horizon://obligation/<id>` link opens that item; anything else is a file to ingest.
+    /// A `horizon://` link goes where it says (`AppDestination.init(url:)`: the item on a reminder, Now from the Live
+    /// Activity, a day from a widget); anything else is a file to ingest.
     func open(_ url: URL) async {
-        if let id = Identifiers.obligationID(from: url) { linkedObligationID = id; return }
-        if url.scheme == "horizon", url.host == "now" { openNowRequested = true; return }
+        if let destination = AppDestination(url: url) { navigate(to: destination); return }
         guard url.isFileURL else { lastError = "Horizon cannot open that link."; return }
         await importFiles([url])
+    }
+
+    /// Asks the app to show a place: the iOS tabs or the Mac's window in front go there (and on a Mac the app comes forward).
+    func navigate(to destination: AppDestination) {
+        if case .search(let text) = destination { searchText = text }
+        self.destination = destination
+        #if os(macOS)
+        NSApplication.shared.activate()
+        #endif
     }
 
     /// Files picked in the app or handed over by the system. Security-scoped URLs are opened for the copy only.
@@ -434,10 +468,14 @@ final class AppModel {
             if !reports.isEmpty { withAnimation { statusLine = "Syncing with Reminders…" } }
             do {
                 let report = try await sync.sync()
+                let read = !reports.isEmpty
                 withAnimation {
                     lastError = nil
                     remindersListGone = report.listGone
-                    statusLine = report.created + report.updated > 0 ? "\(report.created) added, \(report.updated) updated in Reminders" : cancelNotice
+                    // A pass that wrote nothing leaves the line alone, unless it put up "Syncing…" itself: the app's own
+                    // writes to Reminders set off another pass a moment later, which once wiped the line it had just shown.
+                    if report.created + report.updated > 0 { statusLine = "\(report.created) added, \(report.updated) updated in Reminders" }
+                    else if read || cancelNotice != nil { statusLine = cancelNotice }
                 }
             } catch {
                 withAnimation { lastError = error.localizedDescription; statusLine = nil }
@@ -545,18 +583,53 @@ final class AppModel {
 
     /// An item deleted by hand (a swipe, the Delete key, Review's Discard). Items do not wait in Recently Deleted, so
     /// the deletion is the window's to undo (Edit ▸ Undo, ⌘Z, or a shake on iOS) for as long as it is the last thing done.
-    func discard(_ id: UUID) async {
-        do { try await store.softDelete(id: id) } catch { lastError = error.localizedDescription; return }
-        undoManager?.registerUndo(withTarget: self) { model in Task { @MainActor in await model.undelete(id) } }
-        undoManager?.setActionName("Delete Item")
-        await drainAndSync()   // its reminder goes with it
+    func discard(_ id: UUID) async { await discard([id]) }
+
+    /// Items deleted together (a table's selection): one undo puts them all back.
+    func discard(_ ids: [UUID]) async {
+        guard !ids.isEmpty else { return }
+        for id in ids {
+            do { try await store.softDelete(id: id) } catch { lastError = error.localizedDescription; return }
+        }
+        registerUndo(restoring: ids)
+        await drainAndSync()   // their reminders go with them
     }
 
-    /// An item deleted by hand, back (its reminder made again); redoing it deletes it again.
-    func undelete(_ id: UUID) async {
-        do { try await store.undelete(id: id) } catch { lastError = error.localizedDescription; return }
-        undoManager?.registerUndo(withTarget: self) { model in Task { @MainActor in await model.discard(id) } }
-        undoManager?.setActionName("Delete Item")
+    /// Undo puts the items back and, inside the undo itself, registers the redo that deletes them again. Registered any
+    /// later (after an `await`), the redo would land on the undo stack as a new action: the next ⌘Z would delete them
+    /// once more and Redo would never be offered.
+    private func registerUndo(restoring ids: [UUID]) {
+        undoManager?.registerUndo(withTarget: self) { model in
+            MainActor.assumeIsolated {   // undo runs on the main thread
+                model.registerUndo(deleting: ids)
+                Task { await model.restore(ids) }
+            }
+        }
+        undoManager?.setActionName(ids.count == 1 ? "Delete Item" : "Delete Items")
+    }
+
+    private func registerUndo(deleting ids: [UUID]) {
+        undoManager?.registerUndo(withTarget: self) { model in
+            MainActor.assumeIsolated {
+                model.registerUndo(restoring: ids)
+                Task { await model.deleteAgain(ids) }
+            }
+        }
+        undoManager?.setActionName(ids.count == 1 ? "Delete Item" : "Delete Items")
+    }
+
+    /// Items deleted by hand, back (their reminders made again).
+    private func restore(_ ids: [UUID]) async {
+        for id in ids {
+            do { try await store.undelete(id: id) } catch { lastError = error.localizedDescription }
+        }
+        await drainAndSync()
+    }
+
+    private func deleteAgain(_ ids: [UUID]) async {
+        for id in ids {
+            do { try await store.softDelete(id: id) } catch { lastError = error.localizedDescription }
+        }
         await drainAndSync()
     }
 
@@ -566,7 +639,8 @@ final class AppModel {
     /// One plan for the rest of today: calendar events are hard stops, the coming weeks' obligations fill the gaps, the
     /// user's instructions steer the model. Replaces the plan on file, edits and all.
     func planToday() async {
-        guard !planning else { return }
+        guard !planning, storeFailure == nil else { return }   // a library that did not open has nothing to plan from
+        expirePlanIfStale()
         planning = true
         planDraft = []
         let now = Date()
@@ -611,6 +685,23 @@ final class AppModel {
         persistPlan()
         await syncActivity()
         if replanWhenDone { replanWhenDone = false; await planToday() }
+    }
+
+    /// A plan made for an intent or a control (`PlanDayIntent`, `PlanDayControlIntent`): `planToday`, its progress the
+    /// blocks as they arrive, so a long-running intent shows it moving and is not taken for stalled; then the Live
+    /// Activity brought in step before the intent returns.
+    func planToday(reporting progress: Progress) async {
+        progress.totalUnitCount = 100
+        let ticker = Task { @MainActor [weak self] in   // the blocks as they arrive are the measure
+            while !Task.isCancelled {
+                progress.completedUnitCount = Int64(min(90, 10 + (self?.planDraft.count ?? 0) * 8))
+                try? await Task.sleep(for: .milliseconds(400))
+            }
+        }
+        await planToday()
+        ticker.cancel()
+        progress.completedUnitCount = 100
+        await syncActivity()
     }
 
     private func showDraft(_ blocks: [PlanBlock]) {
@@ -786,8 +877,8 @@ final class AppModel {
         Task { await syncActivity() }
     }
 
-    /// The plan is the day's, night included, or nothing (`DayPlan.kept`): called when the app comes forward and when
-    /// Now appears.
+    /// The plan is the day's, night included, or nothing (`DayPlan.kept`): called when the app comes forward, when Now
+    /// appears and on its minute's tick, in the activity's background refresh, and before an intent reads the plan.
     func expirePlanIfStale() {
         guard let planDay, Date() >= (plan?.kept(for: planDay, calendar: .current) ?? .distantPast) else { return }
         withAnimation { plan = nil; planEdited = false; planCandidates = [] }

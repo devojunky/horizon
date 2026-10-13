@@ -14,12 +14,9 @@ struct ImportMenu<More: View>: View {
     /// Files what is imported under this course (the course page); nil lets the parser find the course.
     var courseID: UUID? = nil
     private let more: More?
-    @Environment(AppModel.self) private var model
     @State private var files = false
-    @State private var choosingPhotos = false
-    @State private var photos: [PhotosPickerItem] = []
+    @State private var photos: ImportPickers.Photos?
     @State private var scanning = false
-    @State private var scanFailed = false
 
     #if os(macOS)
     static var readable: [UTType] { [.pdf, .image, .plainText, UTType("org.openxmlformats.wordprocessingml.document")].compactMap { $0 } }
@@ -41,50 +38,71 @@ struct ImportMenu<More: View>: View {
         } label: {
             if more == nil { Label("Add Document", systemImage: "doc.badge.plus") } else { Label("More", systemImage: "ellipsis.circle") }
         }
-        .fileImporter(isPresented: $files, allowedContentTypes: Self.readable, allowsMultipleSelection: true) { result in
-            if case .success(let urls) = result { Task { await model.importFiles(urls, courseID: courseID) } }
-        }
-        .photosPicker(isPresented: $choosingPhotos, selection: $photos, maxSelectionCount: 10, matching: .images)
-        .onChange(of: photos) { _, items in
-            guard !items.isEmpty else { return }
-            Task {
-                var urls: [URL] = []
-                var unreadable = 0
-                for item in items {
-                    guard let data = try? await item.loadTransferable(type: Data.self) else { unreadable += 1; continue }
-                    let stamp = Date().formatted(.dateTime.month(.abbreviated).day().hour().minute()).replacingOccurrences(of: ":", with: ".")
-                    let url = FileManager.default.temporaryDirectory.appendingPathComponent("Photo \(stamp) \(urls.count + 1).\(Self.imageExtension(data))")
-                    do { try data.write(to: url); urls.append(url) } catch { unreadable += 1 }
-                }
-                photos = []
-                await model.importFiles(urls, courseID: courseID)
-                for url in urls { try? FileManager.default.removeItem(at: url) }   // the app keeps its own copy
-                if unreadable > 0 { model.lastError = unreadable == 1 ? "One photo could not be read." : "\(unreadable) photos could not be read." }
-            }
-        }
-        #if os(iOS)
-        .fullScreenCover(isPresented: $scanning) {
-            DocumentCamera { url in
-                scanning = false
-                if let url {
-                    Task { await model.importFiles([url], courseID: courseID); try? FileManager.default.removeItem(at: url) }
-                } else if scanFailed {
-                    model.lastError = "The scan could not be saved."
-                }
-            } failed: { scanFailed = true }
-            .ignoresSafeArea()
-        }
-        #endif
+        .modifier(ImportPickers(courseID: courseID, files: $files, photos: $photos, scanning: $scanning))
     }
 
     @ViewBuilder private var sources: some View {
         Button { files = true } label: { Label("Files…", systemImage: "folder") }
-        Button { choosingPhotos = true } label: { Label("Photo Library…", systemImage: "photo.on.rectangle") }
+        Button { photos = .images } label: { Label("Photo Library…", systemImage: "photo.on.rectangle") }
         #if os(iOS)
         if VNDocumentCameraViewController.isSupported {
-            Button { scanFailed = false; scanning = true } label: { Label("Scan with Camera", systemImage: "doc.viewfinder") }
+            Button { scanning = true } label: { Label("Scan with Camera", systemImage: "doc.viewfinder") }
         }
         #endif
+    }
+}
+
+/// The three ways a document comes in (Files, Photos, the document camera), each ending in temporary files handed to
+/// `AppModel.importFiles`. The Add Document menus present them, and so does the app itself when asked to take a
+/// document (a control's one tap, a shortcut: `AppDestination.importDocument`), Photos then showing screenshots only.
+struct ImportPickers: ViewModifier {
+    enum Photos: Equatable { case images, screenshots }
+
+    var courseID: UUID?
+    @Binding var files: Bool
+    @Binding var photos: Photos?
+    @Binding var scanning: Bool
+    @Environment(AppModel.self) private var model
+    @State private var picked: [PhotosPickerItem] = []
+    @State private var scanFailed = false
+
+    func body(content: Content) -> some View {
+        content
+            .fileImporter(isPresented: $files, allowedContentTypes: ImportMenu<EmptyView>.readable, allowsMultipleSelection: true) { result in
+                if case .success(let urls) = result { Task { await model.importFiles(urls, courseID: courseID) } }
+            }
+            .photosPicker(isPresented: Binding(get: { photos != nil }, set: { if !$0 { photos = nil } }), selection: $picked, maxSelectionCount: 10,
+                          matching: photos == .screenshots ? .screenshots : .images)
+            .onChange(of: picked) { _, items in
+                guard !items.isEmpty else { return }
+                Task {
+                    var urls: [URL] = []
+                    var unreadable = 0
+                    for item in items {
+                        guard let data = try? await item.loadTransferable(type: Data.self) else { unreadable += 1; continue }
+                        let stamp = Date().formatted(.dateTime.month(.abbreviated).day().hour().minute()).replacingOccurrences(of: ":", with: ".")
+                        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Photo \(stamp) \(urls.count + 1).\(Self.imageExtension(data))")
+                        do { try data.write(to: url); urls.append(url) } catch { unreadable += 1 }
+                    }
+                    picked = []
+                    await model.importFiles(urls, courseID: courseID)
+                    for url in urls { try? FileManager.default.removeItem(at: url) }   // the app keeps its own copy
+                    if unreadable > 0 { model.lastError = unreadable == 1 ? "One photo could not be read." : "\(unreadable) photos could not be read." }
+                }
+            }
+            #if os(iOS)
+            .fullScreenCover(isPresented: $scanning, onDismiss: { scanFailed = false }) {
+                DocumentCamera { url in
+                    scanning = false
+                    if let url {
+                        Task { await model.importFiles([url], courseID: courseID); try? FileManager.default.removeItem(at: url) }
+                    } else if scanFailed {
+                        model.lastError = "The scan could not be saved."
+                    }
+                } failed: { scanFailed = true }
+                .ignoresSafeArea()
+            }
+            #endif
     }
 
     private static func imageExtension(_ data: Data) -> String {
@@ -118,7 +136,10 @@ struct DocumentCamera: UIViewControllerRepresentable {
             let pages = (0..<scan.pageCount).map { scan.imageOfPage(at: $0) }
             Task.detached(priority: .userInitiated) { [weak self] in
                 let url = Self.pdf(pages: pages)
-                await MainActor.run { self?.completion(url) }
+                await MainActor.run {
+                    if url == nil { self?.failed() }   // drawn into nothing: said, not lost
+                    self?.completion(url)
+                }
             }
         }
 

@@ -2,7 +2,8 @@ import Foundation
 import EventKit
 import IngestKit
 
-/// Fixed events of a day, from the user's calendars: the hard stops of a day plan (SPEC §6.3).
+/// The timed events of a day the user will be at, from their calendars, for the day plan (SPEC §6.3): the planner
+/// reads each as fixed, a hard stop, or as coursework time to fill (`DayPlanner.readCalendar`).
 public protocol CalendarSource: Sendable {
     func requestAccess() async throws -> Bool
     /// The events that touch `interval`: a day, and the night after it when the day runs past midnight.

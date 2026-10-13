@@ -110,6 +110,8 @@ struct SkipBlockIntent: LiveActivityIntent {
 @MainActor enum PlanCommands {
     static var markDone: ((UUID) async -> Void)?
     static var skip: ((UUID) async -> Void)?
+    /// Plans the rest of today, reporting the blocks as they arrive (`PlanDayControlIntent`).
+    static var planDay: ((Progress) async -> Void)?
     static var log: ((String) -> Void)?
 }
 #endif

@@ -676,3 +676,152 @@ struct SyncFollowThroughTests {
         #expect(try await store.obligations().isEmpty)
     }
 }
+
+/// What a reminder says and what is read back from it: the user's notes beside Horizon's lines, and the course's name.
+struct ReminderTextTests {
+    static let hw1Lines = "Worth 1.5% of the grade\nCounts toward Homework\nOn WebAssign\nFrom the document, page 2"
+
+    @Test func aNoteIsWrittenOnceHoweverOftenItsReminderIsWritten() async throws {
+        let reminders = FakeReminderStore()
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let sync = SyncCoordinator.device("A", store: store, reminders: reminders)
+        _ = try await sync.sync()
+        let hw1 = try await store.obligations().first { $0.title == "HW 1" }!
+        await reminders.userAddsNote(externalID: hw1.ekExternalID!, "bring ID")
+        _ = try await sync.sync()                                                       // taken into the app
+        for day in 10...12 {                                                            // then the reminder written again, and again
+            try await store.confirm(id: hw1.id, edits: ObligationEdits(due: .some(Fixture.day(9, day))))
+            #expect(try await sync.sync().updated == 1)
+        }
+        let reminder = await reminders.items.first { $0.externalID == hw1.ekExternalID }!
+        let row = try await store.obligations().first { $0.id == hw1.id }!
+        #expect(reminder.notes == Self.hw1Lines + "\nbring ID" && row.notes == "bring ID")
+        // What either store writes over a reminder's notes is the draft's, whatever the reminder held.
+        let draft = ReminderProjector.draft(for: row)
+        #expect(draft.notes(over: reminder.notes) == reminder.notes && draft.notes(over: "bring ID\nbring ID") == reminder.notes)
+    }
+
+    @Test func linesThatOnlyBeginLikeHorizonsAreTheUsers() async throws {
+        let reminders = FakeReminderStore()
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let sync = SyncCoordinator.device("A", store: store, reminders: reminders)
+        _ = try await sync.sync()
+        // Typed in the app: written under Horizon's lines and read back as the user's, every line of it, the one that
+        // reads just like Horizon's own included.
+        let hw1 = try await store.obligations().first { $0.title == "HW 1" }!
+        let typed = "On Canvas, as a PDF\nWorth asking about in office hours\nCounts toward participation too\nFrom the document camera, page 3\nOn WebAssign"
+        try await store.confirm(id: hw1.id, edits: ObligationEdits(notes: .some(typed)))
+        _ = try await sync.sync()
+        _ = try await sync.sync()
+        var row = try await store.obligations().first { $0.id == hw1.id }!
+        let written = await reminders.items.first { $0.externalID == hw1.ekExternalID }!
+        #expect(row.notes == typed && written.notes == Self.hw1Lines + "\n" + typed)
+        // Typed in Reminders: taken into the app.
+        let hw2 = try await store.obligations().first { $0.title == "HW 2" }!
+        await reminders.userAddsNote(externalID: hw2.ekExternalID!, "On Canvas, as a PDF")
+        await reminders.userAddsNote(externalID: hw2.ekExternalID!, "Worth asking about in office hours")
+        _ = try await sync.sync()
+        row = try await store.obligations().first { $0.id == hw2.id }!
+        #expect(row.notes == "On Canvas, as a PDF\nWorth asking about in office hours" && row.userOverrides.contains(.notes))
+    }
+
+    @Test func horizonsLinesAreToldFromTheUsersWhenBothHaveChanged() async throws {
+        let reminders = FakeReminderStore()
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let sync = SyncCoordinator.device("A", store: store, reminders: reminders)
+        _ = try await sync.sync()
+        // HW 2 moves to Quizzes in the app, and before a sync writes its reminder again ("Worth 1.5%", "Counts toward
+        // Homework") the user adds a note to it in Reminders: only the note is theirs.
+        let hw2 = try await store.obligations().first { $0.title == "HW 2" }!
+        try await store.confirm(id: hw2.id, edits: ObligationEdits(componentName: .some("Quizzes")))
+        await reminders.userAddsNote(externalID: hw2.ekExternalID!, "bring ID")
+        _ = try await sync.sync()
+        let row = try await store.obligations().first { $0.id == hw2.id }!
+        let reminder = await reminders.items.first { $0.externalID == hw2.ekExternalID }!
+        #expect(row.notes == "bring ID" && reminder.notes == "Worth 6% of the grade\nCounts toward Quizzes\nOn WebAssign\nFrom the document, page 2\nbring ID")
+    }
+
+    @Test func theUsersTextIsWhatHorizonDidNotWrite() {
+        let horizon = Self.hw1Lines
+        // Each of Horizon's lines once, wherever the user typed around them; a second copy of one is the user's.
+        #expect(ReminderDraft.userText(in: "bring ID\n" + horizon + "\nOn WebAssign", component: "Homework") == "bring ID\nOn WebAssign")
+        // A grade row the item has since left is Horizon's where Horizon writes it, and only there.
+        #expect(ReminderDraft.userText(in: horizon + "\nCounts toward participation too", component: "Quizzes") == "Counts toward participation too")
+        // The figure as another locale writes it; blank lines inside the user's text stay, those around it go.
+        #expect(ReminderDraft.userText(in: "Worth 1,5% of the grade\nOn the LMS\nbring ID", component: nil) == "bring ID")
+        #expect(ReminderDraft.userText(in: horizon + "\n\nbring ID\n\nand a pencil\n", component: "Homework") == "bring ID\n\nand a pencil")
+        // Notes that still say what Horizon wrote were not edited, however the user's text reads; a line Horizon would
+        // not have written there was.
+        #expect(ReminderDraft.holdsAsWritten("Worth 3% of the grade\nCounts toward Homework\nOn WebAssign", userText: "On WebAssign"))
+        #expect(ReminderDraft.holdsAsWritten(horizon, userText: nil) && ReminderDraft.holdsAsWritten(nil, userText: ""))
+        #expect(!ReminderDraft.holdsAsWritten(horizon + "\nOn Canvas", userText: nil))
+        #expect(!ReminderDraft.holdsAsWritten("On WebAssign\nWorth 1.5% of the grade\nbring ID", userText: "bring ID"))
+        #expect(!ReminderDraft.holdsAsWritten(horizon, userText: "bring ID"))
+    }
+
+    @Test func aCourseRenamedReachesItsReminders() async throws {
+        let reminders = FakeReminderStore()
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let sync = SyncCoordinator.device("A", store: store, reminders: reminders)
+        _ = try await sync.sync()
+        // A reissued syllabus gives the course its longer name.
+        var reissue = Fixture.calculus(sha: "v2"); reissue.course?.title = "Calculus II: Integration and Series"
+        try await Fixture.ingest(reissue, into: store)
+        _ = try await sync.sync()
+        var titles = await reminders.items.map(\.title).sorted()
+        #expect(titles == ["HW 1", "HW 2", "Midterm 1", "Quiz 1"].map { "\($0) · Calculus II: Integration and Series" })
+        // Renamed by hand. One reminder already reads the new name (Horizon's write landed and its record did not): that is
+        // no hand edit either.
+        let calc = try await store.courses().first!
+        try await store.updateCourse(id: calc.id, edits: CourseEdits(title: "Calc 2"))
+        let hw2 = try await store.obligations().first { $0.title == "HW 2" }!
+        await reminders.userEdits(externalID: hw2.ekExternalID!, title: "HW 2 · Calc 2")
+        let renamed = try await sync.sync()
+        titles = await reminders.items.map(\.title).sorted()
+        #expect(renamed.updated == 3 && titles == ["HW 1", "HW 2", "Midterm 1", "Quiz 1"].map { "\($0) · Calc 2" })
+        let rows = try await store.obligations()
+        #expect(rows.allSatisfy { $0.userOverrides.isEmpty } && rows.filter { $0.due != nil }.allSatisfy { $0.state == .projected })
+        let list = try await reminders.fetchHorizonList()!
+        #expect(Reconciler.changes(obligations: rows, reminders: list.items, seen: Set(list.items.map(\.externalID)), calendar: Fixture.calendar).isEmpty)
+        #expect(try await sync.sync() == ReminderProjector.Report())
+        // An item read from a document that names no course takes the course's name once the document is filed under it.
+        var loose = Fixture.calculus(sha: "loose"); loose.course = nil; loose.gradeComponents = []; loose.policies = []
+        loose.obligations = [ParsedObligation(title: "Lab notebook check", dateAsWritten: "10/22", due: Fixture.day(10, 22), status: .ready)]
+        try await Fixture.ingest(loose, into: store)
+        _ = try await sync.sync()
+        #expect(await reminders.items.contains { $0.title == "Lab notebook check" })
+        try await store.assignDocument(id: try await store.documents().first { $0.sha256 == "loose" }!.id, to: calc.id)
+        _ = try await sync.sync()
+        titles = await reminders.items.map(\.title)
+        #expect(titles.contains("Lab notebook check · Calc 2") && !titles.contains("Lab notebook check"))
+    }
+
+    @Test func aTitleEditedUnderTheCoursesOldNameIsTheUsersTitleAlone() async throws {
+        let reminders = FakeReminderStore()
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let sync = SyncCoordinator.device("A", store: store, reminders: reminders)
+        _ = try await sync.sync()
+        // A reissue sends HW 1 to review: its reminder says what it said, the course's old name included, until it is confirmed.
+        try await Fixture.ingest(Fixture.calculus(hw1: Fixture.day(9, 10), sha: "v2"), into: store)
+        let calc = try await store.courses().first!
+        try await store.updateCourse(id: calc.id, edits: CourseEdits(title: "Calc 2"))
+        _ = try await sync.sync()
+        let hw1 = try await store.obligations().first { $0.title == "HW 1" }!
+        #expect(await reminders.items.first { $0.externalID == hw1.ekExternalID }?.title == "HW 1 · Calculus II")
+        await reminders.userEdits(externalID: hw1.ekExternalID!, title: "HW 1 (online) · Calculus II")
+        _ = try await sync.sync()
+        _ = try await sync.sync()
+        var row = try await store.obligations().first { $0.id == hw1.id }!
+        #expect(row.title == "HW 1 (online)" && row.userOverrides.contains(.title) && row.state == .pendingReview)
+        try await store.confirm(id: hw1.id)
+        _ = try await sync.sync()
+        row = try await store.obligations().first { $0.id == hw1.id }!
+        let reminder = await reminders.items.first { $0.externalID == hw1.ekExternalID }!
+        #expect(row.title == "HW 1 (online)" && reminder.title == "HW 1 (online) · Calc 2")
+    }
+}

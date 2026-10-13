@@ -27,6 +27,7 @@ struct ObligationEditor: View {
     @State private var done = false
     @State private var baseline: Fields?
     @State private var confirmingDelete = false
+    @State private var loaded = false
 
     /// Everything the form can change, for the unsaved-changes check.
     private struct Fields: Equatable { var title: String; var hasDate: Bool; var due: Date; var hasTime: Bool; var courseID: UUID?; var component: String; var platform: Platform; var notes: String; var done: Bool }
@@ -97,11 +98,25 @@ struct ObligationEditor: View {
                           dirty: isDirty, cancel: { dismiss() }, action: save)
             .interactiveDismissDisabled(isDirty)
             .confirmationDialog("Delete “\(title)”?", isPresented: $confirmingDelete, titleVisibility: .visible) {
-                Button("Delete", role: .destructive) { if let item { Task { await model.discard(item.id); dismiss() } } }
+                Button("Delete", role: .destructive) {   // the sheet goes at once, as on Save; the deletion and its sync run behind it
+                    if let id = item?.id { dismiss(); Task { await model.discard(id) } }
+                }
             } message: {
                 Text("It is removed from Reminders as well.")
             }
-            .onAppear(perform: load)
+            .onAppear {   // once: coming back from a pushed list (the course picker at the largest sizes) keeps what was chosen
+                guard !loaded else { return }
+                loaded = true
+                load()
+            }
+            .showsEntity(ItemEntity.self, id: item?.id, title: item?.title ?? "")   // Siri's "this": "push this to Sunday"
+            .onChange(of: model.changedElsewhere) { _, change in   // Siri or a shortcut changed this item: show its fields as they are now
+                guard let item, change?.ids.contains(item.id) == true else { return }
+                Task {
+                    try? await Task.sleep(for: .milliseconds(300))   // the store's save reaches this page's context a moment later
+                    if item.deletedAt != nil { dismiss() } else if !isDirty { load() }
+                }
+            }
         }
         #if os(macOS)
         .frame(minWidth: 480, idealWidth: 540, maxWidth: 680, minHeight: 420, idealHeight: 560, maxHeight: 720)

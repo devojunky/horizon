@@ -21,7 +21,8 @@ extension Coverage {
 }
 
 #if os(iOS)
-/// SPEC §6.1: not a task list; where the app is probably blind, one course per story, most suspicious first.
+/// SPEC §6.1: not a task list; where the app is probably blind, one course per story, in the user's order, else most
+/// suspicious first (`Coverage.stories`).
 /// Type carries the hierarchy: the course's name, a short line per finding, the figures quiet under them. No cards, no
 /// badges. (The Mac sets the stories side by side: `MacCoveragePage`.)
 struct CoverageList: View {
@@ -87,7 +88,7 @@ struct CoverageList: View {
 /// detail): its code, its name, what says the app may be blind there (one short line each), and its figures.
 struct CoverageStory: View {
     let story: CourseCoverage
-    /// The row opens the course's page (on a Mac, its place in the sidebar), so the name carries the chevron.
+    /// The row opens the course's page, so the name carries the chevron. (iOS's row; a Mac's story is a `StoryCard`.)
     var disclosure = false
 
     /// The code over the name, when the course has both.
@@ -117,7 +118,7 @@ struct CoverageStory: View {
 }
 
 /// What a story says under its course's name: one short line per finding ("Looks covered." when there is none),
-/// then the figures, quiet. Coverage's rows and, on a Mac, the head of a course's page.
+/// then the figures, quiet. Coverage's rows on iOS; on a Mac each `StoryCard` and the Coverage section of a course's rail.
 struct CoverageFindings: View {
     let story: CourseCoverage
 
@@ -137,7 +138,8 @@ struct CoverageFindings: View {
     }
 }
 
-/// The figures on one quiet line, broken between figures, never inside one, when the line runs out.
+/// The figures on one quiet line, broken between figures when the line runs out; only at the accessibility sizes,
+/// where a figure alone can be wider than the row, does one wrap rather than be cut.
 private struct Facts: View {
     let parts: [String]
     var body: some View {

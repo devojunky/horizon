@@ -103,7 +103,8 @@ enum PartialJSON {
     static func parse(_ json: String) -> Any? { try? JSONSerialization.jsonObject(with: Data(json.utf8), options: [.fragmentsAllowed]) }
 }
 
-/// The model's JSON, from either route's text, as the facts the merger reads. Null and absent are the same thing.
+/// Claude's JSON, as the facts the merger reads (the device route generates `ChunkExtraction` itself). Null and absent
+/// are the same thing.
 enum ExtractionJSON {
     /// A whole reply. Throws when it is not the object the schema describes.
     static func decode(_ text: String) throws -> ChunkExtraction {
@@ -227,8 +228,8 @@ enum ExtractionJSON {
     }
 }
 
-/// What Claude returns for a picture: the page transcribed, then the facts (`PageReading`'s JSON). The facts are a
-/// nested object, so the partial-reply helpers run on the text after its key.
+/// What Claude returns for a picture: the page transcribed, then the facts (`ClaudeSchemas.pageReading`). The facts
+/// are a nested object, so the partial-reply helpers run on the text after its key.
 enum PageReadingJSON {
     static func decode(_ text: String) throws -> (transcript: String, facts: ChunkExtraction) {
         guard let object = PartialJSON.parse(text) as? [String: Any] else { throw ClaudeError.malformed("the reply is not a JSON object") }

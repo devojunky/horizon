@@ -68,6 +68,13 @@
 	<string>Horizon writes your deadlines to a Reminders list called Horizon, so they still fire if you stop opening the app, and reads back what you check off there.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>com.daniel.horizon.showing.CourseEntity</string>
+		<string>com.daniel.horizon.showing.ItemEntity</string>
+		<string>com.daniel.horizon.showing.PolicyEntity</string>
+		<string>com.daniel.horizon.showing.DocumentEntity</string>
+	</array>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>processing</string>

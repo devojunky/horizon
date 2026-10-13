@@ -867,6 +867,91 @@ struct StoreFollowThroughTests {
         try await DayAnchor.settle(store, suite: suite, zone: la)                       // the same zone again: nothing moves
         #expect(try await store.obligations().first { $0.title == "HW 1" }?.due == hw1.due)
     }
+
+    @Test func aCourseMadeByHandWithoutACodeTakesItFromItsFirstDocument() async throws {
+        let store = try Fixture.store()
+        let chem = try await store.addCourse(CourseEdits(title: "General Chemistry", code: ""))   // as the editor sends it when no code is typed
+        let doc = try await store.enqueueDocument(filename: "chem.pdf", sha256: "chem", kind: "pdf", deviceName: "A", courseID: chem.id)
+        var syllabus = Fixture.calculus(sha: "chem")
+        syllabus.course = ParsedCourse(code: "CHEM-UA 225", title: "General Chemistry I", term: "Fall 2026", termStart: Fixture.day(9, 2, hour: 0, minute: 0))
+        let summary = try await store.ingest(syllabus, documentID: doc.id, calendar: Fixture.calendar)
+        var course = try await store.courses().first { $0.id == chem.id }!
+        #expect(summary.warnings.isEmpty && course.code == "CHEM-UA 225" && course.title == "General Chemistry")   // its code taken, the name given kept
+        #expect(course.gradeComponents.map(\.name) == ["Homework", "Quizzes", "Final Exam"] && course.term == "Fall 2026")
+        // A later document naming only the code is the same course.
+        var schedule = Fixture.calculus(sha: "chem-schedule"); schedule.course = ParsedCourse(code: "CHEM-UA 225"); schedule.gradeComponents = []; schedule.policies = []
+        try await Fixture.ingest(schedule, into: store)
+        #expect(try await store.courses().map(\.id) == [chem.id])
+        // A code another course has is not taken: the document stays where it was filed, with a warning, and touches nothing.
+        let lab = try await store.addCourse(CourseEdits(title: "Chemistry Lab"))
+        let labDoc = try await store.enqueueDocument(filename: "lab.pdf", sha256: "lab", kind: "pdf", deviceName: "A", courseID: lab.id)
+        var labSyllabus = syllabus; labSyllabus.document = DocumentInfo(name: "lab.pdf", sha256: "lab", kind: .pdf, pageCount: 1)
+        let warned = try await store.ingest(labSyllabus, documentID: labDoc.id, calendar: Fixture.calendar)
+        course = try await store.courses().first { $0.id == lab.id }!
+        #expect(course.code.isEmpty && course.gradeComponents.isEmpty && warned.warnings.contains { $0.contains("CHEM-UA 225") })
+        // An empty code kept as the user's (every course made by hand was once marked so) is no code to keep either.
+        try await store.updateCourse(id: lab.id, edits: CourseEdits(code: "CHEM-UA 9"))
+        try await store.updateCourse(id: lab.id, edits: CourseEdits(code: ""))
+        let notes = try await store.enqueueDocument(filename: "notes.pdf", sha256: "lab-notes", kind: "pdf", deviceName: "A", courseID: lab.id)
+        var labNotes = labSyllabus; labNotes.course = ParsedCourse(code: "CHEM-UA 226"); labNotes.document = DocumentInfo(name: "notes.pdf", sha256: "lab-notes", kind: .pdf, pageCount: 1)
+        _ = try await store.ingest(labNotes, documentID: notes.id, calendar: Fixture.calendar)
+        #expect(try await store.courses().first { $0.id == lab.id }?.code == "CHEM-UA 226")
+    }
+
+    @Test func aModelAnthropicDoesNotHaveStopsTheDrain() async throws {
+        let store = try Fixture.store()
+        let sent = Counter()
+        let coordinator = IngestCoordinator(store: store, storage: DocumentStorage.temporary(), sync: nil, deviceName: "A", parse: { url, _ in
+            sent.append(url.lastPathComponent)
+            throw IngestError.claudeUnavailable(ClaudeError.modelNotFound("claude-sonnet-9").localizedDescription)
+        })
+        _ = try await coordinator.enqueue(fileURL: try Fixture.file("a.txt", "first"))
+        _ = try await coordinator.enqueue(fileURL: try Fixture.file("b.txt", "second"))
+        let reports = await coordinator.drain()
+        #expect(sent.value.count == 1 && reports.count == 1)                            // the second is not sent for the same answer
+        #expect(try await store.queuedDocuments().count == 2)                           // both still wait to be read
+        // Which waits stop a drain, and which are the key's or the model's (Settings), by ClaudeError's own words.
+        let cases: [(ClaudeError, stops: Bool, settings: Bool)] = [
+            (.unauthorized, true, true), (.forbidden(model: "claude-opus-5"), true, true), (.modelNotFound("claude-sonnet-9"), true, true),
+            (.badRequest("max_tokens: too large"), true, true), (.billing, true, false), (.network("offline"), true, false),
+            (.rateLimited(retryAfter: 30), false, false), (.overloaded, false, false), (.server(status: 529, message: "rejected upstream"), false, false)]
+        for (error, stops, settings) in cases {
+            let why = error.localizedDescription
+            #expect(IngestCoordinator.stopsDrain(why) == stops && IngestCoordinator.isKeyOrModelProblem(why) == settings, "\(why)")
+        }
+        #expect(IngestCoordinator.stopsDrain("no API key") && IngestCoordinator.isKeyOrModelProblem("no API key"))
+    }
+
+    @Test func aPictureWithNothingToNameItFromYetHoldsUpNoOtherDocument() async throws {
+        let store = try Fixture.store()
+        let storage = DocumentStorage.temporary()
+        // An older document read but not yet named, and a newer picture still waiting for Claude.
+        let reads = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "A", parse: { _, _ in Fixture.calculus() })
+        let older = try await reads.enqueue(fileURL: try Fixture.file("calc.txt"), filename: "calc.txt")
+        _ = await reads.drain()
+        let waits = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "A", parse: { _, _ in throw IngestError.claudeUnavailable("no connection") })
+        let picture = try await waits.enqueue(fileURL: try Fixture.picture("scan.png"), filename: "scan.png")
+        _ = await waits.drain()
+        #expect(try await store.untitledDocuments().map(\.id) == [picture.id, older.id])  // newest first
+        // The picture is asked about as the app asks (it has no words, and nothing has been read of it); the older one is
+        // named by a stand-in for the device model.
+        let asked = Counter()
+        let namer = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "A", parse: { _, _ in IngestResult(document: DocumentInfo(name: "scan.png", sha256: picture.sha256, kind: .image, pageCount: 1)) },
+                                      name: { url, request, digest in
+            asked.append(request.filename)
+            return request.filename == "scan.png" ? await Ingestor.title(fileURL: url, request: request, digest: digest) : .titled("Calculus II Syllabus")
+        })
+        await namer.nameUntitled()
+        let named = try await store.document(id: older.id)?.title, waiting = try await store.document(id: picture.id)?.title
+        #expect(asked.value == ["scan.png", "calc.txt"] && named == "Calculus II Syllabus" && waiting == nil)   // the picture is asked again once read
+        await namer.nameUntitled()
+        #expect(asked.value == ["scan.png", "calc.txt"])                                // and not opened again before then
+        // Read, and still nothing in it to name it from: marked as having no name, and not asked about again.
+        _ = await namer.drain()
+        await namer.nameUntitled()
+        await namer.nameUntitled()
+        #expect(try await store.document(id: picture.id)?.title == "" && asked.value == ["scan.png", "calc.txt", "scan.png"])
+    }
 }
 
 

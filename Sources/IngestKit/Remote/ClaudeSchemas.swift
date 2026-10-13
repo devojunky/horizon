@@ -1,7 +1,8 @@
 import Foundation
 
-/// The JSON Schemas for the structures Claude fills, written by hand to mirror the `@Generable` types field for field
-/// (names, enumerations, the same descriptions), so one decoder serves both routes. Property order is kept as written,
+/// The JSON Schemas for the structures Claude fills, written by hand to mirror the `@Generable` types (names,
+/// enumerations, the same descriptions) with an outline before them, so Claude's reply decodes (`ExtractionJSON`) into
+/// the same `ChunkExtraction` the device model generates. Property order is kept as written,
 /// because the API makes the model write properties in the schema's order: a model that skips optional keys and then
 /// wants one back out of order is forced into garbage (see DECISIONS 2026-09-14). Optional fields are simply not
 /// required (the API allows that); counts and ranges are not allowed as keywords, so they live in the descriptions.

@@ -322,8 +322,13 @@ struct DateResolver: Sendable {
 
     private static let daySpecific = #"(?i)\b\d{1,2}[/.-]\d{1,2}\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(st|nd|rd|th)?\b|\b\d{1,2}(st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b|\b\d{4}-\d{2}-\d{2}\b"#
     private static let weekdayPattern = #"(?i)\b(mon|monday|tue|tues|tuesday|wed|wednesday|thu|thur|thurs|thursday|fri|friday|sat|saturday|sun|sunday)\b"#
-    /// A clock time with a meridiem, possibly the start of a range ("2:00–3:50 PM"), else a bare H:MM.
-    private static let timePattern = #"\b(\d{1,2})(?::(\d{2}))?(?:\s*[–\-]\s*\d{1,2}(?::\d{2})?)?\s*([ap])\.?m\.?(?![a-z])|\b(\d{1,2}):(\d{2})\b"#
+    /// A clock time with a meridiem ("5 PM", "11:59pm") or the start of a range that ends in one ("2:00–3:50 PM", "9-10
+    /// am"), else a bare H:MM. Captured: the hour and minute, the range's end hour and minute, the meridiem's letter; a
+    /// bare H:MM's hour and minute. The number a date ends with is never taken for an hour: one after a numeric date's
+    /// "/" or "." is no hour at all ("Fri 10/2 – 5 PM"), a month's day starts no range ("Oct 7-11:59 PM"), and a spaced
+    /// dash follows only a start with its minutes ("2:00 – 3:50 PM"; in "Oct 7 - 11:59 PM" or "Week 3 - 5 PM" the number
+    /// before it is a day's or an item's).
+    private static let timePattern = #"(?<![/.])\b(\d{1,2})(?::(\d{2}))?(?:(?:(?<=:\d{2})\s*[–\-]\s*|(?<!\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s{1,3}\d{1,2})[–\-])(\d{1,2})(?::(\d{2}))?)?\s*([ap])\.?m\.?(?![a-z])|\b(\d{1,2}):(\d{2})\b"#
 
     // MARK: The order of numeric dates
 
@@ -400,20 +405,29 @@ struct DateResolver: Sendable {
     /// "Week 3, Thursday" relative to the Monday of the term's first week; a week named without its day is its Monday.
     func weekRelativeDay(in text: String) -> DateComponents? { weekReference(in: text)?.day }
 
+    /// The time of day the wording gives: noon, midnight (the day's last minute), else the first clock time it prints
+    /// (`timePattern`). A range is its start, which takes the meridiem printed at the range's end unless that puts it
+    /// after the end: an "11:00–12:15 PM" class starts at 11 in the morning.
     static func time(in text: String) -> (hour: Int, minute: Int)? {
         let lowered = text.lowercased()
         if lowered.range(of: #"\bnoon\b"#, options: .regularExpression) != nil { return (12, 0) }
         if lowered.range(of: #"\bmidnight\b"#, options: .regularExpression) != nil { return (23, 59) }
-        guard let match = lowered.range(of: timePattern, options: .regularExpression) else { return nil }
-        let s = String(lowered[match])
-        let digits = s.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
-        guard let hourRaw = digits.first, hourRaw <= 24 else { return nil }
-        let minute = s.contains(":") && digits.count > 1 ? digits[1] : 0
-        var hour = hourRaw
-        if s.contains("p"), hour < 12 { hour += 12 }
-        if s.contains("a"), hour == 12 { hour = 0 }
-        guard (0...23).contains(hour), (0...59).contains(minute) else { return nil }
-        return (hour, minute)
+        guard let pattern = try? NSRegularExpression(pattern: timePattern) else { return nil }
+        let ns = lowered as NSString
+        for m in pattern.matches(in: lowered, range: NSRange(location: 0, length: ns.length)) {
+            func part(_ i: Int) -> Int? { m.range(at: i).location == NSNotFound ? nil : Int(ns.substring(with: m.range(at: i))) }
+            if let hour = part(6), let minute = part(7) {   // a bare H:MM
+                if hour <= 23, minute <= 59 { return (hour, minute) }
+                continue
+            }
+            guard var hour = part(1), m.range(at: 5).location != NSNotFound else { continue }
+            let minute = part(2) ?? 0, pm = ns.substring(with: m.range(at: 5)) == "p"
+            if pm, hour < 12 { hour += 12 }
+            if !pm, hour == 12 { hour = 0 }
+            if pm, hour >= 12, let end = part(3), (1...12).contains(end), (end % 12 + 12) * 60 + (part(4) ?? 0) < hour * 60 + minute { hour -= 12 }
+            if hour <= 23, minute <= 59 { return (hour, minute) }
+        }
+        return nil
     }
 
     /// Textual forms of a day that a document might use, for "does the source mention this date" checks. Numeric forms

@@ -13,10 +13,16 @@ public struct DocumentTitleRequest: Sendable, Equatable {
 /// How asking for a title went.
 public enum DocumentTitleOutcome: Sendable, Equatable {
     case titled(String)
-    /// The model was asked and had nothing worth keeping (it declined, or named what the document never says): not asked again.
+    /// The model was asked and has nothing to give, now or later: its title named what the document never says, it
+    /// declined, or it cannot name this document at all (`Extractor.titleFailureIsFinal`: a language it does not read, a
+    /// reply that could not be read). Kept as an empty title: not asked again.
     case nothing
-    /// The device model is not there to ask (no Apple Intelligence, assets loading, held back in the background): ask another time.
+    /// The device model could not be asked: it is not there (no Apple Intelligence, assets loading, held back in the
+    /// background, busy or slow). Ask another time; nothing else can be named meanwhile either.
     case unavailable
+    /// The document has no words to name it from yet (a picture not yet read): nobody was asked. Ask again once it has
+    /// been read; the documents after it can be named meanwhile.
+    case notYet
 }
 
 /// What the app calls a document. A title is the device model's ("Calculus II Syllabus"); without one, the file's name
@@ -64,9 +70,10 @@ public enum DocumentName {
         return String(lines.joined(separator: "\n").prefix(limit))
     }
 
-    /// For a picture the device model did not see: what was read from it, in a few lines.
+    /// For a picture the device model did not see: what was read from it, in a few lines. A transcript with no words in
+    /// it is none.
     static func digest(of outcomes: [ExtractionOutcome], limit: Int = 1500) -> String {
-        let transcripts = outcomes.compactMap(\.transcript).joined(separator: "\n")
+        let transcripts = outcomes.compactMap(\.transcript).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.joined(separator: "\n")
         if !transcripts.isEmpty { return String(transcripts.prefix(limit)) }
         var lines: [String] = []
         if let course = outcomes.lazy.compactMap(\.extraction.course).first {
@@ -110,7 +117,8 @@ extension Extractor {
     /// The document's name for the user, asked of the device model whatever reads the document: a few hundred tokens
     /// in, a few words out, nothing at stake. The title is kept only when the document's words carry it (`DocumentName.accept`).
     static func title(from text: String, request: DocumentTitleRequest, log: @escaping @Sendable (String) -> Void) async -> DocumentTitleOutcome {
-        guard !text.isEmpty else { return .nothing }
+        // No words yet (a picture waiting to be read): nobody was asked, so the document is named after its read.
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .notYet }
         let model = SystemLanguageModel.default
         guard case .available = model.availability else { return .unavailable }
         let start = ContinuousClock.now
@@ -133,8 +141,22 @@ extension Extractor {
         } catch LanguageModelError.rateLimited {
             return .unavailable   // the device model holds back an app in the background: another time
         } catch {
-            log("title: the device model \(Self.isSafetyStop(error) ? "declined" : "failed"): \(error.localizedDescription)")
-            return .nothing
+            let final = Self.titleFailureIsFinal(error)
+            log("title: the device model \(Self.isSafetyStop(error) ? "declined" : final ? "failed" : "could not answer now"): \(error.localizedDescription)")
+            return final ? .nothing : .unavailable
+        }
+    }
+
+    /// Whether asking for a title again would go the same way: the model declined (`isSafetyStop`), its reply could not be
+    /// read (greedy sampling writes the same one again), or it cannot take this request at all (a language it does not
+    /// read, a prompt too long for it, a capability or guide it lacks). Anything else (a timeout, assets loading, another
+    /// request in the way, an error not known here) may pass, and the document is asked about another time.
+    static func titleFailureIsFinal(_ error: any Error) -> Bool {
+        if isSafetyStop(error) || isTruncation(error) { return true }
+        switch error {
+        case LanguageModelError.unsupportedLanguageOrLocale, LanguageModelError.contextSizeExceeded, LanguageModelError.unsupportedCapability,
+             LanguageModelError.unsupportedGenerationGuide, LanguageModelError.unsupportedTranscriptContent: return true
+        default: return false
         }
     }
 }

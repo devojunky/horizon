@@ -6,7 +6,8 @@ public enum IngestEvent: Sendable, Equatable {
     /// `resumed`: parts already finished by an earlier read of the document, reused from its checkpoint.
     case started(document: String, textChunks: Int, images: Int, resumed: Int = 0)
     /// The device model was asked to name the document (`IngestOptions.titleRequest`): its title, or nil when it had
-    /// none worth keeping. Arrives once, early for a document with text, after the first part for a picture.
+    /// none worth keeping. Arrives at most once, early for a document with text, after the first part for a picture;
+    /// not at all when the model could not be asked or there was nothing to name it from yet (it is asked another time).
     case named(title: String?)
     case chunkStarted(index: Int)
     /// Everything the model has said so far for this chunk. Replaces the previous partial for the same chunk.
@@ -20,8 +21,8 @@ public enum IngestEvent: Sendable, Equatable {
 
 /// Where the model is in one chunk's reply, read off the ordered JSON as it streams: the stage being written, how
 /// many of that stage's items are finished, and the totals Claude committed to in its outline (the names of every
-/// item, and the counts of grade rows, policies and breaks, before any of them). The device model chunks and outlines
-/// nothing, so its totals are nil and a bar can only creep.
+/// item, and the counts of grade rows, policies and breaks, before any of them). The device model outlines nothing,
+/// so its totals are nil and a bar can only creep.
 public struct ReadProgress: Sendable, Equatable {
     public enum Stage: String, Sendable, Equatable, CaseIterable {
         /// The model is taking the measure of the document (writing its outline, or nothing yet).

@@ -25,7 +25,8 @@ public struct CourseCoverage: Sendable, Identifiable, Equatable {
     /// Something is on file but no grade table: there are no rhythms or counts to check its items against, so "looks
     /// covered" would claim what was never checked.
     public var noGradeTable: Bool = false
-    /// Higher is worse. Courses sort by this, never by name.
+    /// Higher is worse. Orders the courses the user has not placed: `Course.sortOrder` comes first (`Coverage.stories`).
+    /// Never shown.
     public var suspicion: Double
     /// "Bio has been silent for 9 days and its syllabus implies weekly quizzes." The whole story in one sentence: what
     /// VoiceOver reads for the course. The page shows it as `findings` and `facts`.
@@ -116,10 +117,12 @@ public struct PlatformGap: Sendable, Equatable {
         return what + ", from which nothing has ever been read"
     }
 
-    /// "WebAssign (Homework): nothing read yet." The site leads; `listing` names the grade rows on it.
+    /// "WebAssign (Homework): nothing read yet." The site leads; `listing` names the grade rows on it, all but a row named
+    /// for the site itself (a syllabus whose row is "WebAssign" read "WebAssign (WebAssign)").
     public func finding(listing: Bool) -> String {
         let site = Coverage.platformName(platform)
-        return (listing && !components.isEmpty ? "\(site) (\(components.joined(separator: ", ")))" : site) + ": nothing read yet."
+        let rows = components.filter { $0.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare(site) != .orderedSame }
+        return (listing && !rows.isEmpty ? "\(site) (\(rows.joined(separator: ", ")))" : site) + ": nothing read yet."
     }
 
     /// "Quizzes", "Lab Reports": plural; "Homework", "Final Paper": not.

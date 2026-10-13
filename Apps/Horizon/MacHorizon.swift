@@ -1,6 +1,7 @@
 #if os(macOS)
 import SwiftUI
 import SwiftData
+import AppIntents
 import HorizonCore
 
 /// Horizon on a Mac (SPEC §6.2, set for a window and a pointer). A phone needs a bar a finger can hit, 44 points, so
@@ -13,9 +14,10 @@ import HorizonCore
 /// double-click edits, Delete deletes, and the items selected there are marked on the chart.
 struct MacHorizonPage: View {
     @Environment(AppModel.self) private var model
+    @Environment(MacNavigation.self) private var nav
     @Query(filter: #Predicate<Obligation> { $0.deletedAt == nil && $0.due != nil }, sort: \Obligation.due) private var obligations: [Obligation]
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
-    @State private var filter: Band.Kind = .all      // the course the page is narrowed to; everything, until the user says otherwise
+    @State private var filter: Band.Kind = .all      // the course the page is narrowed to; everything until the user (or an intent) says otherwise, and again whenever the page is left
     @State private var chosen: DateInterval?         // a day, a week or any run of days
     @State private var pointer = ChartPointer()      // the day under the pointer: read by the header and the chart, never by the page
     @State private var selection: Set<UUID> = []
@@ -49,6 +51,7 @@ struct MacHorizonPage: View {
                     }
                     .padding(.horizontal, Design.margin)
                 }
+                .keyboardStaysInSidebar()   // no rows to move through: the arrows keep moving the sidebar
             } else {
                 VStack(alignment: .leading, spacing: 0) {
                     ChartHeader(data: data, chosen: chosen, pointer: pointer, calendar: calendar)
@@ -63,7 +66,7 @@ struct MacHorizonPage: View {
                         .padding(.bottom, 6)
                     ItemTable(rows: rows, selection: $selection, sortOrder: $sortOrder, showsCourse: data.narrowedTo == nil,
                               mark: mark, edit: { id in editing = obligations.first { $0.id == id } },
-                              delete: { ids in for id in ids { Task { await model.discard(id) } }; selection.subtract(ids) })
+                              delete: { ids in Task { await model.discard(Array(ids)) }; selection.subtract(ids) })   // one undo for them all
                         .animation(.default, value: rows.map(\.id))   // the rows come and go; the words above them change at once
                 }
             }
@@ -90,6 +93,13 @@ struct MacHorizonPage: View {
             if MainTabs.debugOnce("--scrub-week"), let heavy = data.collisions.first?.day ?? data.items.first(where: { $0.due >= Date() })?.due {   // DEBUG: a week chosen without a click
                 chosen = calendar.dateInterval(of: .weekOfYear, for: heavy)
             }
+        }
+        .onChange(of: nav.horizonRequest, initial: true) { _, request in   // asked for from outside: the course, and the day chosen
+            guard let request else { return }
+            nav.horizonRequest = nil
+            let kind: Band.Kind = request.course.map { .course($0) } ?? .all
+            filter = data.choices.contains { $0.kind == kind } ? kind : .all
+            if let day = request.day { chosen = calendar.dateInterval(of: .day, for: day) }
         }
     }
 
@@ -215,6 +225,7 @@ struct ItemTable: View {
                 .alignment(.trailing)   // the header over its figures
             }
             .paperTable()
+            .appEntityIdentifier(forSelectionType: UUID.self) { EntityIdentifier(for: ItemEntity.self, identifier: $0) }   // Siri's "this": the rows, by their selection (WWDC26: collection annotations)
             .takesKeyboard($focused, hasRows: !rows.isEmpty)
             .opacity(rows.isEmpty ? 0.001 : 1)   // kept in the layout (its height), but an empty table's header says nothing
             .overlay(alignment: .top) {
@@ -246,8 +257,8 @@ struct ItemTable: View {
                 do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
                 proxy.scrollTo(reveal, anchor: .center)
             }
-            // The table's own, not the scene's: while a sheet's field has the keyboard the Item menu has nothing, so ⌘⌫
-            // there deletes words, never the item behind the sheet.
+            // The table's own. It stays published under a sheet, so the Item menu checks `keyboardIsElsewhere` first: ⌘⌫ in
+            // a sheet's field deletes words, never the item behind the sheet.
             .focusedValue(\.selectedItem, visibleSelection.count == 1 ? rows.first { visibleSelection.contains($0.id) }.map { row in
                 SelectedItem(id: row.id, done: row.done, mark: { mark(row.id, $0) }, edit: { edit(row.id) }, openDocument: openDocument(row), delete: { delete([row.id]) })   // Item ▸ Mark Done, the way a click on the ring does it; ⌘⌫ as Delete does
             } : nil)
