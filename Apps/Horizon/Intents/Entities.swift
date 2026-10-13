@@ -115,14 +115,14 @@ struct ItemEntity: IndexedEntity {
 
     var displayRepresentation: DisplayRepresentation {
         DisplayRepresentation(title: "\(title)", subtitle: "\(Design.itemLine(course: list.isUnfiled ? nil : list.name, due: due, hasTime: dueDate?.hour != nil, weight: weight))",
-                              image: .init(systemName: isCompleted ? "checkmark.circle" : "circle"))
+                              image: .init(systemName: status == .skipped ? "circle.dashed" : isCompleted ? "checkmark.circle" : "circle"))
     }
 
     init(_ o: ObligationSnapshot, course: CourseSnapshot?, calendar: Calendar = .current) {
         id = o.id
         title = o.title
         note = o.notes.flatMap { $0.isEmpty ? nil : AttributedString($0) }
-        tags = []
+        tags = ItemTags.tags(component: o.componentName, platform: o.platform)   // the schema's only place for them: Siri reads and sets them here
         urls = [o.link]
         dueDate = o.due.map { calendar.dateComponents(o.dueHasTime ? [.year, .month, .day, .hour, .minute] : [.year, .month, .day], from: $0) }
         recurrence = nil
@@ -149,13 +149,14 @@ struct ItemEntity: IndexedEntity {
 
 /// Where an item stands, as people say it.
 enum ItemStatus: String, AppEnum {
-    case toDo, done, inReview, awaitingDate
+    case toDo, done, skipped, inReview, awaitingDate
     static let typeDisplayRepresentation: TypeDisplayRepresentation = "Status"
     static let caseDisplayRepresentations: [Self: DisplayRepresentation] = [
-        .toDo: "To Do", .done: "Done", .inReview: "Waiting for Review", .awaitingDate: "Waiting for a Date",
+        .toDo: "To Do", .done: "Done", .skipped: DisplayRepresentation(title: "Skipped", synonyms: ["set aside", "dropped"]),
+        .inReview: "Waiting for Review", .awaitingDate: "Waiting for a Date",
     ]
     init(_ o: ObligationSnapshot) {
-        self = o.completedAt != nil ? .done : o.state == .pendingReview ? .inReview : o.due == nil ? .awaitingDate : .toDo
+        self = o.skippedAt != nil ? .skipped : o.completedAt != nil ? .done : o.state == .pendingReview ? .inReview : o.due == nil ? .awaitingDate : .toDo
     }
 }
 

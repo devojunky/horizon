@@ -579,3 +579,50 @@ The owner: the Search tab should not be a blank page when it opens; it should of
 - **Courses.** Every course as a button to its page, in the user's order, on one row that scrolls sideways.
 - **Recent, or Try Searching.** The user's last six searches, newest first. A search is kept when it is submitted or one of its results is opened, so passing words are not kept. They are kept in the app's own defaults, so a scratch run keeps its own. Clear empties the list, and a swipe removes one. While there are none, searches worth trying in this library take their place: the policies most courses state ("makeup exam policy", the owner's question), the grade row with the most work ahead, and "syllabus" when a document is one. A tap puts the words in the field.
 - The rules are `SearchSuggestions` in HorizonCore, tested. Seen in the simulator, light and dark, with a plan on, after a search, and after Clear. The Mac's search page shows only once something is typed in the sidebar, so it has no empty page to fill.
+
+## 2026-10-13 · An item's grade row and site, by Siri and in Shortcuts
+
+The owner asked Siri to change what items count toward and their platform, several at once. Siri said it could not. Then the gap was traced, and filled.
+
+- **Why Siri said no.** Siri changes an item only through the reminders schema's Update Reminder (Xcode 27's schema database). Its fields are the name, notes, tags, links, due date, repeat, done, flag, list and location. It has no section field (Create Reminder has one), and nothing like a site. The extra parameters an app adds are invisible to Siri. Update Reminder does run once per item when it is given several, so a change Siri can say applies to many items in one sentence.
+- **The grade row and the site ride on the item's tags** (`ItemTags`). An item's tags are its grade row and its site, so Siri reads both there. A tag Siri sets that names a site (WebAssign, Gradescope, MyLab or Pearson, Canvas and the other LMSs, or "none") sets the site. One that names a row of the course's grade table sets the row. Any other tag is said to be neither, and left off. "In Horizon, tag all of Calc's homework WebAssign" should now work. A sentence about "platform" or "counts toward" may still not, since Siri has no such field to map it to. That is for the owner's voice to tell.
+- **Shortcuts showed only the schema's fields.** "Update Reminder" in the simulator's Shortcuts listed the schema's fields alone. Change Item's Review, and Add Item's Every, Until and First Number (DECISIONS 2026-10-13, earlier), never appeared. Only AppIntentsTesting reached them. Each schema intent now gives Shortcuts its own summary with them in it. Change Item gains Counts Toward (a row by name, read against the item's course) and Site; Add Item gains Site.
+- **Horizon's words in Shortcuts.** The schema intents are titled Add Item, Change Item, Delete Items and Add Course (they read Create Reminder, Update Reminder, Delete Reminders and Create List). Their fields say Item, Course, Done and Counts Toward. The generated Find actions ("Find Reminder", "Find List", "Find Note") and an entity's type name in a picker keep the schema's words: the build ignores an override of a schema entity's type name.
+- **Verified.** 181 IngestKit and 135 HorizonCore tests. AppIntentsTesting sets a row and a site through Change Item's own parameters, and a site through a tag as Siri does. The simulator's Shortcuts shows the new titles and Change Item's new fields. Not verified: Siri by voice, and whether Shortcuts runs Change Item once per item when handed a list. Repeat with Each does it either way.
+
+## 2026-10-13 · An item's page: its details, Done and Skip, and a description
+
+The owner: a tap on an item went straight to its editor. It should open a page of the item's details instead, with Edit, Skip and Mark as Done, and with room for the descriptions Siri will write. The HIG's guidance was followed throughout.
+
+- **The page** (`ItemDetail`, iOS) is pushed, the way Calendar's event details are. The HIG says to present modally only for a clear benefit, and a row that drills down shows a disclosure indicator, so every item row that opens it now has a chevron.
+  - The head: the course as a kicker, the name in the display serif, the date, then one quiet line. That line says how soon ("Tomorrow", "In 3 days"), in the accent's words once the moment has passed and the item is still to do; or when it was done or skipped. It ends with the item's share of the grade.
+  - Mark Done (prominent, the likely act) and Skip sit under the head, at one width: the HIG tells a preferred action by its style, not its size. They stand side by side while both labels fit whole, and stack at the largest text sizes. A done item shows one Mark Not Done across the row, so the row keeps its height when an item is checked off.
+  - Edit is the bar's text button, as in Calendar (the HIG's exception for an action no symbol says). It opens the editor as before.
+  - An item waiting for review says why, with Confirm and "Use <the other date>".
+  - Then the description, then Details: the grade row and its share, the site, the source document (opens in Quick Look), the date as the document printed it, and what a later read changed.
+- **Every way to an item opens the page.** A course's page, the Horizon tab, and Search's suggestions and results. A reminder's link, Spotlight and Siri's Open Item open it over its course's page, so Back goes to the course. The rows' swipes and menus keep Mark Done, Edit… and Delete, and gain Skip.
+- **Skip** keeps the owner's word from the Live Activity: Horizon organises, it does not enforce. A skipped item is set aside, not done.
+  - It is closed: it leaves what's due, the plan, the widgets and Siri's answers, and its reminder is checked off, since Reminders has no other way to close one.
+  - It is marked as skipped (`Obligation.skippedAt`, store generation 3). Its row has a dashed ring, told apart by shape, not colour, with "Skipped" where its share was. A course's page has a Skipped section under Done. Its page says "Skipped today".
+  - Undo Skip opens it again; Mark Done replaces the skip; unchecking it in Reminders opens it.
+  - Coverage counts a skip as the user's word on the course, so it ends a silence as a check does.
+  - Change Item takes Skipped, for Shortcuts; Siri's schema has no field for it. Done set to off opens an item, whatever closed it.
+- **The description** is the item's notes, kept in the reminder's notes as before.
+  - The page gives it the widest block: body text with room between the lines, selectable, its links live, never cut short.
+  - The editor's field is now called Description too. It moved up under the name, as Reminders keeps a reminder's notes, and starts four lines tall. With no description, the page says Siri can write one while it is open ("Add a note to this"), and Add Description… opens the editor with its field ready to type in.
+  - Siri writes it through Add Item and Change Item. What came through Siri says "Added with Siri, which can make mistakes." (`notesFromSiri`). This follows the HIG on generative AI: say what a model may have written, and keep Edit near it. A description typed in the app or in Reminders is the user's own again.
+- **Decided for the owner:**
+  - Skip is a state of its own: not a deletion, and not done. It checks the reminder off.
+  - A done item's page offers Mark Not Done alone; Skip for it is in its row's swipe and menu.
+  - The Mac keeps its shape. A table's double-click still edits, and Skip is in the Item menu and the tables' menus, with the dashed ring. A Mac details pane would be an inspector or a window of its own. It is not built until the owner wants one.
+  - The editor's "Platform" is now "Site", the word Coverage, Siri and Shortcuts use.
+- **Found on the way.**
+  - A tap on an item in a course's page went nowhere. The stack's push action was set on its first page, and pages pushed onto the stack take their environment from the stack itself; Documents pushes the same way. It is set on the stack now.
+  - Coverage's rhythm check counted only what was still to do, so a homework checked off early (or skipped) read as one the documents left out ("1 of 2 on file"). It counts everything on file now; "due in the next two weeks" still counts what is to do.
+  - At the largest text sizes, the automatic label style dropped the buttons' words, which fooled the check of whether they fit side by side ("✓ …").
+  - A sheet's content read a second state as it was before the tap, so Add Description… first opened the editor without its field ready.
+- **Verified.**
+  - iOS and Mac build. 181 IngestKit and 138 HorizonCore tests, including a skip's round trip through Reminders, a description's credit, and the rhythm check. AppIntentsTesting 10 of 10: Change Item skips an item, then puts it back with Done off.
+  - Seen in the simulator: every way in; open, done, skipped and in-review items; a long description with a link, typed and from Siri; Add Description…; light and dark; the largest text size. The Mac's course table was seen with a skipped item, on a scratch copy.
+  - The simulator's test data was put back as it was.
+  - Not verified: Siri writing a description by voice.

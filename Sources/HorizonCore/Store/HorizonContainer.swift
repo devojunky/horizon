@@ -10,7 +10,8 @@ public enum HorizonContainer {
     /// and drop every field it lacks (what an old build did to the owner's store on 2026-09-28). Only builds with this
     /// guard are protected: an old build left on disk is still a hazard.
     /// 2 (2026-10-05): `Obligation.documentWords`, `SourceDocument.failureIsPermanent`.
-    public static let storeGeneration = 2
+    /// 3 (2026-10-13): `Obligation.skippedAt`, `Obligation.notesFromSiri`.
+    public static let storeGeneration = 3
 
     /// The shared store: on iOS in the App Group container, so the share extension writes to the same database as the
     /// app; on a Mac, which has no App Group (its Inbox folder is read by the app itself), a store of its own in

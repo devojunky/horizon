@@ -15,6 +15,10 @@ struct ObligationEditor: View {
     @Environment(\.dynamicTypeSize) private var typeSize
     /// For an item added by hand: the course whose page it was added from, chosen to begin with.
     var preferredCourse: UUID? = nil
+    /// Opened to write the description (the details page's Add Description…): its field has the keyboard as the sheet
+    /// comes up.
+    var focusesDescription = false
+    @FocusState private var describing: Bool
 
     @State private var title = ""
     @State private var hasDate = true
@@ -54,11 +58,17 @@ struct ObligationEditor: View {
                         }
                     }
                 }
+                // Under the name, as Reminders keeps a reminder's notes: room for a few lines from the start (Siri's run
+                // longer than a field's one), and near the top, so a field being written in stays above the keyboard.
+                Section {
+                    TextField("Description", text: $notes, prompt: Text("What it asks for"), axis: .vertical).lineLimit(4...).labelsHidden()   // the kicker names it
+                        .focused($describing)
+                } header: { Kicker("Description") }
                 if case .edit = mode {
                     Section {
                         Toggle("Done", isOn: $done)
                     } footer: {
-                        Text("Checked off in Reminders as well.")
+                        Text(item?.skippedAt != nil && !done ? "Skipped, so it is checked off in Reminders. Turn on Done if you did it after all." : "Checked off in Reminders as well.")
                     }
                 }
                 Section {
@@ -69,12 +79,11 @@ struct ObligationEditor: View {
                     }
                 }
                 Section {
-                    Picker("Platform", selection: $platform) {
+                    Picker("Site", selection: $platform) {   // Siri's and Shortcuts' word for it too
                         Text("Not stated").tag(Platform.syllabusOnly)
                         Text("LMS").tag(Platform.lms); Text("WebAssign").tag(Platform.webAssign)
                         Text("Gradescope").tag(Platform.gradescope); Text("MyLab").tag(Platform.myLab)
                     }
-                    TextField("Notes", text: $notes, axis: .vertical)
                 }
                 if let item, item.origin == .document {
                     Section {
@@ -108,6 +117,7 @@ struct ObligationEditor: View {
                 guard !loaded else { return }
                 loaded = true
                 load()
+                if focusesDescription { Task { @MainActor in try? await Task.sleep(for: .milliseconds(500)); describing = true } }   // once the sheet is up: a field focused as it rises takes no keyboard
             }
             .showsEntity(ItemEntity.self, id: item?.id, title: item?.title ?? "")   // Siri's "this": "push this to Sunday"
             .onChange(of: model.changedElsewhere) { _, change in   // Siri or a shortcut changed this item: show its fields as they are now
@@ -136,7 +146,7 @@ struct ObligationEditor: View {
         componentName = item.componentName ?? ""
         platform = item.platform
         notes = item.notes ?? ""
-        done = item.completedAt != nil
+        done = item.completedAt != nil && item.skippedAt == nil   // skipped is closed but not done: the switch is off
     }
 
     private func save() {
@@ -157,7 +167,7 @@ struct ObligationEditor: View {
             if componentName != (item.componentName ?? "") { edits.componentName = .some(componentName.isEmpty ? nil : componentName) }
             if notes != (item.notes ?? "") { edits.notes = .some(notes.isEmpty ? nil : notes) }
             if courseID != item.course?.id { edits.courseID = .some(courseID) }
-            let (id, done, checked) = (item.id, done, done != (item.completedAt != nil))
+            let (id, done, checked) = (item.id, done, done != (item.completedAt != nil && item.skippedAt == nil))   // done on a skipped item replaces the skip
             work = {
                 if checked { await model.setCompleted(id, done) }
                 if !checked || edits != ObligationEdits() { await model.confirm(id, edits: edits) }   // a check alone confirms nothing and edits nothing

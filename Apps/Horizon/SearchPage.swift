@@ -11,15 +11,13 @@ extension Array where Element == Obligation {
 
 #if os(iOS)
 /// Where the app goes when asked (`AppModel.destination`): the tab, then the page in it. Coverage's stack and the
-/// Horizon strip take their own destinations once their tab is up; an item's editor, a document's Quick Look and the
-/// import pickers open here, over whichever tab is showing, so a reminder's link never opens on a hidden tab.
+/// Horizon strip take their own destinations once their tab is up (an item's details too: over its course's page, on
+/// Coverage's stack); a document's Quick Look and the import pickers open here, over whichever tab is showing, so a
+/// link never opens on a hidden tab.
 struct AppRouter: ViewModifier {
     @Binding var tab: Int
     @Environment(AppModel.self) private var model
-    @Query(filter: #Predicate<Obligation> { $0.deletedAt == nil }) private var live: [Obligation]
-    @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
     @Query(filter: #Predicate<SourceDocument> { $0.deletedAt == nil }) private var documents: [SourceDocument]
-    @State private var editing: Obligation?
     @State private var preview: URL?
     @State private var files = false
     @State private var photos: ImportPickers.Photos?
@@ -28,7 +26,6 @@ struct AppRouter: ViewModifier {
     func body(content: Content) -> some View {
         content
             .onChange(of: model.destination, initial: true) { _, destination in route(destination) }
-            .sheet(item: $editing) { item in ObligationEditor(mode: item.state == .pendingReview ? .review(item) : .edit(item), courses: courses) }
             .quickLookPreview($preview)
             .modifier(ImportPickers(courseID: nil, files: $files, photos: $photos, scanning: $scanning))
     }
@@ -36,7 +33,7 @@ struct AppRouter: ViewModifier {
     private func route(_ destination: AppDestination?) {
         guard let destination else { return }
         switch destination {
-        case .page(.coverage), .page(.review), .page(.documents), .page(.recentlyDeleted), .page(.settings), .course, .policies:
+        case .page(.coverage), .page(.review), .page(.documents), .page(.recentlyDeleted), .page(.settings), .course, .policies, .item:
             tab = 0   // Coverage's stack takes it from here
         case .page(.horizon), .horizon:
             tab = 1   // the strip takes it from here
@@ -44,10 +41,6 @@ struct AppRouter: ViewModifier {
             tab = 2; model.destination = nil
         case .page(.search), .search:
             tab = 3; model.destination = nil
-        case .item(let id):
-            model.destination = nil
-            editing = live.first { $0.id == id }
-            if editing == nil { model.lastError = "That item is no longer in Horizon." }
         case .document(let id):
             model.destination = nil
             if let document = documents.first(where: { $0.id == id }) {
@@ -78,9 +71,14 @@ struct SearchPage: View {
     @Query(filter: #Predicate<SourceDocument> { $0.deletedAt == nil }) private var documents: [SourceDocument]
     @Query private var policies: [Policy]
     @State private var path: [Route] = []
-    @State private var editing: Obligation?
     @State private var preview: URL?
     @State private var finds = SpotlightFinds()
+
+    /// A page pushed once: a second push while it is up is ignored (a course's page and an item's, from here).
+    private func push(_ route: Route) {
+        guard !path.contains(route) else { return }
+        path.append(route)
+    }
 
     private var livePolicies: [PolicySnapshot] { policies.filter { $0.course != nil && $0.course?.deletedAt == nil }.map(PolicySnapshot.init) }
 
@@ -109,10 +107,14 @@ struct SearchPage: View {
                 if !Task.isCancelled { finds = found }
             }
             .navigationDestination(for: Route.self) { route in
-                if case .course(let id) = route, let course = courses.first(where: { $0.id == id }) { CourseView(course: course) }
+                switch route {
+                case .course(let id): if let course = courses.first(where: { $0.id == id }) { CourseView(course: course) }
+                case .item(let id): ItemDetail(id: id)
+                default: EmptyView()
+                }
             }
         }
-        .sheet(item: $editing) { item in ObligationEditor(mode: item.state == .pendingReview ? .review(item) : .edit(item), courses: courses) }
+        .environment(\.openRoute, OpenRouteAction(open: push))   // on the stack, so a course's page pushed here opens its items here too
         .quickLookPreview($preview)
     }
 
@@ -136,7 +138,7 @@ struct SearchPage: View {
                 if let block { nowRow(block) }
                 ForEach(suggested, id: \.id) { suggestion in
                     if let o = obligations.first(where: { $0.id == suggestion.id }) {
-                        Button { editing = o } label: { ObligationRow(obligation: o) }
+                        Button { push(.item(o.id)) } label: { ObligationRow(obligation: o, disclosure: true) }
                             .buttonStyle(.plain).onPaper()
                             .accessibilityHint(Self.why(suggestion.reason))
                     }
@@ -187,7 +189,7 @@ struct SearchPage: View {
         return ScrollView(.horizontal) {
             HStack(spacing: 8) {
                 ForEach(ordered) { course in
-                    Button { path.append(.course(course.id)) } label: { Text(course.displayName).lineLimit(1) }
+                    Button { push(.course(course.id)) } label: { Text(course.displayName).lineLimit(1) }
                         .buttonStyle(.bordered).buttonBorderShape(.capsule).tint(Design.accentInk)
                         .appEntityIdentifier(EntityIdentifier(for: CourseEntity.self, identifier: course.id))
                 }
@@ -231,7 +233,7 @@ struct SearchPage: View {
             Section {
                 ForEach(results.items) { item in
                     if let o = obligations.first(where: { $0.id == item.id }) {
-                        Button { model.rememberSearch(); editing = o } label: { ObligationRow(obligation: o) }.buttonStyle(.plain).onPaper()
+                        Button { model.rememberSearch(); push(.item(o.id)) } label: { ObligationRow(obligation: o, disclosure: true) }.buttonStyle(.plain).onPaper()
                     }
                 }
             } header: { Kicker("Items") }.onPaper()
@@ -239,7 +241,7 @@ struct SearchPage: View {
         if !results.courses.isEmpty {
             Section {
                 ForEach(results.courses) { course in
-                    Button { model.rememberSearch(); path.append(.course(course.id)) } label: {
+                    Button { model.rememberSearch(); push(.course(course.id)) } label: {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(course.displayName).font(.system(.headline, design: .serif))
                             if course.code != course.displayName, !course.code.isEmpty { Text(course.code).font(.caption).foregroundStyle(.secondary) }
@@ -255,7 +257,7 @@ struct SearchPage: View {
         if !results.policies.isEmpty {
             Section {
                 ForEach(results.policies) { policy in
-                    Button { model.rememberSearch(); if let id = policy.courseID { path.append(.course(id)) } } label: {
+                    Button { model.rememberSearch(); if let id = policy.courseID { push(.course(id)) } } label: {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("\(PolicyLookup.name(policy.kind)) · \(policy.courseName ?? "")").font(.system(.headline, design: .serif))
                             Text(policy.text).font(.callout).foregroundStyle(.secondary).lineLimit(3)

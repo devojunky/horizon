@@ -52,7 +52,7 @@ struct MacCoursePage: View {
                     Kicker("Items")
                     Spacer()
                     Toggle("Show Done", isOn: $showsDone).toggleStyle(.checkbox).controlSize(.small)
-                        .help("List the items already done, crossed off, with the rest")
+                        .help("List the items already done (crossed off) or skipped with the rest")
                 }
                 .padding(.horizontal, Design.margin)
                 .padding(.bottom, 6)
@@ -60,6 +60,7 @@ struct MacCoursePage: View {
                           emptyText: obligations.isEmpty ? "No items yet. Add a document, or an item by hand (File ▸ Add Item…)." : "Everything on file is done.",
                           reveal: revealed,
                           mark: { id, done in lingering.mark(id, done: done); Task { await model.setCompleted(id, done) } },
+                          skip: { id, skipped in lingering.mark(id, done: skipped); Task { await model.setSkipped(id, skipped) } },
                           edit: { id in editing = obligations.first { $0.id == id } },
                           delete: { ids in Task { await model.discard(Array(ids)) }; selection.subtract(ids) })   // one undo for them all
             }

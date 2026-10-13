@@ -16,25 +16,37 @@ import IngestKit
 /// Add an item: one, or a numbered run of them when it repeats.
 @AppIntent(schema: .reminders.createReminder)
 struct AddItemIntent {
-    static let description = IntentDescription("Adds an item with its due date to a course, and to Reminders. One that repeats becomes numbered items (Quiz 4, Quiz 5…), one per date, skipping the course's breaks, up to the item it runs until or the end of the term.",
+    static let title: LocalizedStringResource = "Add Item"   // the schema's own says "Create Reminder"
+    static let description = IntentDescription("Adds an item with its due date to a course, and to Reminders. One that repeats becomes numbered items (Quiz 4, Quiz 5…), one per date, skipping the course's breaks, up to the item it runs until or the end of the term. Its tags can name the grade row it counts toward and the site it's handed in on.",
                                                categoryName: "Items", searchKeywords: ["assignment", "homework", "quiz", "task", "deadline", "every week", "weekly", "repeat"])
 
     var title: String
-    var list: CourseEntity?
-    var note: AttributedString?
+    @Parameter(title: "Course") var list: CourseEntity?   // Shortcuts' label; the schema's own says "List"
+    @Parameter(title: "Description") var note: AttributedString?   // the schema's "Notes": the page calls it the description
     var isFlagged: Bool?
-    // Empty unless given: Horizon's items carry no pictures, tags or links of their own, and Siri must never ask for them.
+    // Empty unless given: Horizon's items carry no pictures or links of their own, and Siri must never ask for them.
     @Parameter(title: "Images", default: [], supportedContentTypes: [.image]) var images: [IntentFile]
+    /// The grade row and the site, as Siri says them ("tagged WebAssign"): `ItemTags`.
     @Parameter(default: []) var tags: Set<String>
     @Parameter(default: []) var urls: [URL]
     var dueDate: DateComponents?
     var recurrence: Calendar.RecurrenceRule?
     var locationTrigger: PlaceTriggerEntity?
-    var section: GradeRowEntity?
-    // Horizon's own, for a run. Siri gives a repeat as `recurrence`; a shortcut can name the weekday instead.
+    @Parameter(title: "Counts Toward") var section: GradeRowEntity?
+    // Horizon's own, for a shortcut (Siri passes only the schema's). A run: Siri gives a repeat as `recurrence`; a
+    // shortcut can name the weekday instead.
+    @Parameter(title: "Site", description: "Where it's handed in.") var site: SiteChoice?
     @Parameter(title: "Every", description: "Makes a weekly run on this day of the week, numbered, as a repeat does.") var every: WeekdayChoice?
     @Parameter(title: "Until", description: "For a run: the item whose day it stops before (say, the midterm).") var until: ItemEntity?
     @Parameter(title: "First Number", description: "For a run: the number the first one takes. By default, the one after the highest of that name in the course.") var firstNumber: Int?
+
+    // Shortcuts shows a schema intent's own summary, the schema's fields alone, unless the app gives one: this one
+    // leaves out what Horizon has no use for and shows its own.
+    static var parameterSummary: some ParameterSummary {
+        Summary("Add \(\.$title) to \(\.$list)") {
+            \.$dueDate; \.$section; \.$site; \.$note; \.$recurrence; \.$every; \.$until; \.$firstNumber
+        }
+    }
 
     @Dependency var model: AppModel
 
@@ -49,6 +61,9 @@ struct AddItemIntent {
         let calendar = Calendar.current
         let due = dueDate.flatMap { ItemSeries.due(from: $0, now: .now, calendar: calendar) }
         let notes = note.map { String($0.characters) }.flatMap { $0.isEmpty ? nil : $0 }
+        let tagged = ItemTags.read(tags, rows: course?.gradeComponents ?? [])
+        let platform = site?.platform ?? tagged.platform ?? .syllabusOnly
+        let leftOff = tagged.unknown.isEmpty ? "" : " " + ItemTags.leftOff(tagged.unknown)
 
         if let rule = recurrence ?? every.map({ Calendar.RecurrenceRule.weekly(calendar: calendar, weekdays: [.every($0.locale)]) }) {
             // The first date: the one given, else (a weekday named alone) the run starts today, with no time.
@@ -60,20 +75,42 @@ struct AddItemIntent {
                 end = day; endIsItem = true
             }
             let plan = try await SeriesPlan.make(stem: name, rule: rule, first: start.date, hasTime: start.hasTime, end: end, endIsItem: endIsItem,
-                                                 course: course, row: section?.name, firstNumber: firstNumber, model: model)
+                                                 course: course, row: section?.name ?? tagged.component, firstNumber: firstNumber, model: model)
             try await plan.confirm(with: self)
-            let added = try await model.addItems(plan.items, courseID: course?.id, componentName: plan.row, notes: notes)
+            let added = try await model.addItems(plan.items, courseID: course?.id, componentName: plan.row, platform: platform, notes: notes, notesFromSiri: true)
             guard let first = added.first else { throw IntentFailure.message("No date in that rhythm falls before it ends.") }
-            return .result(value: ItemEntity(first, course: course), dialog: "\(plan.summary(added: true))")
+            return .result(value: ItemEntity(first, course: course), dialog: "\(plan.summary(added: true) + leftOff)")
         }
 
-        let row = section?.name ?? course.flatMap { ItemSeries.component(for: ItemSeries.stem(of: name).stem, in: $0.gradeComponents) }
+        let row = section?.name ?? tagged.component ?? course.flatMap { ItemSeries.component(for: ItemSeries.stem(of: name).stem, in: $0.gradeComponents) }
         let added = try await model.addItems([ItemSeries.Item(title: name, due: due?.date ?? .distantPast, dueHasTime: due?.hasTime ?? false)], courseID: course?.id,
-                                             componentName: row, notes: notes, undated: due == nil)
+                                             componentName: row, platform: platform, notes: notes, notesFromSiri: true, undated: due == nil)
         guard let item = added.first else { throw IntentFailure.message("Horizon could not add it.") }
         let place = course.map { " to \($0.displayName)" } ?? ""
         let when = due == nil ? ", with no date yet" : ", due " + Spoken.due(item.due, hasTime: item.dueHasTime)
-        return .result(value: ItemEntity(item, course: course), dialog: "Added \(item.title)\(place)\(when).")
+        return .result(value: ItemEntity(item, course: course), dialog: "Added \(item.title)\(place)\(when).\(leftOff)")
+    }
+}
+
+/// Where an item is handed in, as a shortcut's picker and Siri name it.
+enum SiteChoice: String, AppEnum {
+    case webAssign, gradescope, myLab, lms, none
+    static let typeDisplayRepresentation: TypeDisplayRepresentation = "Site"
+    static let caseDisplayRepresentations: [Self: DisplayRepresentation] = [
+        .webAssign: "WebAssign",
+        .gradescope: "Gradescope",
+        .myLab: DisplayRepresentation(title: "MyLab", synonyms: ["Pearson", "Mastering"]),
+        .lms: DisplayRepresentation(title: "LMS", synonyms: ["Canvas", "Blackboard", "Brightspace", "Moodle", "D2L"]),
+        .none: DisplayRepresentation(title: "No Site", synonyms: ["in class", "on paper", "none"]),
+    ]
+    var platform: Platform {
+        switch self {
+        case .webAssign: .webAssign
+        case .gradescope: .gradescope
+        case .myLab: .myLab
+        case .lms: .lms
+        case .none: .syllabusOnly
+        }
     }
 }
 
@@ -147,25 +184,40 @@ struct SeriesPlan {
     }
 }
 
-/// Change an item: rename it, move its date, check it off, move it to another course, edit its notes, or answer its
-/// review (Review's Confirm and "Use <the other date>").
+/// Change an item: rename it, move its date, check it off or skip it, move it to another course, write its description,
+/// set the grade row it counts toward or the site it's handed in on, or answer its review (Review's Confirm and "Use
+/// <the other date>"). Siri changes several at once by running it for each ("tag all of Calc's homework WebAssign"):
+/// the schema loops over its target.
 @AppIntent(schema: .reminders.updateReminder)
 struct ChangeItemIntent {
-    static let description = IntentDescription("Changes an item: its name, due date, notes or course, whether it's done, or, for one waiting for review, confirms it as read or takes the date a later document gave it. A change by hand stays when a document is read again.",
-                                               categoryName: "Items", searchKeywords: ["reschedule", "move", "rename", "done", "complete", "confirm", "review"])
+    static let title: LocalizedStringResource = "Change Item"   // the schema's own says "Update Reminder"
+    static let description = IntentDescription("Changes an item: its name, due date, description or course, the grade row it counts toward, the site it's handed in on, whether it's done or skipped, or, for one waiting for review, confirms it as read or takes the date a later document gave it. Tags name the grade row and the site too. A change by hand stays when a document is read again.",
+                                               categoryName: "Items", searchKeywords: ["reschedule", "move", "rename", "done", "complete", "skip", "description", "note", "confirm", "review", "counts toward", "grade row", "site", "platform", "tag"])
 
-    var target: ItemEntity
+    @Parameter(title: "Item") var target: ItemEntity   // Shortcuts' labels; the schema's own say "Reminder", "Is Completed", "List", "Notes"
     var title: String?
-    var note: AttributedString?
+    @Parameter(title: "Description") var note: AttributedString?
     var tags: Set<String>?
     var urls: [URL]?
     var dueDate: DateComponents?
     var recurrence: Calendar.RecurrenceRule?
-    var isCompleted: Bool?
+    @Parameter(title: "Done") var isCompleted: Bool?
     var isFlagged: Bool?
-    var list: CourseEntity?
+    @Parameter(title: "Course") var list: CourseEntity?
     var locationTrigger: PlaceTriggerEntity?
+    // Horizon's own, for a shortcut: Siri passes only the schema's, and sets the grade row and the site through `tags`.
+    @Parameter(title: "Counts Toward", description: "The grade row it counts toward, as its course's grade table names it (\"Quizzes\"). Empty takes it out of its row.")
+    var countsToward: String?
+    @Parameter(title: "Site", description: "Where it's handed in.") var site: SiteChoice?
+    @Parameter(title: "Skipped", description: "Set aside without being done: off your list and out of the plan, and checked off in Reminders. Off puts it back.")
+    var skipped: Bool?
     @Parameter(title: "Review", description: "For an item waiting for review: confirm it as read, or use the date a later document gave it.") var review: ReviewAnswer?
+
+    static var parameterSummary: some ParameterSummary {
+        Summary("Change \(\.$target)") {
+            \.$title; \.$dueDate; \.$isCompleted; \.$skipped; \.$list; \.$countsToward; \.$site; \.$note; \.$review
+        }
+    }
 
     @Dependency var model: AppModel
 
@@ -197,7 +249,8 @@ struct ChangeItemIntent {
         }
         if case .set(let value) = $note.valueState {
             let text = value.map { String($0.characters) }.flatMap { $0.isEmpty ? nil : $0 }
-            edits.notes = .some(text); said.append(text == nil ? "cleared its notes" : "changed its notes")
+            edits.notes = .some(text); edits.notesFromSiri = true   // the details page says Siri wrote it
+            said.append(text == nil ? "cleared its description" : "changed its description")
         }
         if case .set(let value) = $list.valueState, let value {
             let id: UUID? = value.isUnfiled ? nil : value.id
@@ -206,16 +259,50 @@ struct ChangeItemIntent {
                 edits.courseID = .some(id); said.append(id == nil ? "took it out of its course" : "moved it to \(value.name)")
             }
         }
+        // The grade row and the site: a shortcut's own two, or the tags Siri sets (`ItemTags`), read against the grade
+        // table of the course the item ends up in.
+        let courseNow: UUID? = if let moved = edits.courseID { moved } else { before.courseID }
+        let rows = try await model.intentCourse(courseNow)?.gradeComponents ?? []
+        var row: String?? = nil
+        var platform: Platform?
+        var leftOff: [String] = []
+        if case .set(let value) = $tags.valueState, let value, !value.isEmpty {
+            let tagged = ItemTags.read(value, rows: rows)
+            if let named = tagged.component { row = .some(named) }
+            platform = tagged.platform
+            leftOff = tagged.unknown
+        }
+        if case .set(let value) = $countsToward.valueState {
+            let words = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if words.isEmpty {
+                row = .some(nil)
+            } else {
+                guard let named = ItemTags.row(named: words, in: rows) else {
+                    throw IntentFailure.message(rows.isEmpty ? "\(before.title)'s course has no grade table on file, so there's no row for it to count toward."
+                                                             : "There's no grade row like “\(words)”. The rows are \(Spoken.list(rows.map(\.name))).")
+                }
+                row = .some(named)
+            }
+        }
+        if let site { platform = site.platform }
+        if let row, row != before.componentName {
+            edits.componentName = row; said.append(row.map { "made it count toward \($0)" } ?? "took it out of its grade row")
+        }
+        if let platform, platform != before.platform {
+            edits.platform = platform; said.append(platform == .syllabusOnly ? "took its site away" : "set its site to \(Coverage.platformName(platform))")
+        }
         // Any edit confirms an item in review, as the editor's Save does; a review answered alone confirms it as it stands.
         let inReview = before.state == .pendingReview
         if review == .confirm, inReview, edits == ObligationEdits() { said.append("confirmed it") }
         let confirming = edits != ObligationEdits() || (review != nil && inReview)
         let done: Bool? = if case .set(let value) = $isCompleted.valueState { value } else { nil }
-        try await model.changeItem(target.id, edits: confirming ? edits : nil, done: done)
-        if let done, done != (before.completedAt != nil) { said.append(done ? "checked it off" : "put it back on your list") }
+        let skip: Bool? = if case .set(let value) = $skipped.valueState { value } else { nil }
+        try await model.changeItem(target.id, edits: confirming ? edits : nil, done: done, skipped: skip)
+        if let skip, done == nil, skip != (before.skippedAt != nil) { said.append(skip ? "skipped it" : "put it back on your list") }
+        if let done, done ? !before.isDone : before.completedAt != nil { said.append(done ? "checked it off" : "put it back on your list") }   // not done opens it, skipped or done
         if review != nil, !inReview, said.isEmpty { return .result(value: try await model.itemEntity(target.id), dialog: "\(before.title) isn't waiting for review.") }
         let after = try await model.itemEntity(target.id)
-        let sentence = said.isEmpty ? "\(after.title) is unchanged." : "\(after.title): " + Spoken.list(said) + "."
+        let sentence = (said.isEmpty ? "\(after.title) is unchanged." : "\(after.title): " + Spoken.list(said) + ".") + (leftOff.isEmpty ? "" : " " + ItemTags.leftOff(leftOff))
         return .result(value: after, dialog: "\(sentence.sentenceStart)")
     }
 }
@@ -233,9 +320,12 @@ enum ReviewAnswer: String, AppEnum {
 /// Delete items. Items do not wait in Recently Deleted; the deletion can be undone, as it can in the app.
 @AppIntent(schema: .reminders.deleteReminders)
 struct DeleteItemsIntent: DeleteIntent, UndoableIntent {
+    static let title: LocalizedStringResource = "Delete Items"   // the schema's own says "Delete Reminders"
     static let description = IntentDescription("Deletes items, and their reminders. Undo puts them back.", categoryName: "Items")
 
-    var entities: [ItemEntity]
+    @Parameter(title: "Items") var entities: [ItemEntity]
+
+    static var parameterSummary: some ParameterSummary { Summary("Delete \(\.$entities)") }
 
     @Dependency var model: AppModel
 
@@ -253,10 +343,13 @@ struct DeleteItemsIntent: DeleteIntent, UndoableIntent {
 /// Add a course by hand, ahead of its documents: its syllabus, read later, fills it in.
 @AppIntent(schema: .reminders.createList)
 struct AddCourseIntent {
+    static let title: LocalizedStringResource = "Add Course"   // the schema's own says "Create List"
     static let description = IntentDescription("Adds a course by name. Reading its syllabus later fills in the rest.", categoryName: "Courses")
 
     var type: CourseListType
     var name: String
+
+    static var parameterSummary: some ParameterSummary { Summary("Add the course \(\.$name)") }
 
     @Dependency var model: AppModel
 
@@ -273,13 +366,16 @@ struct AddCourseIntent {
 }
 
 extension AppModel {
-    /// Items added from an intent: each a manual item (`Origin.manual`), then one sync for them all.
-    func addItems(_ items: [ItemSeries.Item], courseID: UUID?, componentName: String?, notes: String?, undated: Bool = false) async throws -> [ObligationSnapshot] {
+    /// Items added from an intent: each a manual item (`Origin.manual`), then one sync for them all. A description given
+    /// with them came through Siri or a shortcut (`notesFromSiri`).
+    func addItems(_ items: [ItemSeries.Item], courseID: UUID?, componentName: String?, platform: Platform = .syllabusOnly, notes: String?,
+                  notesFromSiri: Bool = false, undated: Bool = false) async throws -> [ObligationSnapshot] {
         try requireLibrary()
         var added: [ObligationSnapshot] = []
         for item in items {
             added.append(try await store.addManual(title: item.title, due: undated ? nil : item.due, dueHasTime: item.dueHasTime, courseID: courseID,
-                                                   componentName: componentName, notes: notes, deviceName: Self.deviceName))
+                                                   componentName: componentName, platform: platform, notes: notes, notesFromSiri: notesFromSiri,
+                                                   deviceName: Self.deviceName))
         }
         Self.log("intent: added \(added.count) item(s)")
         await drainAndSync()
@@ -287,14 +383,19 @@ extension AppModel {
     }
 
     /// An item changed from an intent: the edits as the editor's Save makes them (each a hand edit the documents leave
-    /// alone, and a review item confirmed; empty edits confirm it as it stands), and its check as the ring makes it.
-    func changeItem(_ id: UUID, edits: ObligationEdits?, done: Bool?) async throws {
+    /// alone, and a review item confirmed; empty edits confirm it as it stands), its skip as Skip makes it, and its check
+    /// as the ring makes it. Not done opens it whatever closed it ("put it back on my list" said of one skipped).
+    func changeItem(_ id: UUID, edits: ObligationEdits?, done: Bool?, skipped: Bool? = nil) async throws {
         try requireLibrary()
         if let edits { try await store.confirm(id: id, edits: edits) }
-        if let done { try await store.setCompleted(id: id, done) }
+        if let skipped { try await store.setSkipped(id: id, skipped) }
+        if let done {
+            if !done, try await store.obligation(id: id)?.skippedAt != nil { try await store.setSkipped(id: id, false) }
+            else { try await store.setCompleted(id: id, done) }
+        }
         changedElsewhere = ChangedItems(ids: [id])
         if edits != nil { await drainAndSync() }
-        else if done != nil, remindersAuthorized == true { remindersListGone = (try? await sync.sync().listGone) ?? remindersListGone }
+        else if done != nil || skipped != nil, remindersAuthorized == true { remindersListGone = (try? await sync.sync().listGone) ?? remindersListGone }
     }
 
     /// Items deleted from an intent; `restoreItems` puts them back.

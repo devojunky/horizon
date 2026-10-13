@@ -666,11 +666,36 @@ public actor HorizonStore {
 
     /// The user's check in the app, on or off. Reminders owns completion (SPEC §4.4), so the mark is held against the
     /// reconciler (`completionPending`) until the projector has written it to the item's reminder; an item with no
-    /// reminder keeps it here. Nothing else about the item changes: a check is not a confirmation.
+    /// reminder keeps it here. Nothing else about the item changes: a check is not a confirmation. Done on a skipped item
+    /// replaces the skip (its reminder is checked already); not done on one leaves it skipped (`setSkipped` opens it).
     public func setCompleted(id: UUID, _ done: Bool, at now: Date = Date()) throws {
-        guard let item = try fetchObligation(id: id), item.deletedAt == nil, (item.completedAt != nil) != done else { return }
-        item.completedAt = done ? now : nil
-        item.completionPending = true
+        guard let item = try fetchObligation(id: id), item.deletedAt == nil, (item.completedAt != nil && item.skippedAt == nil) != done else { return }
+        if done {
+            if item.completedAt == nil { item.completionPending = true }
+            item.completedAt = now
+            item.skippedAt = nil
+        } else {
+            guard item.skippedAt == nil else { return }
+            item.completedAt = nil
+            item.completionPending = true
+        }
+        item.updatedAt = now
+        try modelContext.save()
+    }
+
+    /// The user's Skip, or taken back. Skipped, the item is closed as a done one is (`completedAt`, and its reminder
+    /// checked off, through `completionPending` as a check goes) and marked as set aside, not done; taken back, it is
+    /// open again and its reminder unchecked. A done item skipped stays closed, now skipped.
+    public func setSkipped(id: UUID, _ skipped: Bool, at now: Date = Date()) throws {
+        guard let item = try fetchObligation(id: id), item.deletedAt == nil, (item.skippedAt != nil) != skipped else { return }
+        if skipped {
+            if item.completedAt == nil { item.completedAt = now; item.completionPending = true }
+            item.skippedAt = now
+        } else {
+            item.skippedAt = nil
+            item.completedAt = nil
+            item.completionPending = true
+        }
         item.updatedAt = now
         try modelContext.save()
     }
@@ -756,7 +781,7 @@ public actor HorizonStore {
     }
 
     public func addManual(title: String, due: Date?, dueHasTime: Bool, courseID: UUID?, componentName: String?, platform: Platform = .syllabusOnly,
-                          notes: String?, deviceName: String) throws -> ObligationSnapshot {
+                          notes: String?, notesFromSiri: Bool = false, deviceName: String) throws -> ObligationSnapshot {
         let item = Obligation(title: title)
         item.origin = .manual
         item.createdOn = deviceName
@@ -765,6 +790,7 @@ public actor HorizonStore {
         item.componentName = componentName
         item.platform = platform
         item.notes = notes
+        item.notesFromSiri = notesFromSiri && notes != nil
         item.userOverrides = [.title, .due, .componentName, .notes] + (platform == .syllabusOnly ? [] : [.platform])
         item.course = try courseID.flatMap { try fetchCourse(id: $0) }
         item.state = due == nil ? .awaitingDate : .readyToProject
@@ -867,7 +893,7 @@ public actor HorizonStore {
         if let hasTime = edits.dueHasTime { item.dueHasTime = hasTime; item.userOverrides.appendIfMissing(.due) }
         if let platform = edits.platform, platform != item.platform { item.platform = platform; item.userOverrides.appendIfMissing(.platform) }
         if let component = edits.componentName { item.componentName = component; item.userOverrides.appendIfMissing(.componentName) }
-        if let notes = edits.notes { item.notes = notes; item.userOverrides.appendIfMissing(.notes) }
+        if let notes = edits.notes { item.notes = notes; item.notesFromSiri = edits.notesFromSiri && notes != nil; item.userOverrides.appendIfMissing(.notes) }
         if let courseID = edits.courseID { item.course = try? courseID.flatMap { try fetchCourse(id: $0) } }
     }
 
@@ -895,14 +921,15 @@ public actor HorizonStore {
             case .deletedInReminders(let id):
                 if let ob = try fetchObligation(id: id), ob.deletedAt == nil { ob.deletedAt = Date(); ob.ekExternalID = nil; ob.updatedAt = Date(); courses.append(ob.course) }
             case .completion(let id, let date):
-                if let ob = try fetchObligation(id: id), !ob.completionPending { ob.completedAt = date }
+                // Unchecked in Reminders opens it again, skipped or done; checked there is done.
+                if let ob = try fetchObligation(id: id), !ob.completionPending { ob.completedAt = date; ob.skippedAt = nil }
             case .userEdited(let id, let title, let due, let hasTime, let notes, let reminderTitle):
                 if let ob = try fetchObligation(id: id), since.map({ ob.updatedAt <= $0 }) ?? true {
                     // Recorded as the reminder reads, course and all: a course renamed since leaves its old name there until the
                     // reminder is next written, and a title made from the new one would read as another edit on the next pass.
                     if let title { ob.title = title; ob.projectedTitle = reminderTitle; ob.userOverrides.appendIfMissing(.title) }
                     if let due { ob.due = due; ob.dueHasTime = hasTime; ob.projectedDue = due; ob.userOverrides.appendIfMissing(.due) }
-                    if let notes { ob.notes = notes.nilIfEmpty; ob.projectedNotes = notes.nilIfEmpty; ob.userOverrides.appendIfMissing(.notes) }
+                    if let notes { ob.notes = notes.nilIfEmpty; ob.projectedNotes = notes.nilIfEmpty; ob.notesFromSiri = false; ob.userOverrides.appendIfMissing(.notes) }   // typed in Reminders
                     ob.updatedAt = Date()
                 }
             case .repairExternalID(let id, let externalID):

@@ -959,7 +959,8 @@ extension StoreFollowThroughTests {
     /// Each generation's schema, as Core Data fingerprints its entities. A stored property added, removed or retyped
     /// changes it: bump `HorizonContainer.storeGeneration` and record the new fingerprint under the new number (a field
     /// added to a Codable value stored in a row does not show here, and needs the bump all the same).
-    static let fingerprints: [Int: String] = [2: "390b92db4ace32b6624a1ee2df759ba6752544ec9e00a86327af20a0e601ee6b"]
+    static let fingerprints: [Int: String] = [2: "390b92db4ace32b6624a1ee2df759ba6752544ec9e00a86327af20a0e601ee6b",
+                                              3: "1db00f16216a803e29a714f86ff8763e10c9f663d2dbadad174e2abf43ca7a99"]
 
     @Test func theStoredSchemaIsItsGenerations() throws {
         let model = try #require(NSManagedObjectModel.makeManagedObjectModel(for: Schema(versionedSchema: HorizonSchemaV1.self)))

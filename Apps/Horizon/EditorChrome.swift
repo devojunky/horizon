@@ -121,13 +121,19 @@ extension View {
     }
 }
 
-/// A page's own navigation stack on iOS (its title bar, its pushes); on macOS the page sits in the window's detail
-/// column, whose toolbar and title it uses.
+/// A page's own navigation stack on iOS (its title bar, its pushes, on `path` when the page keeps one); on macOS the
+/// page sits in the window's detail column, whose toolbar and title it uses.
 struct PageStack<Content: View>: View {
-    @ViewBuilder var content: Content
+    var path: Binding<[Route]>?
+    var content: Content
+
+    init(path: Binding<[Route]>? = nil, @ViewBuilder content: () -> Content) {
+        self.path = path; self.content = content()
+    }
+
     var body: some View {
         #if os(iOS)
-        NavigationStack { content }
+        if let path { NavigationStack(path: path) { content } } else { NavigationStack { content } }
         #else
         content
         #endif

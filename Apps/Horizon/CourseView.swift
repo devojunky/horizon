@@ -23,6 +23,7 @@ struct CourseView: View {
     @State private var nameHeight: CGFloat = 40
     @State private var pageWidth: CGFloat = 0   // the bar's width, for the room a name has centred in it
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openRoute) private var openRoute   // an item's details, pushed on the stack this page is in
     // The course's items and documents come through queries, not its relationships: the store saves from a context of
     // its own, and only a query redraws for that (read through the relationship, an item deleted stayed on the page).
     @Query private var items: [Obligation]
@@ -41,10 +42,12 @@ struct CourseView: View {
     /// They sit at the foot of the page, after the policies and before what is done.
     private var documents: [SourceDocument] { files.sorted { $0.queuedAt > $1.queuedAt } }
     private var obligations: [Obligation] { items.sorted { ($0.due ?? .distantFuture) < ($1.due ?? .distantFuture) } }
-    /// What is still to do, in date order; an item just checked off stays here a moment, crossed off (`Lingering`).
+    /// What is still to do, in date order; an item just checked off or skipped stays here a moment (`Lingering`).
     private var toDo: [Obligation] { obligations.filter { $0.completedAt == nil || lingering.contains($0.id) } }
     /// What is done, in date order, at the foot of the page.
-    private var done: [Obligation] { obligations.filter { $0.completedAt != nil && !lingering.contains($0.id) } }
+    private var done: [Obligation] { obligations.filter { $0.completedAt != nil && $0.skippedAt == nil && !lingering.contains($0.id) } }
+    /// What the user set aside, under it: closed, but not done.
+    private var skipped: [Obligation] { obligations.filter { $0.skippedAt != nil && !lingering.contains($0.id) } }
 
     var body: some View {
         List {
@@ -110,10 +113,17 @@ struct CourseView: View {
                 }
                 .onPaper()
             }
+            if !skipped.isEmpty {
+                PageSection("Skipped") {
+                    ForEach(skipped) { row($0) }
+                }
+                .onPaper()
+            }
         }
         .listStyle(.plain)
         .paper()
         .animation(.default, value: toDo.map(\.id))
+        .animation(.default, value: skipped.map(\.id))
         .animation(.default, value: documents.map(\.id))   // a document deleted here leaves its row animated
         // The bar names the course once the masthead's name has scrolled under it (a large title's way), and not before:
         // two copies of the name would say it twice.
@@ -137,7 +147,9 @@ struct CourseView: View {
         .showsEntity(CourseEntity.self, id: course.id, title: course.displayName)   // Siri's "this course"
         .onChange(of: course.deletedAt) { _, gone in if gone != nil { dismiss() } }
         .onAppear {   // once per launch: a sheet closed must not open again as the page reappears
-            if MainTabs.debugOnce("--open-item") { editing = obligations.first }
+            if MainTabs.debugOnce("--open-item"), let first = obligations.first {   // its details, as a tap opens them (`--edit-item` then its editor)
+                Task { try? await Task.sleep(for: .milliseconds(700)); openRoute(.item(first.id)) }   // once this page's own push has landed: one asked for during it is dropped
+            }
             if MainTabs.debugOnce("--check-first-item"), let first = toDo.first {   // DEBUG: a check without a tap, to see the row linger, then move down to Done
                 Task { try? await Task.sleep(for: .seconds(2)); lingering.mark(first.id, done: true); await model.setCompleted(first.id, true) }
             }
@@ -146,17 +158,25 @@ struct CourseView: View {
         }
     }
 
-    /// An item's row, to do or done: the ring, the editor, the swipes and the menu.
+    /// An item's row, to do, done or skipped: the ring, its details on a tap, the swipes and the menu (with the editor).
     private func row(_ item: Obligation) -> some View {
+        // Only a row still to do lingers where it was (a skip as a check does, then down to Skipped): one already closed,
+        // done then skipped or the other way, goes straight to its section.
+        let open = item.completedAt == nil
         let mark: (Bool) -> Void = { done in
-            lingering.mark(item.id, done: done)
+            if open || !done { lingering.mark(item.id, done: done) }
             Task { await model.setCompleted(item.id, done) }
         }
-        return Button { editing = item } label: { ObligationRow(obligation: item, showCourse: false, mark: mark) }
+        let skip: (Bool) -> Void = { skipped in
+            if open || !skipped { lingering.mark(item.id, done: skipped) }
+            Task { await model.setSkipped(item.id, skipped) }
+        }
+        return Button { openRoute(.item(item.id)) } label: { ObligationRow(obligation: item, showCourse: false, mark: mark, disclosure: true) }
             .buttonStyle(.plain)
             .opacity(lingering.isLeaving(item.id) ? 0 : 1)
-            .obligationActions(done: item.completedAt != nil, mark: mark, edit: { editing = item }, delete: { Task { await model.discard(item.id) } })
-            .accessibilityHint("Opens the editor")
+            .obligationActions(done: item.completedAt != nil && item.skippedAt == nil, skipped: item.skippedAt != nil, mark: mark, skip: skip,
+                               edit: { editing = item }, delete: { Task { await model.discard(item.id) } })
+            .accessibilityHint("Opens its details")
     }
 
     private func label(_ kind: PolicyKind) -> String {

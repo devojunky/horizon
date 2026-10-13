@@ -166,6 +166,21 @@ struct AssistantTests {
         #expect(SearchSuggestions.queries(policies: [], items: [], documents: [], now: now, calendar: cal).isEmpty)
     }
 
+    // MARK: An item's tags: its grade row and its site
+
+    @Test func tagsCarryTheGradeRowAndTheSite() {
+        #expect(ItemTags.tags(component: "Homework", platform: .webAssign) == ["Homework", "WebAssign"])
+        #expect(ItemTags.tags(component: nil, platform: .syllabusOnly).isEmpty)
+
+        let rows = [GradeComponent(name: "Homework"), GradeComponent(name: "Quizzes"), GradeComponent(name: "Final Exam")]
+        #expect(ItemTags.read(["WebAssign"], rows: rows) == ItemTags.Reading(component: nil, platform: .webAssign))
+        #expect(ItemTags.read(["#quiz", "Canvas"], rows: rows) == ItemTags.Reading(component: "Quizzes", platform: .lms))
+        #expect(ItemTags.read(["homework", "urgent"], rows: rows) == ItemTags.Reading(component: "Homework", platform: nil, unknown: ["urgent"]))
+        #expect(ItemTags.read(["in class"], rows: []) == ItemTags.Reading(component: nil, platform: .syllabusOnly))
+        #expect(ItemTags.platform(named: "My Lab") == .myLab)
+        #expect(ItemTags.row(named: "final exam", in: rows) == "Final Exam")
+    }
+
     @Test func recentSearchesKeepTheNewestOnce() {
         #expect(SearchSuggestions.remembering("  makeup exam  ", in: ["quiz", "Makeup Exam", "lab"]) == ["makeup exam", "quiz", "lab"])
         #expect(SearchSuggestions.remembering("", in: ["quiz"]) == ["quiz"])

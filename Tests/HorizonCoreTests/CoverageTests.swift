@@ -63,6 +63,17 @@ struct CoverageTests {
         #expect(partial.headline == "BIO-UA 11's syllabus implies weekly quizzes; only 1 of 2 on file for the next two weeks.")
     }
 
+    @Test func aRhythmCountsWhatIsDoneOrSkippedAsOnFile() {
+        let quizzes = [GradeComponent(name: "Quizzes", weight: 0.2, cadence: .weekly)]
+        let bio = course("BIO-UA 11", components: quizzes, lastIngested: now)
+        let done = obligation("Quiz 3", due: Fixture.day(9, 25), course: bio, component: "Quizzes", completedAt: now)   // checked off early
+        var skipped = obligation("Quiz 4", due: Fixture.day(10, 2), course: bio, component: "Quizzes", completedAt: now)
+        skipped.skippedAt = now                                                                                          // set aside
+        let c = Coverage.assess(course: bio, obligations: [done, skipped], documents: [], now: now, calendar: Fixture.calendar)
+        #expect(c.cadenceGaps.isEmpty)   // both are on file: the documents left nothing out
+        #expect(c.upcoming14 == 0)       // and neither is still to do
+    }
+
     @Test func biweeklyAndCountedComponents() {
         let labs = [GradeComponent(name: "Lab Reports", weight: 0.2, expectedCount: 10, cadence: .biweekly), GradeComponent(name: "Essays", weight: 0.3, expectedCount: 4)]
         let bio = course("BIO-UA 11", components: labs, lastIngested: now)

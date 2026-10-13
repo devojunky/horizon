@@ -561,6 +561,14 @@ final class AppModel {
         do { remindersListGone = try await sync.sync().listGone } catch { Self.log("sync after a check failed: \(error.localizedDescription)") }
     }
 
+    /// An item skipped (set aside, not done) or taken back: closed or opened as a check does it, and synced as quietly.
+    func setSkipped(_ id: UUID, _ skipped: Bool) async {
+        Self.log("skip: \(id) \(skipped ? "skipped" : "taken back")")
+        do { try await store.setSkipped(id: id, skipped) } catch { lastError = error.localizedDescription; return }
+        guard remindersAuthorized == true else { return }
+        do { remindersListGone = try await sync.sync().listGone } catch { Self.log("sync after a skip failed: \(error.localizedDescription)") }
+    }
+
     /// The user's Recreate List: the Horizon list is made again and every item that was in it is written to it afresh,
     /// the checked ones checked. Only ever on the user's word: a list deleted wholesale is otherwise left deleted.
     func recreateRemindersList() async {

@@ -6,9 +6,10 @@ import IngestKit
 public struct CourseCoverage: Sendable, Identifiable, Equatable {
     public var id: UUID { course.id }
     public var course: CourseSnapshot
-    /// Days since the user last completed one of the course's items (checked off in the app or in Reminders), or, when
-    /// nothing has been completed since, since the course came into the app. A check resets it to 0; unchecking gives
-    /// back the completion before. Reading a document leaves it alone: that is `daysSinceUpdate`.
+    /// Days since the user last completed one of the course's items (checked off in the app or in Reminders, or skipped:
+    /// the user's word on it either way), or, when nothing has been completed since, since the course came into the app.
+    /// A check resets it to 0; unchecking gives back the completion before. Reading a document leaves it alone: that is
+    /// `daysSinceUpdate`.
     public var daysSilent: Int?
     /// The silence is worth saying (the accent, the headline, the suspicion): a week or more of it, with work that fell
     /// due during it still open. A course with nothing due is quiet, not silent.
@@ -155,7 +156,8 @@ public enum Coverage {
         // "The next two weeks" runs through the end of the 14th day from today, so a date-only deadline (23:59) on that day counts.
         let today = calendar.startOfDay(for: now)
         let windowEnd = calendar.date(byAdding: .day, value: 15, to: today) ?? now.addingTimeInterval(window)
-        let inWindow = mine.filter { $0.completedAt == nil && ($0.due.map { $0 >= now && $0 < windowEnd } ?? false) }
+        let dueInWindow = mine.filter { $0.due.map { $0 >= now && $0 < windowEnd } ?? false }
+        let inWindow = dueInWindow.filter { $0.completedAt == nil }   // still to do: "2 due in the next two weeks"
         // Rhythm is only expected while the term runs: count the days of the window that fall inside it.
         let termOpen = course.termStart.map { max(today, calendar.startOfDay(for: $0)) } ?? today
         let termClose = course.termEnd.flatMap { calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: $0)) }.map { min(windowEnd, $0) } ?? windowEnd
@@ -165,7 +167,9 @@ public enum Coverage {
         for component in course.gradeComponents {
             let key = Normalize.key(component.name)
             let onFile = mine.filter { $0.componentName.map(Normalize.key) == key }
-            let onFileInWindow = inWindow.filter { $0.componentName.map(Normalize.key) == key }.count
+            // On file is what the app knows of, done or skipped too: a homework checked off early (or set aside) is not
+            // one the documents left out, and counting only what was still to do called it missing.
+            let onFileInWindow = dueInWindow.filter { $0.componentName.map(Normalize.key) == key }.count
             let termOver = course.termEnd.flatMap { calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: $0)) }.map { $0 <= now } ?? false   // the last day still counts
             if let cadence = component.cadence, cadence != .once, !termOver {
                 let expectedInWindow = cadence == .weekly ? termDays / 7 : termDays / 14

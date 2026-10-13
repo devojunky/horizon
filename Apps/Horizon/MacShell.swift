@@ -102,15 +102,18 @@ extension View {
 struct SelectedItem: Equatable {
     var id: UUID
     var done: Bool
+    var skipped: Bool
     /// Checks it off, or back on, the way its page does (a row just checked lingers where it was for a moment).
     var mark: (Bool) -> Void
+    /// Skips it (closed, not done), or takes the skip back.
+    var skip: (Bool) -> Void
     /// Opens its editor, as a double-click does.
     var edit: () -> Void
     /// Shows the document it was read from in Quick Look, when the file is on this Mac.
     var openDocument: (() -> Void)?
     /// Deletes it, the way the Delete key does.
     var delete: () -> Void
-    static func == (a: SelectedItem, b: SelectedItem) -> Bool { a.id == b.id && a.done == b.done && (a.openDocument == nil) == (b.openDocument == nil) }
+    static func == (a: SelectedItem, b: SelectedItem) -> Bool { a.id == b.id && a.done == b.done && a.skipped == b.skipped && (a.openDocument == nil) == (b.openDocument == nil) }
 }
 
 /// The documents selected in Documents, for the File menu: what the table's context menu does, from the menu bar.
@@ -802,8 +805,10 @@ struct HorizonCommands: Commands {
                 .disabled(nav?.course == nil)   // ⌘⌫ deletes what is selected in the page, as in Mail; the course goes from here, its menu, or Delete in the sidebar
         }
         CommandMenu("Item") {   // the item selected in a table (a course's items, Horizon's), and those selected in Review
-            Button(item?.done == true ? "Mark Not Done" : "Mark Done") { if !Self.keyboardIsElsewhere, let item { item.mark(!item.done) } }
+            Button(ItemActions.markTitle(done: item?.done == true)) { if !Self.keyboardIsElsewhere, let item { item.mark(!item.done) } }
                 .keyboardShortcut("d", modifiers: [.command, .shift]).disabled(item == nil)
+            Button(ItemActions.skipTitle(skipped: item?.skipped == true)) { if !Self.keyboardIsElsewhere, let item { item.skip(!item.skipped) } }
+                .disabled(item == nil)
             Button("Edit Item…") { if !Self.keyboardIsElsewhere { (review?.edit ?? item?.edit)?() } }   // Return in the table, as a double-click
                 .disabled(review?.edit == nil && item == nil)
             Button("Open Document") { (review?.openDocument ?? item?.openDocument)?() }

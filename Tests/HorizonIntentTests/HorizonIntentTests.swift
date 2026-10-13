@@ -81,6 +81,28 @@ final class HorizonIntentTests: XCTestCase {
         XCTAssertTrue(try after.isCompleted as Bool)
         _ = try await horizon.intents["ChangeItemIntent"].makeIntent(target: item, review: "confirm").run()   // not in review: said so, never a failure
 
+        // Skipped, a shortcut's own: closed (checked off in Reminders) but not done; not done opens it, whatever closed it.
+        let skipped: AnyAppEntity = try await horizon.intents["ChangeItemIntent"].makeIntent(target: item, skipped: true).run().value
+        XCTAssertTrue(try skipped.isCompleted as Bool, "a skipped item is closed")
+        XCTAssertEqual((try skipped.status as AnyAppEnum).rawValue, "skipped")
+        let reopened: AnyAppEntity = try await horizon.intents["ChangeItemIntent"].makeIntent(target: item, isCompleted: false).run().value
+        XCTAssertFalse(try reopened.isCompleted as Bool, "not done puts a skipped item back on the list")
+        XCTAssertEqual((try reopened.status as AnyAppEnum).rawValue, "toDo")
+
+        // The grade row and the site: a shortcut's own two parameters, then the tags Siri sets (the schema has no field for either).
+        let rows = try await horizon.entities["GradeRowEntity"].suggestedEntities()
+        let courseRows: [String] = try rows.compactMap { row in
+            let list: AnyAppEntity = try row.list
+            return try (list.name as String) == course.name ? try row.name as String : nil
+        }
+        if let row = courseRows.first {
+            let placed: AnyAppEntity = try await horizon.intents["ChangeItemIntent"].makeIntent(target: item, countsToward: row, site: "webAssign").run().value
+            XCTAssertEqual(try placed.gradeRow as String?, row)
+            XCTAssertEqual(try placed.site as String?, "WebAssign")
+        }
+        let tagged: AnyAppEntity = try await horizon.intents["ChangeItemIntent"].makeIntent(target: item, tags: ["Gradescope"]).run().value
+        XCTAssertEqual(try tagged.site as String?, "Gradescope", "a tag naming a site sets it, as Siri does")
+
         _ = try await horizon.intents["DeleteItemsIntent"].makeIntent(entities: [item]).run()
         let left = try await horizon.entities["ItemEntity"].entities(matching: title)
         XCTAssertTrue(left.isEmpty, "a deleted item is no longer found")

@@ -178,7 +178,7 @@ struct GetItemsIntent: AppIntent {
                            view: ItemsSnippet(kicker: "REVIEW", items: entities(queue)))
 
         case .done:
-            let found = mine.filter { $0.completedAt != nil && window.holds($0.due, now: now, calendar: calendar) }.sorted(by: Self.byDate)
+            let found = mine.filter { $0.isDone && window.holds($0.due, now: now, calendar: calendar) }.sorted(by: Self.byDate)   // done, not skipped
             let which = window == .overdue ? " past their date" : window.span.map { " due \($0)" } ?? ""
             guard !found.isEmpty else {
                 return .result(value: [], dialog: "No item\(which)\(whose) is done yet.", view: ItemsSnippet(kicker: "DONE", items: [], empty: "Nothing done yet."))

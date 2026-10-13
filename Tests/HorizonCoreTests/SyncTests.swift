@@ -342,6 +342,77 @@ struct SyncTests {
         #expect(try await b.obligations().first { $0.id == hw1.id }?.completedAt != nil)
     }
 
+    @Test func aSkippedItemIsClosedAndCheckedOffInRemindersButNotDone() async throws {
+        let reminders = FakeReminderStore()
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let sync = SyncCoordinator.device("A", store: store, reminders: reminders)
+        _ = try await sync.sync()
+        let hw1 = try await store.obligations().first { $0.title == "HW 1" }!
+        let when = Fixture.day(9, 8, hour: 20, minute: 15)
+        // Skipped: closed (its reminder checked off, as nothing else closes one) and marked set aside, not done.
+        try await store.setSkipped(id: hw1.id, true, at: when)
+        var row = try await store.obligations().first { $0.id == hw1.id }!
+        #expect(row.skippedAt == when && row.completedAt == when && row.completionPending && !row.isDone)
+        _ = try await sync.sync()
+        var reminder = await reminders.items.first { $0.externalID == hw1.ekExternalID }!
+        row = try await store.obligations().first { $0.id == hw1.id }!
+        #expect(reminder.isCompleted && row.skippedAt != nil && !row.completionPending)
+        // Not done leaves a skipped item skipped; done replaces the skip, with nothing more for Reminders to do.
+        try await store.setCompleted(id: hw1.id, false)
+        #expect(try await store.obligations().first { $0.id == hw1.id }?.skippedAt != nil)
+        try await store.setCompleted(id: hw1.id, true)
+        row = try await store.obligations().first { $0.id == hw1.id }!
+        #expect(row.isDone && row.skippedAt == nil && !row.completionPending)
+        // Skipped again, then taken back: open, and its reminder unchecked.
+        try await store.setSkipped(id: hw1.id, true)
+        #expect(try await store.obligations().first { $0.id == hw1.id }?.skippedAt != nil)
+        try await store.setSkipped(id: hw1.id, false)
+        _ = try await sync.sync()
+        reminder = await reminders.items.first { $0.externalID == hw1.ekExternalID }!
+        row = try await store.obligations().first { $0.id == hw1.id }!
+        #expect(!reminder.isCompleted && row.completedAt == nil && row.skippedAt == nil)
+        // Skipped, then unchecked in Reminders: open again, the skip with it.
+        try await store.setSkipped(id: hw1.id, true)
+        _ = try await sync.sync()
+        await reminders.userUncompletes(externalID: reminder.externalID)
+        _ = try await sync.sync()
+        row = try await store.obligations().first { $0.id == hw1.id }!
+        #expect(row.completedAt == nil && row.skippedAt == nil)
+        // A skipped item is out of the plan, as a done one is.
+        #expect(try await store.planObligations(from: Fixture.day(9, 1), days: 30).contains { $0.title == "HW 1" })
+        try await store.setSkipped(id: hw1.id, true)
+        #expect(try await !store.planObligations(from: Fixture.day(9, 1), days: 30).contains { $0.title == "HW 1" })
+    }
+
+    @Test func aDescriptionSaysWhenSiriWroteIt() async throws {
+        let reminders = FakeReminderStore()
+        let store = try Fixture.store()
+        try await Fixture.ingest(Fixture.calculus(), into: store)
+        let sync = SyncCoordinator.device("A", store: store, reminders: reminders)
+        _ = try await sync.sync()
+        let hw1 = try await store.obligations().first { $0.title == "HW 1" }!
+        try await store.confirm(id: hw1.id, edits: ObligationEdits(notes: .some("Problems 1 to 19, odd."), notesFromSiri: true))
+        #expect(try await store.obligations().first { $0.id == hw1.id }?.notesFromSiri == true)
+        // Typed in the app, it is the user's own.
+        try await store.confirm(id: hw1.id, edits: ObligationEdits(notes: .some("Problems 1 to 19, odd. Show work.")))
+        #expect(try await store.obligations().first { $0.id == hw1.id }?.notesFromSiri == false)
+        // Added to in Reminders, too.
+        try await store.confirm(id: hw1.id, edits: ObligationEdits(notes: .some("Problems 1 to 19, odd."), notesFromSiri: true))
+        _ = try await sync.sync()
+        let written = try await store.obligations().first { $0.id == hw1.id }!
+        await reminders.userAddsNote(externalID: written.ekExternalID!, "Show work.")
+        _ = try await sync.sync()
+        let row = try await store.obligations().first { $0.id == hw1.id }!
+        #expect(row.notes == "Problems 1 to 19, odd.\nShow work." && !row.notesFromSiri)
+        // Cleared through Siri, nothing is left to credit.
+        try await store.confirm(id: hw1.id, edits: ObligationEdits(notes: .some(nil), notesFromSiri: true))
+        #expect(try await store.obligations().first { $0.id == hw1.id }?.notesFromSiri == false)
+        // An item added by Siri with a description says so.
+        let added = try await store.addManual(title: "Lab 2", due: nil, dueHasTime: false, courseID: nil, componentName: nil, notes: "Bring goggles.", notesFromSiri: true, deviceName: "A")
+        #expect(added.notesFromSiri)
+    }
+
     @Test func aCheckWithNoReminderWaitsInTheStore() async throws {
         let reminders = FakeReminderStore()
         let store = try Fixture.store()

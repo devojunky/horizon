@@ -15,6 +15,8 @@ enum Route: Hashable {
     case settings
     /// Review as a page of its own, for the app's destinations; the list's own row still pushes it by a link.
     case review
+    /// An item's details (`ItemDetail`): a row tapped on any page, a reminder's link, Spotlight, Siri's Open Item.
+    case item(UUID)
 }
 
 /// Pushes a route on the home stack; pages down the stack (Documents, Recently Deleted) use it instead of links. The closure
@@ -200,6 +202,11 @@ struct RootView: View {
         case .course(let id), .policies(let id):
             guard courses.contains(where: { $0.id == id }) else { model.destination = nil; model.lastError = "That course is no longer in Horizon."; return }
             route = .course(id)
+        case .item(let id):   // the item where it lives: its details over its course's page, so Back goes to the course
+            model.destination = nil
+            guard let item = live.first(where: { $0.id == id }) else { model.lastError = "That item is no longer in Horizon."; return }
+            if let course = item.course, courses.contains(where: { $0.id == course.id }) { path = [.course(course.id), .item(id)] } else { path = [.item(id)] }
+            return
         default: return
         }
         model.destination = nil
@@ -268,9 +275,9 @@ struct RootView: View {
                 case .recentlyDeleted: RecentlyDeletedView()
                 case .settings: SettingsView()
                 case .review: ReviewView()
+                case .item(let id): ItemDetail(id: id)
                 }
             }
-            .environment(\.openRoute, OpenRouteAction(open: open))
             .onChange(of: model.destination, initial: true) { _, destination in go(destination) }
             .onChange(of: courses.map(\.id)) { _, ids in   // a course deleted while its page is open: the page goes too
                 let gone = path.contains { if case .course(let id) = $0 { !ids.contains(id) } else { false } }
@@ -320,6 +327,9 @@ struct RootView: View {
             .sheet(isPresented: $addingByHand) { ObligationEditor(mode: .manual, courses: courses) }
             .sheet(isPresented: $addingCourse) { CourseEditor(course: nil) }
         }
+        // On the stack, not its first page: the pages pushed onto it (a course's, Documents) take their environment from
+        // the stack, and set on the first page it never reached them (a tapped item on a course's page went nowhere).
+        .environment(\.openRoute, OpenRouteAction(open: open))
     }
 }
 
@@ -450,21 +460,26 @@ private struct CreepingProgressBar: View {
 
 /// One obligation, wherever it is listed: its name, its course and date, the points at stake. With `mark` the row
 /// leads with a ring to press: done is a filled dot with a check and the words crossed off, the way Now crosses off a
-/// block. The check goes to Reminders too (`AppModel.setCompleted`).
+/// block; skipped is a dashed ring and "Skipped" where the share of the grade was, the words left as they were (set
+/// aside, not done). The check goes to Reminders too (`AppModel.setCompleted`); pressing a skipped item's ring marks it
+/// done.
 struct ObligationRow: View {
     let obligation: Obligation
     var showCourse = true
     /// Checks the item off, or back on; nil where a row is not the place for it (the review queue).
     var mark: ((Bool) -> Void)? = nil
+    /// A tap opens the item's details: a chevron says so (HIG: a disclosure indicator for a row that drills down).
+    var disclosure = false
     @State private var pressed = 0   // the haptic answers the user's press, not a check arriving from Reminders
 
-    private var done: Bool { obligation.completedAt != nil }
+    private var done: Bool { obligation.completedAt != nil && obligation.skippedAt == nil }
+    private var skipped: Bool { obligation.skippedAt != nil }
 
     var body: some View {
         HStack(alignment: .center, spacing: 4) {
             if let mark {
                 Button { pressed += 1; mark(!done) } label: {   // HIG: 44 by 44 to hit, though the ring is 20; the extra reaches into the row's margin, so the words stay where they were
-                    DoneMark(done: done).frame(width: 44, height: 44).contentShape(Rectangle())
+                    DoneMark(done: done, skipped: skipped).frame(width: 44, height: 44).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .padding(.leading, -12)
@@ -495,14 +510,19 @@ struct ObligationRow: View {
                     .font(.subheadline).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Design.points(obligation.pointsAtStake).font(.title3.weight(.semibold))
+                // A skipped item's share is let go: the word takes the figure's place, so the row keeps its height
+                // (a line added above the title made it jump as the row was skipped).
+                if skipped { Kicker("Skipped") } else { Design.points(obligation.pointsAtStake).font(.title3.weight(.semibold)) }
+                if disclosure { Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary).accessibilityHidden(true) }
             }
-            .opacity(done ? 0.45 : 1)
+            .opacity(done || skipped ? 0.45 : 1)
         }
         .padding(.vertical, 2)
         .animation(.snappy, value: done)
+        .animation(.snappy, value: skipped)
+        .contentShape(Rectangle())   // the whole row is the tap, its gaps included
         .accessibilityElement(children: .contain)
-        .accessibilityValue(done ? "Done" : "")
+        .accessibilityValue(done ? "Done" : skipped ? "Skipped" : "")
         .appEntityIdentifier(EntityIdentifier(for: ItemEntity.self, identifier: obligation.id))   // Siri's "this": the item on the row (WWDC26: view annotations)
     }
 }
@@ -531,38 +551,56 @@ struct ObligationRow: View {
     }
 }
 
-/// The mark on an obligation's row: a ring to press, a filled dot with a check once done (Now's done dot, at a row's size).
+/// The mark on an obligation's row: a ring to press, a filled dot with a check once done (Now's done dot, at a row's
+/// size), a dashed ring once skipped (open, but not to be done: told from an open ring by its shape, not its colour).
 struct DoneMark: View {
     let done: Bool
+    var skipped = false
     /// The ring's width: a row's 20 points, or smaller in a Mac table's row.
     var size: CGFloat = 20
 
     var body: some View {
+        let line: CGFloat = size > 16 ? 1.5 : 1.25
         ZStack {
             if done {
                 Circle().fill(.primary).frame(width: size, height: size)
                 Image(systemName: "checkmark").font(.system(size: size / 2, weight: .bold)).foregroundStyle(Design.paper)
+            } else if skipped {
+                Circle().strokeBorder(.secondary, style: StrokeStyle(lineWidth: line, dash: [size / 8, size / 8])).frame(width: size, height: size)
             } else {
-                Circle().strokeBorder(.secondary, lineWidth: size > 16 ? 1.5 : 1.25).frame(width: size, height: size)
+                Circle().strokeBorder(.secondary, lineWidth: line).frame(width: size, height: size)
             }
         }
         .transition(.scale.combined(with: .opacity))
     }
 }
 
+/// An item's two states the user sets, as every place that offers them words them: Mark Done or Mark Not Done, Skip or
+/// Undo Skip (the plan's own words for a block).
+enum ItemActions {
+    static func markTitle(done: Bool) -> String { done ? "Mark Not Done" : "Mark Done" }
+    static func markImage(done: Bool) -> String { done ? "arrow.uturn.backward" : "checkmark" }
+    static func skipTitle(skipped: Bool) -> String { skipped ? "Undo Skip" : "Skip" }
+    static func skipImage(skipped: Bool) -> String { skipped ? "arrow.uturn.backward" : "forward.end" }
+}
+
 extension View {
-    /// What a row of an obligation offers wherever it is listed: a leading swipe to check it off (or back on), a
-    /// trailing swipe that deletes it (undoable: items do not go to the bin), and the same in a menu with the editor.
-    func obligationActions(done: Bool, mark: @escaping (Bool) -> Void, edit: @escaping () -> Void, delete: @escaping () -> Void) -> some View {
+    /// What a row of an obligation offers wherever it is listed: a leading swipe to check it off (or back on) or to skip
+    /// it (or take the skip back), a trailing swipe that deletes it (undoable: items do not go to the bin), and the same
+    /// in a menu with the editor.
+    func obligationActions(done: Bool, skipped: Bool, mark: @escaping (Bool) -> Void, skip: @escaping (Bool) -> Void, edit: @escaping () -> Void,
+                           delete: @escaping () -> Void) -> some View {
         self
             .swipeActions(edge: .leading) {
-                Button(done ? "Not Done" : "Done", systemImage: done ? "arrow.uturn.backward" : "checkmark") { mark(!done) }.tint(Design.accentInk)
+                Button(done ? "Not Done" : "Done", systemImage: ItemActions.markImage(done: done)) { mark(!done) }.tint(Design.accentInk)
+                Button(ItemActions.skipTitle(skipped: skipped), systemImage: ItemActions.skipImage(skipped: skipped)) { skip(!skipped) }.tint(.gray)
             }
             .swipeActions(edge: .trailing) {
                 Button("Delete", systemImage: "trash", role: .destructive, action: delete)
             }
             .contextMenu {
-                Button(done ? "Mark Not Done" : "Mark Done", systemImage: done ? "arrow.uturn.backward" : "checkmark") { mark(!done) }
+                Button(ItemActions.markTitle(done: done), systemImage: ItemActions.markImage(done: done)) { mark(!done) }
+                Button(ItemActions.skipTitle(skipped: skipped), systemImage: ItemActions.skipImage(skipped: skipped)) { skip(!skipped) }
                 Button("Edit…", systemImage: "pencil", action: edit)
                 Button("Delete", systemImage: "trash", role: .destructive, action: delete)
             }

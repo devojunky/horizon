@@ -34,8 +34,14 @@ public struct ObligationSnapshot: Sendable, Identifiable, Equatable {
     public var completionPending: Bool = false
     /// Another date the same item was given by a later document, surfaced in Review (`Obligation.conflictingDate`).
     public var conflictingDate: Date? = nil
+    /// Set aside, not done (`Obligation.skippedAt`); `completedAt` is set with it.
+    public var skippedAt: Date? = nil
+    /// The notes came through Siri or a shortcut (`Obligation.notesFromSiri`).
+    public var notesFromSiri: Bool = false
 
     public var link: URL { Identifiers.link(for: id) }
+    /// Checked off as done: closed, and not skipped.
+    public var isDone: Bool { completedAt != nil && skippedAt == nil }
     /// The course as the app names it: its name, falling back to the code.
     public var courseName: String? { [courseTitle, courseCode].compactMap { $0 }.first { !$0.isEmpty } }
     /// Title as written to Reminders: "Homework 3 · Calculus II".
@@ -163,7 +169,7 @@ extension ObligationSnapshot {
                   userOverrides: o.userOverrides, ekExternalID: o.ekExternalID, projectedTitle: o.projectedTitle, projectedDue: o.projectedDue,
                   projectedNotes: o.projectedNotes, completedAt: o.completedAt, deletedAt: o.deletedAt, changeNote: o.changeNote, createdOn: o.createdOn,
                   courseID: o.course?.id, courseCode: o.course?.code, courseTitle: o.course?.title, sourceDocumentID: o.sourceDocument?.id, sourcePage: o.sourcePage,
-                  completionPending: o.completionPending, conflictingDate: o.conflictingDate)
+                  completionPending: o.completionPending, conflictingDate: o.conflictingDate, skippedAt: o.skippedAt, notesFromSiri: o.notesFromSiri)
     }
 
     /// The date Review offers in place of Discard ("Use <the other date>"): a later document re-dated the item.
@@ -179,8 +185,12 @@ public struct ObligationEdits: Sendable, Equatable {
     public var componentName: String??
     public var notes: String??
     public var courseID: UUID??
-    public init(title: String? = nil, due: Date?? = nil, dueHasTime: Bool? = nil, platform: Platform? = nil, componentName: String?? = nil, notes: String?? = nil, courseID: UUID?? = nil) {
+    /// `notes` come through Siri or a shortcut, not from the user's typing (`Obligation.notesFromSiri`).
+    public var notesFromSiri = false
+    public init(title: String? = nil, due: Date?? = nil, dueHasTime: Bool? = nil, platform: Platform? = nil, componentName: String?? = nil, notes: String?? = nil, courseID: UUID?? = nil,
+                notesFromSiri: Bool = false) {
         self.title = title; self.due = due; self.dueHasTime = dueHasTime; self.platform = platform; self.componentName = componentName; self.notes = notes; self.courseID = courseID
+        self.notesFromSiri = notesFromSiri
     }
 }
 

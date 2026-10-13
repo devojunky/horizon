@@ -270,6 +270,7 @@ struct HorizonStripView: View {
     @State private var filter: Band.Kind = .all      // the course the page is narrowed to; everything, until the user says otherwise
     @State private var chosen: DateInterval?         // the week (from the overview) or the day (from its bar) whose work the list shows
     @State private var editing: Obligation?
+    @State private var path: [Route] = []            // an item's details, pushed over the strip
     @State private var lingering = Lingering()       // just checked off under "Coming up": crossed off for a moment before it leaves, so a slip can be undone
     @State private var listHeadY: CGFloat?           // where the list begins on the screen, to know when a chosen period's items are under the fold (nil: never laid out, so far below it)
     @State private var resting = RestingPage()       // the page's height with the large title showing: what the strip is sized for
@@ -335,7 +336,7 @@ struct HorizonStripView: View {
         let data = StripData(obligations: obligations, courses: courses, level: level, filter: filter, calendar: calendar)
         let listed = listed(data)
         let _ = rows.ids = listed.map(\.id)
-        PageStack {
+        PageStack(path: $path) {
             GeometryReader { geo in
                 let g = geometry(in: CGSize(width: geo.size.width, height: resting.height(of: geo)), data: data)
                 let contentWidth = CGFloat(data.periods.count) * g.barWidth + g.inset * 2
@@ -442,7 +443,12 @@ struct HorizonStripView: View {
                     }
                 }
             }
-            .sheet(item: $editing) { ObligationEditor(mode: .edit($0), courses: courses) }
+            .sheet(item: $editing) { ObligationEditor(mode: $0.state == .pendingReview ? .review($0) : .edit($0), courses: courses) }
+            #if os(iOS)
+            .navigationDestination(for: Route.self) { route in
+                if case .item(let id) = route { ItemDetail(id: id) }
+            }
+            #endif
         }
     }
 
@@ -552,13 +558,17 @@ struct HorizonStripView: View {
     /// Under the strip: the chosen period's items, else what is coming up.
     @ViewBuilder private func comingUp(_ listed: [Obligation], data: StripData) -> some View {
         ForEach(listed) { obligation in
-            Button { editing = obligation } label: { ObligationRow(obligation: obligation, showCourse: data.narrowedTo == nil, mark: { mark(obligation.id, $0) }) }   // narrowed to a course, a row need not say which
+            let isOpen = obligation.completedAt == nil   // only a row still to do lingers where it was; one already closed changes in place
+            Button { push(.item(obligation.id)) } label: {
+                ObligationRow(obligation: obligation, showCourse: data.narrowedTo == nil, mark: { mark(obligation.id, $0, linger: isOpen || !$0) }, disclosure: true)   // narrowed to a course, a row need not say which
+            }
                 .buttonStyle(.plain)
                 .opacity(lingering.isLeaving(obligation.id) ? 0 : 1)
                 .id(obligation.id)   // what `reveal` scrolls to
-                .obligationActions(done: obligation.completedAt != nil, mark: { mark(obligation.id, $0) }, edit: { editing = obligation },
-                                   delete: { Task { await model.discard(obligation.id) } })
-                .accessibilityHint("Opens the editor")
+                .obligationActions(done: obligation.completedAt != nil && obligation.skippedAt == nil, skipped: obligation.skippedAt != nil,
+                                   mark: { mark(obligation.id, $0, linger: isOpen || !$0) }, skip: { skip(obligation.id, $0, linger: isOpen || !$0) },
+                                   edit: { editing = obligation }, delete: { Task { await model.discard(obligation.id) } })
+                .accessibilityHint("Opens its details")
         }
         if listed.isEmpty { Text(chosen == nil ? "Nothing coming up." : "Nothing due.").foregroundStyle(.secondary).id("nothing") }
     }
@@ -601,6 +611,7 @@ struct HorizonStripView: View {
     private func go(_ destination: AppDestination?, data: StripData) {
         guard case .horizon(let course, let day)? = destination else { return }
         model.destination = nil
+        path = []   // the strip itself, whatever was pushed over it
         let kind: Band.Kind = course.map { .course($0) } ?? .all
         filter = data.choices.contains { $0.kind == kind } ? kind : .all
         guard let day else { return }
@@ -647,9 +658,21 @@ struct HorizonStripView: View {
     }
 
     /// A check under "Coming up" stays on the page for a moment, crossed off, then the row leaves; unchecked, it stays.
-    private func mark(_ id: UUID, _ done: Bool) {
-        lingering.mark(id, done: done)
+    private func mark(_ id: UUID, _ done: Bool, linger: Bool = true) {
+        if linger { lingering.mark(id, done: done) }
         Task { await model.setCompleted(id, done) }
+    }
+
+    /// A skip lingers as a check does, then the row leaves "Coming up"; taken back, it stays.
+    private func skip(_ id: UUID, _ skipped: Bool, linger: Bool) {
+        if linger { lingering.mark(id, done: skipped) }
+        Task { await model.setSkipped(id, skipped) }
+    }
+
+    /// An item's details over the strip, pushed once: a second tap while it is going up is ignored.
+    private func push(_ route: Route) {
+        guard !path.contains(route) else { return }
+        path.append(route)
     }
 
     private func accessibilitySummary(_ data: StripData) -> String {

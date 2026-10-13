@@ -65,7 +65,7 @@ struct MacHorizonPage: View {
                         .padding(.top, 22)
                         .padding(.bottom, 6)
                     ItemTable(rows: rows, selection: $selection, sortOrder: $sortOrder, showsCourse: data.narrowedTo == nil,
-                              mark: mark, edit: { id in editing = obligations.first { $0.id == id } },
+                              mark: mark, skip: skip, edit: { id in editing = obligations.first { $0.id == id } },
                               delete: { ids in Task { await model.discard(Array(ids)) }; selection.subtract(ids) })   // one undo for them all
                         .animation(.default, value: rows.map(\.id))   // the rows come and go; the words above them change at once
                 }
@@ -124,6 +124,12 @@ struct MacHorizonPage: View {
         lingering.mark(id, done: done)
         Task { await model.setCompleted(id, done) }
     }
+
+    /// A skip lingers under "Coming up" as a check does, then the row leaves.
+    private func skip(_ id: UUID, _ skipped: Bool) {
+        lingering.mark(id, done: skipped)
+        Task { await model.setSkipped(id, skipped) }
+    }
 }
 
 /// The day under the pointer. Only the chart and its header read it, so a pointer moving over the chart redraws
@@ -144,7 +150,10 @@ struct ItemRow: Identifiable {
     let component: String
     /// Share of the grade at stake; -1 when unknown, so it sorts under every known weight.
     let weight: Double
+    /// Checked off as done (not skipped).
     let done: Bool
+    /// Set aside, not done: closed, with a dashed ring.
+    let skipped: Bool
     /// Just checked off, still listed for a moment.
     let lingering: Bool
     /// The document it was read from, for Open Document.
@@ -159,17 +168,19 @@ struct ItemRow: Identifiable {
         dueHasTime = o.dueHasTime
         component = o.componentName ?? ""
         weight = o.pointsAtStake ?? -1
-        done = o.completedAt != nil
+        done = o.completedAt != nil && o.skippedAt == nil
+        skipped = o.skippedAt != nil
         self.lingering = lingering.contains(o.id)
         document = o.sourceDocument
     }
 }
 
-/// Items in a table: a ring to check one off, its name, course, due date, the grade row it counts toward and its
-/// weight. Sortable by every column but the ring; a double-click edits, Delete deletes the selection, the context menu
-/// does all three and opens the document an item was read from, and one selected item is what the Item menu acts on
-/// while the table has the keyboard. Ideal widths fit the narrowest window with every column in view (a table lays its
-/// columns out at their ideal widths and scrolls sideways rather than shrink them); a wider one shares out the rest.
+/// Items in a table: a ring to check one off (dashed once it is skipped), its name, course, due date, the grade row it
+/// counts toward and its weight. Sortable by every column but the ring; a double-click edits, Delete deletes the
+/// selection, the context menu does those, skips, and opens the document an item was read from, and one selected item
+/// is what the Item menu acts on while the table has the keyboard. Ideal widths fit the narrowest window with every
+/// column in view (a table lays its columns out at their ideal widths and scrolls sideways rather than shrink them); a
+/// wider one shares out the rest.
 struct ItemTable: View {
     let rows: [ItemRow]
     @Binding var selection: Set<UUID>
@@ -183,6 +194,7 @@ struct ItemTable: View {
     /// A row to bring into view (a link asked for it; the page selects it).
     var reveal: UUID? = nil
     var mark: (UUID, Bool) -> Void
+    var skip: (UUID, Bool) -> Void
     var edit: (UUID) -> Void
     var delete: (Set<UUID>) -> Void
     @Environment(AppModel.self) private var model
@@ -193,15 +205,17 @@ struct ItemTable: View {
         ScrollViewReader { proxy in
             Table(rows, selection: $selection, sortOrder: $sortOrder) {
                 TableColumn("") { row in
-                    Button { mark(row.id, !row.done) } label: { DoneMark(done: row.done, size: 15).frame(width: 22, height: 22).contentShape(Rectangle()) }
+                    Button { mark(row.id, !row.done) } label: { DoneMark(done: row.done, skipped: row.skipped, size: 15).frame(width: 22, height: 22).contentShape(Rectangle()) }
                         .buttonStyle(.plain)
-                        .help(row.done ? "Mark not done" : "Mark done")
+                        .help(row.done ? "Mark not done" : row.skipped ? "Skipped: mark done" : "Mark done")
                         .accessibilityLabel(row.done ? "Done" : "Mark done")
+                        .accessibilityValue(row.skipped ? "Skipped" : "")
                 }
                 .width(24)
                 TableColumn("Item", value: \.title) { row in
                     Text(row.title).fontWeight(.medium).strikethrough(row.done, color: .secondary).lineLimit(1).truncationMode(.tail)
-                        .help(row.title)
+                        .foregroundStyle(row.skipped ? .secondary : .primary)   // set aside: quieter, not crossed off
+                        .help(row.skipped ? "\(row.title) (skipped)" : row.title)
                 }
                 .width(min: compact ? 90 : 120, ideal: compact ? 110 : 160)
                 if showsCourse {
@@ -235,7 +249,9 @@ struct ItemTable: View {
                 let chosen = rows.filter { ids.contains($0.id) }
                 if !chosen.isEmpty {
                     let allDone = chosen.allSatisfy(\.done)
-                    Button(allDone ? "Mark Not Done" : "Mark Done") { for row in chosen { mark(row.id, !allDone) } }
+                    Button(ItemActions.markTitle(done: allDone)) { for row in chosen { mark(row.id, !allDone) } }
+                    let allSkipped = chosen.allSatisfy(\.skipped)
+                    Button(ItemActions.skipTitle(skipped: allSkipped)) { for row in chosen { skip(row.id, !allSkipped) } }
                     if chosen.count == 1, let one = chosen.first {
                         Button("Edit…") { edit(one.id) }
                         if let open = openDocument(one) { Button("Open Document", action: open) }
@@ -260,7 +276,8 @@ struct ItemTable: View {
             // The table's own. It stays published under a sheet, so the Item menu checks `keyboardIsElsewhere` first: ⌘⌫ in
             // a sheet's field deletes words, never the item behind the sheet.
             .focusedValue(\.selectedItem, visibleSelection.count == 1 ? rows.first { visibleSelection.contains($0.id) }.map { row in
-                SelectedItem(id: row.id, done: row.done, mark: { mark(row.id, $0) }, edit: { edit(row.id) }, openDocument: openDocument(row), delete: { delete([row.id]) })   // Item ▸ Mark Done, the way a click on the ring does it; ⌘⌫ as Delete does
+                SelectedItem(id: row.id, done: row.done, skipped: row.skipped, mark: { mark(row.id, $0) }, skip: { skip(row.id, $0) }, edit: { edit(row.id) },
+                             openDocument: openDocument(row), delete: { delete([row.id]) })   // Item ▸ Mark Done, the way a click on the ring does it; ⌘⌫ as Delete does
             } : nil)
             .quickLookPreview($preview)
         }

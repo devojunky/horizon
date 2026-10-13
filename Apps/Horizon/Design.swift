@@ -183,6 +183,32 @@ extension View {
     }
 }
 
+/// Buttons side by side at one width, the widest label's (HIG: tell buttons apart by style, not size). Its ideal width
+/// is that many of the widest, so in a `ViewThatFits` it gives way to a stack when they would not all fit whole: an
+/// `HStack` of flexible buttons measured each label alone, fitted, then halved the row and cut "Mark Not Done".
+struct EqualWidths: Layout {
+    var spacing: CGFloat = 12
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard !subviews.isEmpty else { return .zero }
+        let count = CGFloat(subviews.count)
+        let widest = subviews.map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
+        let width = proposal.width ?? widest * count + spacing * (count - 1)
+        let each = max((width - spacing * (count - 1)) / count, 0)
+        let height = subviews.map { $0.sizeThatFits(ProposedViewSize(width: each, height: nil)).height }.max() ?? 0
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let count = CGFloat(subviews.count)
+        let each = max((bounds.width - spacing * (count - 1)) / count, 0)
+        for (index, subview) in subviews.enumerated() {
+            subview.place(at: CGPoint(x: bounds.minX + CGFloat(index) * (each + spacing), y: bounds.midY), anchor: .leading,
+                          proposal: ProposedViewSize(width: each, height: bounds.height))
+        }
+    }
+}
+
 /// A section of a page with its kicker as the header (the iOS course page). A Mac's plain list would pin such a
 /// header on a band of window grey, off the paper: a Mac page sets its kickers as rows or in its own columns.
 struct PageSection<Content: View>: View {

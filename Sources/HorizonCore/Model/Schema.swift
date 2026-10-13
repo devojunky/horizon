@@ -65,7 +65,11 @@ public enum HorizonSchemaV1: VersionedSchema {
         public var dateAsWritten: String?
         public var flags: [String] = []
         public var sourcePage: Int?
+        /// The item's description, the user's own words (or Siri's): never a document's. Kept in the reminder's notes.
         public var notes: String?
+        /// The notes were last written through Siri or a shortcut (an intent), not typed in the app or in Reminders: the
+        /// details page says so, as the HIG asks of text a model may have written.
+        public var notesFromSiri: Bool = false
         public var userOverrides: [FieldKey] = []
         /// `EKCalendarItem.calendarItemExternalIdentifier`, stable across devices (SPEC §4.4 idempotency).
         public var ekExternalID: String?
@@ -75,6 +79,11 @@ public enum HorizonSchemaV1: VersionedSchema {
         /// The user-text part of the notes last written, so a Reminders-side note edit can be told from an app-side one.
         public var projectedNotes: String?
         public var completedAt: Date?
+        /// The user's word that the item will not be done (Skip): an organiser, not an enforcer. A skipped item is closed as
+        /// a done one is (`completedAt` is set with it, so it leaves what is due, the plan and the widgets, and its reminder
+        /// is checked off: Reminders has no other way to close one); this is what tells it from done. Never set without
+        /// `completedAt`: an uncheck, here or in Reminders, opens the item again and clears it.
+        public var skippedAt: Date?
         /// The user checked the item off (or back on) in the app and Reminders has not been told yet. Reminders owns
         /// completion, so while this is set the reconciler leaves `completedAt` alone and the projector writes it to
         /// the reminder; an item with no reminder (in review, undated, access off) keeps its mark here.
