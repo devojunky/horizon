@@ -288,7 +288,7 @@ actor Extractor {
             images.append(jpeg)
             labels.append("Page \(picture.page + 1)")   // the page number the prompt speaks of
         }
-        // No thinking: reading is copying, and the whole output budget is the reply's (DECISIONS 2026-09-14).
+        // No thinking where the model allows it (Opus 5.5 does not, and reads at low effort): reading is copying, and the whole output budget is the reply's (DECISIONS 2026-09-14).
         let request = ClaudeClient.Request(system: IngestInstructions.text, user: text, images: images, imageLabels: labels,
                                            schema: kind == .image ? ClaudeSchemas.pageReading : ClaudeSchemas.extraction, maxOutputTokens: outputBudgetTokens, thinking: .off)
         progress(.chunkStarted(index: chunk))
@@ -370,7 +370,7 @@ actor Extractor {
     }
 
     /// The page as JPEG, turned the way it is meant to be read and no longer than `maxEdge` pixels on a side, so a scan is
-    /// a few hundred kilobytes, not a few megabytes. 1568 is what Haiku 4.5 keeps whole; Sonnet 5 and Opus 5 keep up to
+    /// a few hundred kilobytes, not a few megabytes. 1568 is kept whole by every model offered; Sonnet and Opus keep up to
     /// 2576 on the long edge, at up to three times the image tokens, which the evals have not shown a need for (a letter
     /// page at 1568 is about 140 dpi). Sending more is the owner's call.
     static func jpegData(_ image: CGImage, orientation: CGImagePropertyOrientation?, maxEdge: Int = Extractor.pictureEdge) -> Data? {

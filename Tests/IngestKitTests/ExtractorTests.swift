@@ -65,7 +65,7 @@ struct ExtractorTests {
     @Test func readingSendsNoThinking() async throws {
         let script = Script([.reply(status: 200, lines: Self.reply)])
         _ = try await Self.extractor(script).extract(TextChunk(index: 0, text: "HW 1 due Wed 9/9.", firstPage: 0, lastPage: 0), context: RollingContext(), document: "calc.txt", chunkCount: 1)
-        #expect((script.body["thinking"] as? [String: Any])?["type"] as? String == "disabled")
+        #expect((script.body["thinking"] as? [String: Any])?["type"] as? String == "between_tools")   // Sonnet 5.5, the default
     }
 }
 

@@ -912,7 +912,7 @@ struct StoreFollowThroughTests {
         #expect(try await store.queuedDocuments().count == 2)                           // both still wait to be read
         // Which waits stop a drain, and which are the key's or the model's (Settings), by ClaudeError's own words.
         let cases: [(ClaudeError, stops: Bool, settings: Bool)] = [
-            (.unauthorized, true, true), (.forbidden(model: "claude-opus-5"), true, true), (.modelNotFound("claude-sonnet-9"), true, true),
+            (.unauthorized, true, true), (.forbidden(model: "claude-opus-5-5"), true, true), (.modelNotFound("claude-sonnet-9"), true, true),
             (.badRequest("max_tokens: too large"), true, true), (.billing, true, false), (.network("offline"), true, false),
             (.rateLimited(retryAfter: 30), false, false), (.overloaded, false, false), (.server(status: 529, message: "rejected upstream"), false, false)]
         for (error, stops, settings) in cases {

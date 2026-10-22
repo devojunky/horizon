@@ -91,10 +91,10 @@ public struct ClaudeTransport: Sendable {
 /// Cancellation stops everything at once. Reading asks for no thinking (`Thinking.off`): extraction is copying, and a
 /// thinking model spent its budget thinking and answered with an empty structure one run in three.
 public actor ClaudeClient {
-    /// Whether the model thinks before it answers. The Claude 5 models think adaptively unless told not to, so `.off`
-    /// is sent as `thinking: disabled` (Sonnet 5 at any effort; Opus 5 at high or below, which is all this app asks
-    /// for); Haiku 4.5 thinks only when asked, so it is sent nothing. `.adaptive` sends nothing either: the model thinks
-    /// as much as the effort calls for.
+    /// Whether the model thinks before it answers. The 5.5 models think adaptively unless told not to, so `.off` is
+    /// sent as Sonnet 5.5's `thinking: between_tools` or Haiku 5.5's `thinking: disabled` (each at high or below, which
+    /// is all this app asks for); Opus 5.5 cannot be told, so it is sent low effort instead. `.adaptive` sends nothing:
+    /// the model thinks as much as the effort calls for.
     public enum Thinking: Sendable, Equatable { case adaptive, off }
 
     public struct Request: Sendable {
@@ -271,8 +271,10 @@ public actor ClaudeClient {
                 + ["{\"type\": \"image\", \"source\": {\"type\": \"base64\", \"media_type\": \"image/jpeg\", \"data\": \"\(image.base64EncodedString())\"}}"]
         } + ["{\"type\": \"text\", \"text\": \(ClaudeSchemas.quote(request.user))}"]
         var outputConfig = "\"format\": {\"type\": \"json_schema\", \"schema\": \(request.schema)}"
-        if configuration.model.acceptsEffort { outputConfig += ", \"effort\": \(ClaudeSchemas.quote(request.effort))" }
-        let thinking = request.thinking == .off && configuration.model.takesThinkingOff(atEffort: request.effort) ? "\"thinking\": {\"type\": \"disabled\"}, " : ""
+        let effort = configuration.model.effort(for: request)
+        outputConfig += ", \"effort\": \(ClaudeSchemas.quote(effort))"
+        let off = request.thinking == .off ? configuration.model.thinkingOff(atEffort: effort) : nil
+        let thinking = off.map { "\"thinking\": {\"type\": \(ClaudeSchemas.quote($0))}, " } ?? ""
         let body = """
         {"model": \(ClaudeSchemas.quote(configuration.model.rawValue)), "max_tokens": \(request.maxOutputTokens), "stream": true, \(thinking)\
         "system": \(ClaudeSchemas.quote(request.system)), \

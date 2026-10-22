@@ -8,7 +8,7 @@ import IngestKit
 //   HORIZON_EVALS=1 swift test --filter IngestEvals.IngestEvals   (`IngestEvals` alone also runs PlanEvals, in this target)
 // HORIZON_FIXTURE=<substring> limits the run to matching fixture folders. Claude reads (the key from ANTHROPIC_API_KEY, else
 // claude_api_key.secret at the package root, git-ignored); HORIZON_ON_DEVICE=1 reads with the device model instead, and
-// HORIZON_CLAUDE_MODEL=opus5|haiku45 picks another Claude.
+// HORIZON_CLAUDE_MODEL=opus|haiku picks another Claude.
 // A per-fixture table is printed and written to Evals/Results/latest.md next to the framework's JSON result.
 
 struct FixtureSample: SampleProtocol {

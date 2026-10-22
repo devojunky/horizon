@@ -7,7 +7,7 @@ let usage = """
 usage: horizon-parse <file> [options]
   file                 .pdf, .png/.jpg/.heic, .txt/.md, .docx
   --claude             read with Claude (the default when a key is found: ANTHROPIC_API_KEY, else claude_api_key.secret at the package root)
-  --model sonnet5      which Claude: sonnet5, opus5, haiku45
+  --model sonnet       which Claude: sonnet, opus, haiku (the 5.5 models)
   --on-device          read with the device model instead
   --year YYYY          year for undated-year dates when the document names no term
   --term-start YYYY-MM-DD
@@ -59,7 +59,7 @@ while !args.isEmpty {
     case "--claude": options.route = .claude; askedClaude = true
     case "--on-device": options.route = .onDevice
     case "--model":
-        guard let v = args.first.flatMap({ name in ClaudeModelChoice.allCases.first { "\($0)" == name } }) else { fail("--model needs sonnet5, opus5 or haiku45", code: 2) }
+        guard let v = args.first.flatMap({ name in ClaudeModelChoice.allCases.first { "\($0)" == name } }) else { fail("--model needs sonnet, opus or haiku", code: 2) }
         args.removeFirst(); model = v
     case "--verbose": options.log = { FileHandle.standardError.write(Data(($0 + "\n").utf8)) }
     case "--compact": compact = true

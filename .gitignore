@@ -13,3 +13,4 @@ Config/Local.xcconfig
 # local API keys for the CLI and evals, never committed (key.textClipping: an old one)
 key.textClipping
 claude_api_key.secret
+key.txt

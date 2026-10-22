@@ -626,3 +626,16 @@ The owner: a tap on an item went straight to its editor. It should open a page o
   - Seen in the simulator: every way in; open, done, skipped and in-review items; a long description with a link, typed and from Siri; Add Description…; light and dark; the largest text size. The Mac's course table was seen with a skipped item, on a scratch copy.
   - The simulator's test data was put back as it was.
   - Not verified: Siri writing a description by voice.
+
+## 2026-10-22 · The 5.5 models
+
+- **Sonnet 5.5, Opus 5.5 and Haiku 5.5 replace Sonnet 5, Opus 5 and Haiku 4.5.** Sonnet 5.5 stays the default. The cases are named by line now (`.sonnet`, `.opus`, `.haiku`; `horizon-parse --model sonnet`), so the next bump changes ids, not names.
+- **Thinking off is sent per model.** Reading still asks for no thinking:
+  - Sonnet 5.5 rejects `thinking: disabled` with a 400. It gets `between_tools` instead, which means no thinking because reading uses no tools.
+  - Haiku 5.5 now thinks by default and takes effort. It gets `disabled`, and its effort is sent.
+  - Opus 5.5 cannot be kept from thinking at any effort. A request that asks for none is sent at low effort instead. That reading spends some of its output budget thinking, which is the failure the no-thinking rule was made for (DECISIONS 2026-09-14). No eval has measured it on Opus 5.5 yet.
+- **Decided for the owner:**
+  - A choice stored as an older id is taken as its line's current model (`ClaudeModelChoice(stored:)`), so someone who chose Opus 5 keeps Opus.
+  - Change Settings' Claude Model cases were renamed from `sonnet5`, `opus5`, `haiku45` to `sonnet`, `opus`, `haiku`. A shortcut saved with the old value has to be set again, once.
+  - The server-side refusal fallback (`fallbacks: "default"`) is not sent. It would let Anthropic answer with a model the user did not choose. A refusal still ends the part as before.
+- **Verified.** All three pass the reading evals: recall 1.0 on Sonnet 5.5, 0.994 on Opus 5.5 and 0.935 on Haiku 5.5, with date accuracy 0.947 and no `.ready` errors on any of them. Opus 5.5 had no empty or cut-off replies. Haiku 5.5 misses items dated by week number on fixture 15 (3 of 9 found, then 1 of 9 on a rerun), so that is a real weakness, not noise. It is not yet known whether turning thinking off causes it. Installed on the owner's iPhone.

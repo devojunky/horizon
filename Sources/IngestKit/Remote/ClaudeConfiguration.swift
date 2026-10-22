@@ -1,35 +1,52 @@
 import Foundation
 
-/// Which Claude reads and plans. Ids as the Messages API names them.
+/// Which Claude reads and plans. Ids as the Messages API names them; the cases name the line, not the version, so a
+/// stored choice and a saved shortcut outlive the next bump.
 public enum ClaudeModelChoice: String, Codable, Sendable, CaseIterable, Identifiable {
-    case sonnet5 = "claude-sonnet-5"
-    case opus5 = "claude-opus-5"
-    case haiku45 = "claude-haiku-4-5"
+    case sonnet = "claude-sonnet-5-5"
+    case opus = "claude-opus-5-5"
+    case haiku = "claude-haiku-5-5"
 
     public var id: String { rawValue }
-    public static let `default` = ClaudeModelChoice.sonnet5
+    public static let `default` = ClaudeModelChoice.sonnet
+
+    /// A choice as stored in settings, an older model's id taken as its line's current one.
+    public init?(stored: String) {
+        if let choice = ClaudeModelChoice(rawValue: stored) { self = choice; return }
+        switch stored {
+        case "claude-sonnet-5": self = .sonnet
+        case "claude-opus-5": self = .opus
+        case "claude-haiku-4-5": self = .haiku
+        default: return nil
+        }
+    }
 
     public var displayName: String {
-        switch self { case .sonnet5: "Sonnet 5"; case .opus5: "Opus 5"; case .haiku45: "Haiku 4.5" }
+        switch self { case .sonnet: "Sonnet 5.5"; case .opus: "Opus 5.5"; case .haiku: "Haiku 5.5" }
     }
     /// One line on what the choice trades.
     public var detail: String {
         switch self {
-        case .sonnet5: "The default: fast, and exact with tables and pictures."
-        case .opus5: "The most capable; slower and dearer per document."
-        case .haiku45: "The quickest and cheapest."
+        case .sonnet: "The default: fast, and exact with tables and pictures."
+        case .opus: "The most capable; slower and dearer per document."
+        case .haiku: "The quickest and cheapest."
         }
     }
-    /// Whether `output_config.effort` may be sent: Haiku 4.5 rejects it.
-    var acceptsEffort: Bool { self != .haiku45 }
-    /// Whether `thinking: disabled` should be sent to keep the model from thinking: Sonnet 5 takes it at every effort,
-    /// Opus 5 at high or below (a 400 at xhigh and max). Haiku 4.5 thinks only when asked, so it needs nothing sent.
-    func takesThinkingOff(atEffort effort: String) -> Bool {
+    /// What `thinking` to send to keep the model from thinking, if it can be kept from it at that effort: Sonnet 5.5
+    /// takes `between_tools` (no tools here, so no thinking; `disabled` is a 400), Haiku 5.5 `disabled`, each at high or
+    /// below (a 400 at xhigh and max). Opus 5.5 always thinks: nothing turns it off, and the effort is lowered instead
+    /// (`effort(for:)`).
+    func thinkingOff(atEffort effort: String) -> String? {
+        guard ["low", "medium", "high"].contains(effort) else { return nil }
         switch self {
-        case .sonnet5: true
-        case .opus5: ["low", "medium", "high"].contains(effort)
-        case .haiku45: false
+        case .sonnet: return "between_tools"
+        case .haiku: return "disabled"
+        case .opus: return nil
         }
+    }
+    /// The effort sent for a request: Opus 5.5, which cannot be told not to think, thinks least at low.
+    func effort(for request: ClaudeClient.Request) -> String {
+        self == .opus && request.thinking == .off ? "low" : request.effort
     }
 }
 

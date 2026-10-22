@@ -37,7 +37,7 @@ struct ClaudeClientTests {
             }
         }
 
-        func client(model: ClaudeModelChoice = .sonnet5, attempts: Int = 4) -> ClaudeClient {
+        func client(model: ClaudeModelChoice = .sonnet, attempts: Int = 4) -> ClaudeClient {
             var policy = ClaudeClient.Policy(); policy.attempts = attempts
             return ClaudeClient(configuration: ClaudeConfiguration(apiKey: "sk-ant-test", model: model), transport: transport, policy: policy,
                                 sleep: { s in self.lock.withLock { self.slept.append(s) } })
@@ -73,7 +73,7 @@ struct ClaudeClientTests {
         let request = script.sent.first!
         #expect(request.url?.path == "/v1/messages" && request.value(forHTTPHeaderField: "x-api-key") == "sk-ant-test" && request.value(forHTTPHeaderField: "anthropic-version") == ClaudeClient.apiVersion)
         let body = script.body
-        #expect(body["model"] as? String == "claude-sonnet-5" && body["stream"] as? Bool == true && body["max_tokens"] as? Int == 500 && body["system"] as? String == "sys")
+        #expect(body["model"] as? String == "claude-sonnet-5-5" && body["stream"] as? Bool == true && body["max_tokens"] as? Int == 500 && body["system"] as? String == "sys")
         let content = ((body["messages"] as? [[String: Any]])?.first?["content"] as? [[String: Any]]) ?? []
         #expect(content.map { $0["type"] as? String } == ["image", "text"])   // the pictures, then the words
         #expect(((content.first?["source"] as? [String: Any])?["media_type"] as? String) == "image/jpeg")
@@ -86,10 +86,16 @@ struct ClaudeClientTests {
         #expect(text.range(of: "\"course\"")!.lowerBound < text.range(of: "\"gradeComponents\"")!.lowerBound && text.range(of: "\"gradeComponents\"")!.lowerBound < text.range(of: "\"obligations\"")!.lowerBound)
     }
 
-    @Test func haikuIsSentNoEffort() async throws {
+    @Test func haikuIsSentItsEffort() async throws {
         let script = Script([.reply(status: 200, lines: Self.whole("{}"))])
-        _ = try await script.client(model: .haiku45).stream(Self.request)
-        #expect((script.body["output_config"] as? [String: Any])?["effort"] == nil && script.body["model"] as? String == "claude-haiku-4-5")
+        _ = try await script.client(model: .haiku).stream(Self.request)
+        #expect((script.body["output_config"] as? [String: Any])?["effort"] as? String == "medium" && script.body["model"] as? String == "claude-haiku-5-5")
+    }
+
+    @Test func aStoredOlderModelIsItsLinesCurrentOne() {
+        #expect(ClaudeModelChoice(stored: "claude-sonnet-5") == .sonnet && ClaudeModelChoice(stored: "claude-opus-5") == .opus)
+        #expect(ClaudeModelChoice(stored: "claude-haiku-4-5") == .haiku && ClaudeModelChoice(stored: "claude-opus-5-5") == .opus)
+        #expect(ClaudeModelChoice(stored: "claude-sonnet-9") == nil)
     }
 
     @Test func aDroppedStreamIsRetriedFromTheStart() async throws {
@@ -121,7 +127,7 @@ struct ClaudeClientTests {
         await #expect(throws: ClaudeError.unauthorized) { try await bad.client().stream(Self.request) }
         #expect(bad.sent.count == 1)
         let missing = Script([.reply(status: 404, lines: [#"{"type": "error", "error": {"type": "not_found_error", "message": "model: claude-x"}}"#])])
-        await #expect(throws: ClaudeError.modelNotFound("claude-sonnet-5")) { try await missing.client().stream(Self.request) }
+        await #expect(throws: ClaudeError.modelNotFound("claude-sonnet-5-5")) { try await missing.client().stream(Self.request) }
         let malformed = Script([.reply(status: 400, lines: [#"{"type": "error", "error": {"type": "invalid_request_error", "message": "schema: bad"}}"#])])
         await #expect(throws: ClaudeError.badRequest("schema: bad")) { try await malformed.client().stream(Self.request) }
         // An account out of credit, and a key the model or the region is closed to: each its own error, said plainly, never retried.
@@ -129,8 +135,8 @@ struct ClaudeClientTests {
         await #expect(throws: ClaudeError.billing) { try await broke.client().stream(Self.request) }
         #expect(broke.sent.count == 1 && Extractor.explainClaude(ClaudeError.billing).hasPrefix("the Anthropic account behind the key is out of credit"))
         let closed = Script([.reply(status: 403, lines: [#"{"type": "error", "error": {"type": "permission_error", "message": "This organization does not have access to this model."}}"#])])
-        await #expect(throws: ClaudeError.forbidden(model: "claude-sonnet-5")) { try await closed.client().stream(Self.request) }
-        #expect(closed.sent.count == 1 && Extractor.explainClaude(ClaudeError.forbidden(model: "claude-sonnet-5")).hasPrefix("Anthropic does not let this key use Sonnet 5"))
+        await #expect(throws: ClaudeError.forbidden(model: "claude-sonnet-5-5")) { try await closed.client().stream(Self.request) }
+        #expect(closed.sent.count == 1 && Extractor.explainClaude(ClaudeError.forbidden(model: "claude-sonnet-5-5")).hasPrefix("Anthropic does not let this key use Sonnet 5.5"))
         #expect(ClaudeClient.apiError(status: 402, type: "", message: "", model: "m") == .billing && !ClaudeError.billing.isRetryable && !ClaudeError.forbidden(model: "m").isRetryable)
     }
 
@@ -141,12 +147,24 @@ struct ClaudeClientTests {
             return script.body["thinking"] as? [String: Any]
         }
         var off = Self.request; off.thinking = .off
-        #expect(try await thinking(.sonnet5, off)?["type"] as? String == "disabled")
-        #expect(try await thinking(.opus5, off)?["type"] as? String == "disabled")
-        #expect(try await thinking(.haiku45, off) == nil)                     // thinks only when asked: nothing to send
+        #expect(try await thinking(.sonnet, off)?["type"] as? String == "between_tools")   // `disabled` is a 400 on Sonnet 5.5
+        #expect(try await thinking(.haiku, off)?["type"] as? String == "disabled")
+        #expect(try await thinking(.opus, off) == nil)                          // Opus 5.5 always thinks: nothing turns it off
         var hard = off; hard.effort = "xhigh"
-        #expect(try await thinking(.opus5, hard) == nil)                        // Opus 5 refuses thinking off above high
-        #expect(try await thinking(.sonnet5, Self.request) == nil)              // adaptive: the API's own default, sent as nothing
+        #expect(try await thinking(.sonnet, hard) == nil)                       // both refuse it above high
+        #expect(try await thinking(.haiku, hard) == nil)
+        #expect(try await thinking(.sonnet, Self.request) == nil)               // adaptive: the API's own default, sent as nothing
+    }
+
+    @Test func opusAskedNotToThinkWorksAtLowEffort() async throws {
+        func effort(_ request: ClaudeClient.Request) async throws -> String? {
+            let script = Script([.reply(status: 200, lines: Self.whole("{}"))])
+            _ = try await script.client(model: .opus).stream(request)
+            return (script.body["output_config"] as? [String: Any])?["effort"] as? String
+        }
+        var off = Self.request; off.thinking = .off
+        #expect(try await effort(off) == "low")
+        #expect(try await effort(Self.request) == "medium")
     }
 
     @Test func eachPictureFollowsItsLabel() async throws {
@@ -203,8 +221,8 @@ struct ClaudeClientTests {
 
     @Test func theProbeAsksForOneWord() async throws {
         let script = Script([.reply(status: 200, lines: Self.whole(#"{"answer": "OK"}"#))])
-        #expect(try await script.client().probe() == "Sonnet 5 answered.")
-        #expect(script.body["max_tokens"] as? Int == 16 && (script.body["thinking"] as? [String: Any])?["type"] as? String == "disabled")   // sixteen tokens leave no room to think
+        #expect(try await script.client().probe() == "Sonnet 5.5 answered.")
+        #expect(script.body["max_tokens"] as? Int == 16 && (script.body["thinking"] as? [String: Any])?["type"] as? String == "between_tools")   // sixteen tokens leave no room to think
         let bad = Script([.reply(status: 401, lines: [#"{"type": "error", "error": {"type": "authentication_error", "message": "no"}}"#])])
         await #expect(throws: ClaudeError.unauthorized) { try await bad.client().probe() }
     }

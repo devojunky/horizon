@@ -390,18 +390,18 @@ enum ModelProvider: String, AppEnum {
 
 /// The Claude models Settings offers.
 enum ClaudeModelOption: String, AppEnum {
-    case sonnet5, opus5, haiku45
+    case sonnet, opus, haiku
     static let typeDisplayRepresentation: TypeDisplayRepresentation = "Claude Model"
     static let caseDisplayRepresentations: [Self: DisplayRepresentation] = [
-        .sonnet5: DisplayRepresentation(title: "Sonnet 5", synonyms: ["Sonnet"]),
-        .opus5: DisplayRepresentation(title: "Opus 5", synonyms: ["Opus"]),
-        .haiku45: DisplayRepresentation(title: "Haiku 4.5", synonyms: ["Haiku"]),
+        .sonnet: DisplayRepresentation(title: "Sonnet 5.5", synonyms: ["Sonnet"]),
+        .opus: DisplayRepresentation(title: "Opus 5.5", synonyms: ["Opus"]),
+        .haiku: DisplayRepresentation(title: "Haiku 5.5", synonyms: ["Haiku"]),
     ]
     var choice: ClaudeModelChoice {
         switch self {
-        case .sonnet5: .sonnet5
-        case .opus5: .opus5
-        case .haiku45: .haiku45
+        case .sonnet: .sonnet
+        case .opus: .opus
+        case .haiku: .haiku
         }
     }
 }

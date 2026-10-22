@@ -57,7 +57,7 @@ final class AppModel {
         didSet { AppModel.defaults.set(readingRoute.rawValue, forKey: "readingRoute") }
     }
     /// Which Claude. Persisted.
-    var claudeModel: ClaudeModelChoice = ClaudeModelChoice(rawValue: AppModel.defaults.string(forKey: "claudeModel") ?? "") ?? .default {
+    var claudeModel: ClaudeModelChoice = ClaudeModelChoice(stored: AppModel.defaults.string(forKey: "claudeModel") ?? "") ?? .default {
         didSet { AppModel.defaults.set(claudeModel.rawValue, forKey: "claudeModel") }
     }
     /// The user's own key, in the Keychain and nowhere else.
