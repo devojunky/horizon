@@ -1,4 +1,6 @@
-// Shared build settings. Local.xcconfig (git-ignored) may set DEVELOPMENT_TEAM.
+// Shared build settings. Every target signs with YUTIAN LIANG's team, in the paid program (DECISIONS 2026-10-23);
+// Local.xcconfig (git-ignored) is included after it and may set another DEVELOPMENT_TEAM for a build of one's own.
+DEVELOPMENT_TEAM = M29Z3F2B5D
 #include? "Local.xcconfig"
 // One version for the app and its extensions (App Store validation refuses a mismatch); raise the build for every upload.
 MARKETING_VERSION = 1.0

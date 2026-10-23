@@ -91,10 +91,10 @@ targets:
     entitlements:
       path: Apps/Horizon/Horizon.entitlements
       properties:
-        com.apple.security.application-groups: [group.com.daniel.horizon]
+        com.apple.security.application-groups: [group.com.daniel.horizon.app]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.daniel.horizon
+        PRODUCT_BUNDLE_IDENTIFIER: com.daniel.horizon.app   # the paid team's (DECISIONS 2026-10-23): com.daniel.horizon stays held by the free team, which cannot release it
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon   # AppIcon.icon, the only one used at a 27.0 deployment target (Assets.xcassets/AppIcon.appiconset is for systems before 26)
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor   # Design.accentInk's values as the app's accent: on a Mac, what selections and focus rings take (when the system's accent is Multicolour)
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -138,10 +138,10 @@ targets:
     entitlements:
       path: Apps/HorizonShare/HorizonShare.entitlements
       properties:
-        com.apple.security.application-groups: [group.com.daniel.horizon]
+        com.apple.security.application-groups: [group.com.daniel.horizon.app]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.daniel.horizon.share
+        PRODUCT_BUNDLE_IDENTIFIER: com.daniel.horizon.app.share
         GENERATE_INFOPLIST_FILE: NO
   HorizonWidgets:
     type: app-extension
@@ -155,7 +155,7 @@ targets:
     entitlements:
       path: Apps/HorizonWidgets/HorizonWidgets.entitlements
       properties:
-        com.apple.security.application-groups: [group.com.daniel.horizon]   # where the app leaves the glance
+        com.apple.security.application-groups: [group.com.daniel.horizon.app]   # where the app leaves the glance
     info:
       path: Apps/HorizonWidgets/Info.plist
       properties:
@@ -166,7 +166,7 @@ targets:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.daniel.horizon.widgetkit   # not ".widgets": the 2026-10-04 team trial registered that one on another team too, and the free team could no longer give it the App Group (DECISIONS 2026-10-06)
+        PRODUCT_BUNDLE_IDENTIFIER: com.daniel.horizon.app.widgets
         GENERATE_INFOPLIST_FILE: NO
   HorizonIntentTests:   # the App Intents through the system's own infrastructure (AppIntentsTesting): Siri's, Shortcuts' and Spotlight's way in
     type: bundle.ui-testing
@@ -177,7 +177,7 @@ targets:
       - target: Horizon
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.daniel.horizon.intenttests
+        PRODUCT_BUNDLE_IDENTIFIER: com.daniel.horizon.app.intenttests
         GENERATE_INFOPLIST_FILE: YES
         TEST_TARGET_NAME: Horizon
   HorizonSiriTests:   # Siri on a device, through XCUITest alone (AppIntentsTesting loads only on an OS matching Xcode's); skips unless TEST_RUNNER_HORIZON_SIRI=1
@@ -189,7 +189,7 @@ targets:
       - target: Horizon
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.daniel.horizon.siritests
+        PRODUCT_BUNDLE_IDENTIFIER: com.daniel.horizon.app.siritests
         GENERATE_INFOPLIST_FILE: YES
         TEST_TARGET_NAME: Horizon
 schemes:

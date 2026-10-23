@@ -6,7 +6,7 @@ import AppIntentsTesting
 /// What they write they delete again. Run with:
 /// xcodebuild test -project Horizon.xcodeproj -scheme Horizon -destination 'platform=iOS Simulator,name=iPhone 18 Pro Max' -only-testing:HorizonIntentTests
 final class HorizonIntentTests: XCTestCase {
-    let horizon = IntentDefinitions(bundleIdentifier: "com.daniel.horizon")
+    let horizon = IntentDefinitions(bundleIdentifier: "com.daniel.horizon.app")
 
     /// The first course on file; the tests that need one skip without it.
     private func firstCourse() async throws -> (entity: AnyAppEntity, name: String) {
@@ -146,7 +146,7 @@ final class HorizonIntentTests: XCTestCase {
 
     func testACoursePageSaysWhichCourseItShows() async throws {
         let course = try await firstCourse()
-        await XCUIApplication(bundleIdentifier: "com.daniel.horizon").launch()
+        await XCUIApplication(bundleIdentifier: "com.daniel.horizon.app").launch()
         _ = try await horizon.intents["OpenCourseIntent"].makeIntent(target: course.entity).run()
         try await Task.sleep(for: .seconds(2))
         let annotations = try await horizon.entities["CourseEntity"].viewAnnotations()

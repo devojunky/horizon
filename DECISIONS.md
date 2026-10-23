@@ -657,3 +657,19 @@ The owner: a tap on an item went straight to its editor. It should open a page o
   - 140 HorizonCore tests, two of them new. A library made while its store was open comes back with the same ids, reminder identifier, tombstone, documents and sync memory, and replaces what was there. A file that is not a library, or that came from a newer generation, is refused before anything is touched.
   - In the simulator: export, the save sheet, On My iPhone, import, the confirmation, the staged state, and a relaunch that applied it ("library: imported…"), with the strip unchanged. The Mac builds; its pane was not looked at.
 - **The order for the team switch.** First, a build on the current team, installed over the phone's app (same team, so its data stays), exports the library. Then the paid build is installed and imports it. Clear the Horizon list in Reminders only if the import is skipped.
+
+## 2026-10-23 · Signed by the paid team, as com.daniel.horizon.app
+
+- **The owner's call.** Every target is now signed by YUTIAN LIANG's team (`M29Z3F2B5D`), now in the paid program, for debug builds as well as release. This replaces 2026-10-05's plan of debug on Daniel Liang's free team and release on Yutian's: App Attest, TestFlight and the tester proxy can only be tried under the team that ships. The team is set in `Config/Base.xcconfig`, so a release does not depend on one machine's git-ignored file. `Local.xcconfig` is still included after it and can sign with another team.
+- **New bundle ids, because the old ones are held.** Apple would not register `com.daniel.horizon`, `.share` or `.widgetkit` on the paid team ("not available"): the free Personal Team `4MHKV83JSS` holds them, and a free account cannot release an id. At the owner's choice the app is `com.daniel.horizon.app`, with:
+  - `.share`, `.widgets`, `.intenttests`, `.siritests`;
+  - the App Group `group.com.daniel.horizon.app`.
+  - The widget extension takes the plain `.widgets` again, since the new prefix leaves the 2026-10-06 workaround behind. Its first registration answered "not available" and went through on the next build, so the id was only still propagating.
+- **Unchanged:**
+  - `Identifiers.bundlePrefix` (`com.daniel.horizon`), which names the log's subsystem, the Keychain's service, background tasks and activity types, not the bundle;
+  - the `horizon://` scheme, so the links already on reminders still open the app;
+  - the Mac's preferences suite name, so its sync memory carries over.
+- **What it costs.**
+  - On iOS, the new app installs beside the old one rather than over it. The library comes across through Import Library, with its reminder links. The old app should not be opened again once the new one has imported, since both would sync the same Horizon list; delete it once the new one checks out.
+  - On a Mac, the store in Application Support/Horizon carries over. Its settings, kept under the bundle id, do not: Export Library and Import Library carry them. Reminders, Calendar and Keychain access are asked for again.
+- **The main checkout** still builds the old identity on the free team until this branch is merged.
