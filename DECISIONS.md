@@ -639,3 +639,21 @@ The owner: a tap on an item went straight to its editor. It should open a page o
   - Change Settings' Claude Model cases were renamed from `sonnet5`, `opus5`, `haiku45` to `sonnet`, `opus`, `haiku`. A shortcut saved with the old value has to be set again, once.
   - The server-side refusal fallback (`fallbacks: "default"`) is not sent. It would let Anthropic answer with a model the user did not choose. A refusal still ends the part as before.
 - **Verified.** All three pass the reading evals: recall 1.0 on Sonnet 5.5, 0.994 on Opus 5.5 and 0.935 on Haiku 5.5, with date accuracy 0.947 and no `.ready` errors on any of them. Opus 5.5 had no empty or cut-off replies. Haiku 5.5 misses items dated by week number on fixture 15 (3 of 9 found, then 1 of 9 on a rerun), so that is a real weakness, not noise. It is not yet known whether turning thinking off causes it. Installed on the owner's iPhone.
+
+## 2026-10-23 · Export Library and Import Library
+
+- **Why.** Moving to the paid team makes Horizon a new app to iOS, and it starts empty. The owner asked for a way to carry the library across by hand that keeps the new install tied to the reminders the old one wrote.
+- **The whole store, not its rows.** The file (`.horizonlibrary`, an Apple Archive, LZFSE) holds:
+  - the store itself, copied with SQLite's online backup while it stays open;
+  - the documents' files;
+  - the sync's memory: the reminders it has seen, and the list's identity;
+  - the app's settings, the system's own keys left out.
+  - Every item keeps its id and its reminder's identifier, so the reconciler finds the old reminders by identifier, or by the `horizon://obligation/<id>` link on each, and writes no second copy. Tombstones, the bin, overrides and document words come too.
+  - A field-by-field export would have to be kept in step with every schema change, and anything it forgot would be lost without a sign. The generation guard covers the store: a file from a newer build is refused.
+- **Import replaces; it does not merge.** The store can only be swapped before it opens, so an import is unpacked and checked, waits beside the store, and is applied at the next launch (`LibraryArchive.applyPending`, in `HorizonApp.init`). It asks first ("Replace This Library?", with the file's device, date and counts), as erasing does. Until the app is reopened, Cancel Import takes it back. On iOS, Settings says to close Horizon from the app switcher; the Mac offers Quit Horizon. The app never quits itself on iOS, which the HIG and App Review forbid.
+- **The Claude key stays behind.** A secret is never written to a file. The footer says to enter it again. On iOS it also says to save the file outside Horizon's own folder.
+- **Where:** Settings ▸ Library on iOS, and the Mac's Settings ▸ General. A presentation hangs on its own row: on a Form's section, the save sheet never appeared.
+- **Verified.**
+  - 140 HorizonCore tests, two of them new. A library made while its store was open comes back with the same ids, reminder identifier, tombstone, documents and sync memory, and replaces what was there. A file that is not a library, or that came from a newer generation, is refused before anything is touched.
+  - In the simulator: export, the save sheet, On My iPhone, import, the confirmation, the staged state, and a relaunch that applied it ("library: imported…"), with the strip unchanged. The Mac builds; its pane was not looked at.
+- **The order for the team switch.** First, a build on the current team, installed over the phone's app (same team, so its data stays), exports the library. Then the paid build is installed and imports it. Clear the Horizon list in Reminders only if the import is skipped.

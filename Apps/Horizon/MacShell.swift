@@ -886,9 +886,10 @@ struct MacSettingsView: View {
                 } footer: {
                     Text("Anything saved or dropped into this folder is read as soon as it stops changing.")
                 }
+                LibrarySettingsSection()
             }
             .formStyle(.grouped)
-            .frame(width: 580, height: 400)   // each pane its own height; the window follows the pane
+            .frame(width: 580, height: 600)   // each pane its own height; the window follows the pane
             .tabItem { Label("General", systemImage: "gearshape") }
             Form { ReadingSettingsSections() }
                 .formStyle(.grouped)

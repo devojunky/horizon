@@ -15,6 +15,7 @@ struct SettingsView: View {
         Form {
             ReadingSettingsSections()
             DeviceSettingsSections()
+            LibrarySettingsSection()
             #if DEBUG
             Section {
                 Button("Ingest Sample Syllabus", systemImage: "ladybug") {

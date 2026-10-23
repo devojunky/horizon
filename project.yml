@@ -75,6 +75,12 @@ targets:
         BGTaskSchedulerPermittedIdentifiers: [com.daniel.horizon.ingest, com.daniel.horizon.activity]
         UIBackgroundModes: [processing, fetch]   # fetch: the refresh that moves the plan's Live Activity on (or ends it) while the app is not running
         LSSupportsOpeningDocumentsInPlace: true
+        UTExportedTypeDeclarations:   # Export Library's file (`LibraryArchive`, `UTType.horizonLibrary`)
+          - UTTypeIdentifier: com.daniel.horizon.library
+            UTTypeDescription: Horizon Library
+            UTTypeConformsTo: [public.data]
+            UTTypeTagSpecification:
+              public.filename-extension: [horizonlibrary]
         UISupportsDocumentBrowser: false
         CFBundleDocumentTypes:
           - CFBundleTypeName: Course document

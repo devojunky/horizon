@@ -184,6 +184,11 @@ final class AppModel {
     /// nothing and never reaches Reminders.
     let storeFailure: String?
 
+    /// An import waiting for the next launch to replace the library (`LibraryTransfer`), and the one the last launch
+    /// applied.
+    var pendingImport: LibraryArchive.Manifest?
+    var importedLibrary: LibraryArchive.Manifest?
+
     init(container: ModelContainer, storeFailure: String? = nil) {
         self.container = container
         self.storeFailure = storeFailure

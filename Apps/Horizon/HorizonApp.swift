@@ -15,6 +15,8 @@ struct HorizonApp: App {
     init() {
         let container: ModelContainer
         var failure: String?
+        // A library staged for import replaces this one before anything opens it (`LibraryTransfer`).
+        let imported = AppModel.applyPendingImport()
         do { container = try AppModel.scratchStore.map { try HorizonContainer.at($0.appendingPathComponent("Horizon.store")) } ?? HorizonContainer.shared() }
         catch {
             // The library would not open (a newer build's store, a failed migration, a full disk). The app says so and
@@ -25,6 +27,7 @@ struct HorizonApp: App {
             container = try! HorizonContainer.inMemory()
         }
         let model = AppModel(container: container, storeFailure: failure)
+        model.importedLibrary = imported
         // The intents' way to the model (`@Dependency`), in place before any can run: one launched for an intent runs
         // this init and no scene.
         AppDependencyManager.shared.add(dependency: model)

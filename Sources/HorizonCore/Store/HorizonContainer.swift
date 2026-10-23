@@ -20,6 +20,16 @@ public enum HorizonContainer {
     /// back to an empty store.
     public static func shared() throws -> ModelContainer {
         let schema = Schema(versionedSchema: HorizonSchemaV1.self)
+        return try open(schema, try sharedConfiguration(schema))
+    }
+
+    /// Where the shared store is, without opening it: what an import staged for the next launch replaces
+    /// (`LibraryArchive.applyPending`) and what an export copies.
+    public static func sharedStoreURL() throws -> URL {
+        try sharedConfiguration(Schema(versionedSchema: HorizonSchemaV1.self)).url
+    }
+
+    static func sharedConfiguration(_ schema: Schema) throws -> ModelConfiguration {
         // macOS hands back a group container path even without the entitlement but never creates it; make sure the
         // store's directory exists, and fall back to a private store in Application Support when it cannot.
         let groupReady = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Identifiers.appGroup).map { group in
@@ -28,14 +38,13 @@ public enum HorizonContainer {
         guard groupReady else {
             let dir = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("Horizon", isDirectory: true)
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            return try open(schema, ModelConfiguration(schema: schema, url: dir.appendingPathComponent("Horizon.store"), cloudKitDatabase: .none))
+            return ModelConfiguration(schema: schema, url: dir.appendingPathComponent("Horizon.store"), cloudKitDatabase: .none)
         }
         #if HORIZON_CLOUDKIT
-        let config = ModelConfiguration(schema: schema, groupContainer: .identifier(Identifiers.appGroup), cloudKitDatabase: .private(Identifiers.cloudKitContainer))
+        return ModelConfiguration(schema: schema, groupContainer: .identifier(Identifiers.appGroup), cloudKitDatabase: .private(Identifiers.cloudKitContainer))
         #else
-        let config = ModelConfiguration(schema: schema, groupContainer: .identifier(Identifiers.appGroup), cloudKitDatabase: .none)
+        return ModelConfiguration(schema: schema, groupContainer: .identifier(Identifiers.appGroup), cloudKitDatabase: .none)
         #endif
-        return try open(schema, config)
     }
 
     /// Opens a store on disk unless a newer build has opened it, then records this build's generation beside it (the

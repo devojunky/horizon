@@ -11,7 +11,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "IngestKit"),
-        .target(name: "HorizonCore", dependencies: ["IngestKit"]),
+        .target(name: "HorizonCore", dependencies: ["IngestKit"], linkerSettings: [.linkedLibrary("sqlite3")]),
         .executableTarget(name: "HorizonParse", dependencies: ["IngestKit"]),
         .testTarget(name: "IngestKitTests", dependencies: ["IngestKit"]),
         .testTarget(name: "HorizonCoreTests", dependencies: ["HorizonCore"]),
