@@ -673,3 +673,49 @@ The owner: a tap on an item went straight to its editor. It should open a page o
   - On iOS, the new app installs beside the old one rather than over it. The library comes across through Import Library, with its reminder links. The old app should not be opened again once the new one has imported, since both would sync the same Horizon list; delete it once the new one checks out.
   - On a Mac, the store in Application Support/Horizon carries over. Its settings, kept under the bundle id, do not: Export Library and Import Library carry them. Reminders, Calendar and Keychain access are asked for again.
 - **The main checkout** still builds the old identity on the free team until this branch is merged.
+
+## 2026-10-23 · The tester proxy
+
+- **The owner's aim.** TestFlight testers read with Claude without a key of their own. The owner's concerns were rate limits, token spend and account handling. The long-term plan is Apple's Private Cloud Compute entitlement.
+- **Why PCC shapes it.** With PCC, reads go from the device to Apple, with no server of Horizon's and no key to guard. So the proxy is a bridge, built to be switched off:
+  - no accounts;
+  - no database of requests;
+  - nothing to migrate.
+  - In the app it will be one more reading route beside Claude-with-your-key and the device, as PCC will be.
+- **Hosting: Cloudflare Workers with Durable Objects.**
+  - A read streams for 20 to 60 seconds or more. A Worker is limited in CPU time, not in how long it waits on the network, and passes the stream through as it comes.
+  - There is one Durable Object per attested device key. It runs one request at a time, so an assertion's counter cannot be accepted twice, and two reads cannot both take the last of an allowance.
+  - It is served near the user and costs little.
+  - Weighed and not chosen:
+    - Vercel Functions: streaming within a maximum duration, and the counters in an outside Redis, so two services to keep consistent.
+    - A Swift server on Fly or Render: its types would be shared with the app, but it is a machine to keep running, for something meant to go.
+    - AWS Lambda: response streaming needs more setup for the same result.
+- **Stack.** TypeScript with no framework: a fetch handler with three routes. `@peculiar/x509` (with `reflect-metadata`) checks Apple's certificate chain, `cbor-x` reads App Attest's encoding, and WebCrypto does the ECDSA. `@cloudflare/vitest-pool-workers` runs the tests in workerd. pnpm, because npm 11 crashed resolving the peer set.
+- **Accounts: none.**
+  - App Attest proves a genuine Horizon on a real device. Its key id is the identity; an attestation registers it once.
+  - Every read carries an assertion signed over the request's own bytes, with a counter that only goes up. So a body cannot be swapped, and an assertion cannot be replayed.
+  - A reinstall is a new key, with a fresh allowance. For a TestFlight group that is acceptable. Sign in with Apple can come later if allowances must follow a person.
+- **Spend.**
+  - Each device has a daily and a monthly allowance, in input-token equivalents (input 1, cache write 1.25, cache read 0.1, output 5: Sonnet 5.5's prices). They are counted from each reply's own usage events, and charged however the read ends. At most two reads per device at once.
+  - The hard ceiling is a workspace of its own in the Claude Console with a spend limit.
+  - The model is the server's (Sonnet 5.5), and the output is capped.
+  - The request is held to the fields Horizon's reading request has, so the server's key cannot be used for anything else. `thinking: disabled` becomes `between_tools` for Sonnet 5.5.
+- **Errors in the API's own shape, with types of Horizon's own.**
+  - `horizon_quota` is a 403, never a 429, which the app retries. Its reset time is in `x-horizon-resets-at`.
+  - `horizon_attestation` means attest again; `horizon_busy` means a read is already under way.
+  - `horizon_unavailable`: Anthropic refusing the server's own key or account is not the device's to fix.
+- **Privacy.** Bodies are never logged or kept; the log has outcomes and counts. Settings will say documents go through Horizon's server to Anthropic. A request passed through and not kept counts as not collected for the App Store label.
+- **Verified.** 13 tests in workerd, against a real Durable Object:
+  - assertions over the body, once, for this app, with this key;
+  - a read streamed through untouched under the server's key and model, and charged;
+  - the allowance stops a device with `horizon_quota`;
+  - a refused server key reads as unavailable;
+  - fields Horizon never sends are refused before anything reaches Anthropic;
+  - challenges expire.
+  - The type check is clean, and a dry-run deploy bundles to 628 KiB.
+  - Not verified: an attestation from a real device (only Apple can sign one), and anything deployed.
+- **The compatibility date is 2026-08-22,** the newest the test runtime in `@cloudflare/vitest-pool-workers` 0.23 knows.
+- **Next.**
+  - The app's side: `DCAppAttestService`, the route in Settings, the entitlement, the new errors.
+  - A rate limit on the two open endpoints.
+  - Deploying, which needs the owner's Cloudflare and Anthropic accounts.

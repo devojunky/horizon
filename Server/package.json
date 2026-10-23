@@ -1,0 +1,24 @@
+{
+  "name": "horizon-reading",
+  "private": true,
+  "type": "module",
+  "description": "Horizon's reading proxy for testers: App Attest instead of accounts, a token allowance per device, the Messages API streamed through untouched.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "types": "wrangler types"
+  },
+  "dependencies": {
+    "@peculiar/x509": "2.2.0",
+    "cbor-x": "1.6.8",
+    "reflect-metadata": "0.2.2"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.23.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.0",
+    "wrangler": "4.152.0"
+  }
+}
