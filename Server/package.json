@@ -5,7 +5,8 @@
   "description": "Horizon's reading proxy for testers: App Attest instead of accounts, a token allowance per device, the Messages API streamed through untouched.",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy:dev": "wrangler deploy --env development",
+    "deploy:production": "wrangler deploy --env production",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "types": "wrangler types"

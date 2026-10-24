@@ -719,3 +719,18 @@ The owner: a tap on an item went straight to its editor. It should open a page o
   - The app's side: `DCAppAttestService`, the route in Settings, the entitlement, the new errors.
   - A rate limit on the two open endpoints.
   - Deploying, which needs the owner's Cloudflare and Anthropic accounts.
+
+## 2026-10-23 · The proxy's two domains
+
+- **The owner's call: one domain for development, one for production,** under danielliang.dev (moving to Cloudflare's nameservers).
+  - `horizon-reading-dev.danielliang.dev`: builds from Xcode, App Attest's development environment.
+  - `horizon-reading.danielliang.dev`: TestFlight and the App Store, App Attest's production environment.
+  - They are Wrangler environments, so two Workers with separate secrets and separate Durable Objects: a device and its allowance in one are unknown to the other.
+- **Decided for the owner:**
+  - One level under the domain, not `reading.dev.danielliang.dev`: Cloudflare's free certificate covers `*.danielliang.dev` only, and a second level needs a paid one.
+  - Custom domains (`custom_domain: true`): Cloudflare makes the DNS record and the certificate on deploy, so nothing is set up by hand once the zone is active.
+  - `workers_dev: false` everywhere, so each Worker answers only at its domain.
+  - The top level is named `horizon-reading-local` and has no address, and the scripts deploy only with an environment (`deploy:dev`, `deploy:production`), so a bare deploy cannot replace production.
+  - One Anthropic workspace and key per environment, each with its own spend limit.
+- **For the app, when its side is built:** Debug builds talk to the development domain and Release builds (TestFlight) to production. The App Attest entitlement's environment follows the same split.
+- **Also committed:** `Server/pnpm-workspace.yaml`, which lets `cbor-extract`, `esbuild` and `workerd` run their install scripts (pnpm 10 blocks them by default).

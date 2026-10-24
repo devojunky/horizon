@@ -1,19 +1,25 @@
 // Horizon's reading proxy for testers (DECISIONS 2026-10-23 · The tester proxy). A bridge until Private Cloud
 // Compute: no accounts, no database, nothing of a request kept.
+//
+// Two environments, two Workers, each with its own domain, secrets, Durable Objects (so its own devices and
+// allowances) and App Attest environment:
+//   development  horizon-reading-dev.danielliang.dev  builds run from Xcode (App Attest's development environment)
+//   production   horizon-reading.danielliang.dev      TestFlight and the App Store
+// Deploy one with `pnpm run deploy:dev` or `pnpm run deploy:production`; there is no deploy without an environment.
+// The top level is what `wrangler dev` and the tests run, and is never deployed.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "horizon-reading",
+  "name": "horizon-reading-local",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-22",
   "observability": { "enabled": true, "head_sampling_rate": 1 },   // logs carry outcomes and counts only, never a body
-  "durable_objects": {
-    "bindings": [{ "name": "LEDGER", "class_name": "DeviceLedger" }]
-  },
+  "workers_dev": false,
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DeviceLedger"] }],
+  // Bindings and vars are not inherited by an environment, so each states its own below.
+  "durable_objects": { "bindings": [{ "name": "LEDGER", "class_name": "DeviceLedger" }] },
   "vars": {
     // The app as App Attest names it: team id, then bundle id.
     "APP_ID": "M29Z3F2B5D.com.daniel.horizon.app",
-    // "development" for builds from Xcode, "production" for TestFlight and the App Store.
     "ATTEST_ENVIRONMENT": "development",
     // The one model testers read with, whatever the app asks for.
     "MODEL": "claude-sonnet-5-5",
@@ -23,7 +29,42 @@
     "DAILY_UNITS": "1500000",
     "MONTHLY_UNITS": "12000000",
     "ANTHROPIC_BASE_URL": "https://api.anthropic.com"
+  },
+  "env": {
+    "development": {
+      "name": "horizon-reading-dev",
+      // One level under the domain: Cloudflare's free certificate covers *.danielliang.dev and nothing deeper.
+      // A custom domain makes its own DNS record and certificate on deploy, once the zone is active.
+      "routes": [{ "pattern": "horizon-reading-dev.danielliang.dev", "custom_domain": true }],
+      "workers_dev": false,
+      "durable_objects": { "bindings": [{ "name": "LEDGER", "class_name": "DeviceLedger" }] },
+      "vars": {
+        "APP_ID": "M29Z3F2B5D.com.daniel.horizon.app",
+        "ATTEST_ENVIRONMENT": "development",
+        "MODEL": "claude-sonnet-5-5",
+        "MAX_OUTPUT_TOKENS": "32000",
+        "DAILY_UNITS": "1500000",
+        "MONTHLY_UNITS": "12000000",
+        "ANTHROPIC_BASE_URL": "https://api.anthropic.com"
+      }
+    },
+    "production": {
+      "name": "horizon-reading",
+      "routes": [{ "pattern": "horizon-reading.danielliang.dev", "custom_domain": true }],
+      "workers_dev": false,
+      "durable_objects": { "bindings": [{ "name": "LEDGER", "class_name": "DeviceLedger" }] },
+      "vars": {
+        "APP_ID": "M29Z3F2B5D.com.daniel.horizon.app",
+        "ATTEST_ENVIRONMENT": "production",
+        "MODEL": "claude-sonnet-5-5",
+        "MAX_OUTPUT_TOKENS": "32000",
+        "DAILY_UNITS": "1500000",
+        "MONTHLY_UNITS": "12000000",
+        "ANTHROPIC_BASE_URL": "https://api.anthropic.com"
+      }
+    }
   }
-  // Secrets, set with `wrangler secret put`: ANTHROPIC_API_KEY (a key of a workspace of its own, with a spend limit),
-  // CHALLENGE_SECRET (32 random bytes, base64).
+  // Secrets, per environment (`wrangler secret put <name> --env development|production`): ANTHROPIC_API_KEY (a key
+  // of a workspace of its own, with a spend limit; one workspace per environment) and CHALLENGE_SECRET (32 random
+  // bytes, base64).
 }

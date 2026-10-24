@@ -17,20 +17,35 @@ counter and two running totals (DECISIONS 2026-10-23 · The tester proxy).
 
 ## Deploying
 
-1. In the Claude Console, make a workspace of its own ("Horizon testers"), set its monthly spend limit, and make a key
-   in it.
-2. Sign in to Cloudflare: `pnpm install`, then `pnpm wrangler login`.
-3. Set the secrets:
+Two environments, each its own Worker with its own domain, secrets, devices and allowances:
+
+| Environment | Domain | For | App Attest |
+|---|---|---|---|
+| `development` | `horizon-reading-dev.danielliang.dev` | builds run from Xcode | development |
+| `production` | `horizon-reading.danielliang.dev` | TestFlight and the App Store | production |
+
+1. Wait until danielliang.dev shows **Active** in the Cloudflare dashboard (after the nameservers change). No DNS
+   records are needed: a Worker's custom domain makes its own record and certificate when it is deployed.
+2. In the Claude Console, make a workspace per environment ("Horizon testers (dev)", "Horizon testers"), set each
+   one's monthly spend limit, and make a key in each.
+3. Sign in to Cloudflare: `pnpm install`, then `pnpm wrangler login`.
+4. Set each environment's secrets (shown for development; repeat with `--env production`):
    ```bash
-   pnpm wrangler secret put ANTHROPIC_API_KEY
+   pnpm wrangler secret put ANTHROPIC_API_KEY --env development
    ```
    ```bash
-   openssl rand -base64 32 | pnpm wrangler secret put CHALLENGE_SECRET
+   openssl rand -base64 32 | pnpm wrangler secret put CHALLENGE_SECRET --env development
    ```
-4. In `wrangler.jsonc`, set `ATTEST_ENVIRONMENT` to `production` for TestFlight and App Store builds (`development` for
-   builds run from Xcode), and the allowances you want.
-5. `pnpm run deploy`. The Worker answers at `https://horizon-reading.<your subdomain>.workers.dev`; a custom domain can
-   be added in the dashboard.
+5. Deploy:
+   ```bash
+   pnpm run deploy:dev
+   ```
+   ```bash
+   pnpm run deploy:production
+   ```
+
+There is no deploy without an environment: the top level of `wrangler.jsonc` is for `wrangler dev` and the tests,
+under a name of its own (`horizon-reading-local`) and with no address.
 
 ## Working on it
 
