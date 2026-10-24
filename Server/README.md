@@ -10,7 +10,13 @@ counter and two running totals (DECISIONS 2026-10-23 · The tester proxy).
   a counter that only goes up (`/v1/messages`). There is no sign-in.
 - **What it costs:** a daily and a monthly allowance per device, counted from each reply's own usage events in
   input-token equivalents (input 1, cache write 1.25, cache read 0.1, output 5). At most two reads per device at once.
-  The hard ceiling is the Anthropic workspace's own spend limit.
+  The hard ceiling is the Anthropic workspace's own spend limit. Requests are also limited per minute: ten to the two
+  open endpoints from one network address, thirty reads from one device key (a 429 with Retry-After, which the app
+  waits out).
+- **What the app is told:** errors in the API's own shape, with types of Horizon's own: `horizon_quota` (403, the
+  allowance is used up, with `x-horizon-resets-at`), `horizon_unknown_key` (401, attest a new key),
+  `horizon_attestation` (401, a proof that did not verify), `horizon_busy` (409), `horizon_unavailable` (503, the
+  server's own Anthropic key or account was refused). The app's side is IngestKit's `ReadingService`.
 - **What reaches Anthropic:** the body Horizon builds, unchanged except that the model is the server's (Sonnet 5.5),
   the output is capped and the reply always streams. Anything else (tools, other fields) is refused. Bodies are never
   logged; the log has outcomes and counts.
@@ -62,8 +68,6 @@ testers use it.
 
 ## Not done yet
 
-- Horizon's side: `DCAppAttestService` (generate, attest, assert), the key id in the Keychain, a reading route that
-  says documents go through Horizon's server to Anthropic, the App Attest entitlement, and the errors `horizon_quota`,
-  `horizon_attestation`, `horizon_busy`, `horizon_unavailable` in the user's words.
-- A rate limit on `/v1/challenge` and `/v1/attest`, which anyone can call (Cloudflare's rate-limiting binding).
-- Apple's fraud receipt (kept, not yet used) and a way to revoke a device.
+- Apple's fraud receipt (kept, not yet used). Exchanging it with Apple tells how many keys a device has attested, which
+  is how a device that keeps making new keys (and so fresh allowances) would be seen.
+- A way to revoke a device. The log keeps no key ids, so there is nothing to revoke by yet.

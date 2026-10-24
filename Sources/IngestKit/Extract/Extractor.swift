@@ -62,7 +62,7 @@ actor Extractor {
         switch route {
         case .claude:
             // A large context, read in roomy chunks so a syllabus is one call with every page attached as a picture.
-            guard let configuration, !configuration.apiKey.isEmpty else { throw IngestError.claudeUnavailable("no API key") }
+            guard let configuration, configuration.isUsable else { throw IngestError.claudeUnavailable("no API key") }
             log("claude: \(configuration.model.rawValue), chunk budget 60000 tokens, \(picturesPerChunk) pictures per chunk")
             return Extractor(route: route, contextSize: 200_000, chunkBudgetTokens: 60_000, charsPerToken: 3.5, fixedOverheadTokens: 2_000,
                              outputBudgetTokens: 16_000, system: nil, claude: ClaudeClient(configuration: configuration, transport: transport, log: log), log: log, progress: progress)
@@ -98,7 +98,7 @@ actor Extractor {
 
     /// Whether Claude answers with this configuration: one tiny request, so Settings can say so before a document is shared.
     static func probe(claude configuration: ClaudeConfiguration) async throws -> String {
-        guard !configuration.apiKey.isEmpty else { throw IngestError.claudeUnavailable("no API key") }
+        guard configuration.isUsable else { throw IngestError.claudeUnavailable("no API key") }
         do { return try await ClaudeClient(configuration: configuration).probe() }
         catch { throw IngestError.claudeUnavailable(Self.explainClaude(error)) }
     }
@@ -111,6 +111,9 @@ actor Extractor {
         case ClaudeError.billing: return "the Anthropic account behind the key is out of credit; add credit in the Anthropic Console, then try again"
         case ClaudeError.forbidden(let model):
             return "Anthropic does not let this key use \(ClaudeModelChoice(rawValue: model)?.displayName ?? model); choose another model in Settings, or check the key's organization"
+        case ClaudeError.allowanceUsed:
+            return error.localizedDescription + "; documents wait until then, or can be read on this device"
+        case ClaudeError.exhausted(_, let last) where last.hasPrefix("Horizon's reading service"): return last
         case let error as ClaudeError: return error.localizedDescription
         default: return String(error.localizedDescription.prefix(200))
         }

@@ -102,10 +102,12 @@ public actor IngestCoordinator {
     /// Whether a wait for Claude stops the drain: every document behind it would get the same answer (no key, a key
     /// refused, no connection, an account out of credit, a model Anthropic does not have or will not let the key use, a
     /// request it refused), so they wait with it rather than each spending a request on that answer. A rate limit or an
-    /// overload the client has already waited out does not: the next document may pass. The reason is known by its words
-    /// (`ClaudeError`'s, through `Extractor.explainClaude`), since they are what a waiting document keeps.
+    /// overload the client has already waited out does not: the next document may pass. Horizon's reading service answers
+    /// every document from this device alike (its allowance used up, the device not confirmed, the service down), so its
+    /// waits stop the drain too. The reason is known by its words (`ClaudeError`'s, through `Extractor.explainClaude`),
+    /// since they are what a waiting document keeps.
     public static func stopsDrain(_ why: String) -> Bool {
-        isKeyOrModelProblem(why) || why.hasPrefix("no connection") || why.contains("out of credit")
+        isKeyOrModelProblem(why) || why.hasPrefix("no connection") || why.contains("out of credit") || why.contains("Horizon's reading service")
     }
 
     /// Whether a wait for Claude is the key's or the model's, for Settings to put right rather than another try: no key, a

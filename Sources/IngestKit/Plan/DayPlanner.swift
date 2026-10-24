@@ -430,7 +430,7 @@ public actor DayPlanner {
             log("plan: the device model is unavailable (\(String(describing: reason))); planning with Claude")
             useClaude = true
         }
-        if useClaude, let claude, !claude.apiKey.isEmpty {
+        if useClaude, let claude, claude.isUsable {
             do {
                 let client = ClaudeClient(configuration: claude, transport: transport, log: log)
                 // Low effort, and room above it: at 1500 tokens a plan with study time was spent thinking before a word of it was written.
@@ -480,7 +480,7 @@ public actor DayPlanner {
         var tokens = Tokens()
         let device = SystemLanguageModel.default
         let deviceReady: Bool = { if case .available = device.availability { return true }; return false }()
-        if (route == .claude || !deviceReady), let claude, !claude.apiKey.isEmpty {
+        if (route == .claude || !deviceReady), let claude, claude.isUsable {
             do {
                 let client = ClaudeClient(configuration: claude, transport: transport, log: log)
                 let completion = try await client.stream(ClaudeClient.Request(system: Self.calendarInstructions, user: prompt, schema: ClaudeSchemas.calendar, maxOutputTokens: 4000, effort: "low")) { _ in }

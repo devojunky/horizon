@@ -339,12 +339,13 @@ struct EditCourseIntent: AppIntent {
 }
 
 /// Horizon's settings, in one action (Apple's apps change theirs through one, the setting a parameter): which model
-/// reads documents and which plans the day, Claude (with the user's key) or this device's own, and which Claude.
+/// reads documents and which plans the day, Claude (with the user's key, or through Horizon's reading service) or this
+/// device's own, and which Claude model for a key.
 /// What leaves the device is the user's to choose, so anything that would send more is asked about and wants the device
 /// unlocked; the key itself is typed in Settings, never spoken or passed through a shortcut.
 struct ChangeSettingsIntent: AppIntent {
     static let title: LocalizedStringResource = "Change Settings"
-    static let description = IntentDescription("Chooses what reads documents and what plans the day: Claude, with your Anthropic key (what it reads or plans from is sent to Anthropic), or this device's own model (nothing leaves the device); and which Claude model. Given nothing, it says how they're set.",
+    static let description = IntentDescription("Chooses what reads documents and what plans the day: Claude, with your Anthropic key or through Horizon's reading service (what it reads or plans from is sent to Anthropic), or this device's own model (nothing leaves the device); and which Claude model. Given nothing, it says how they're set.",
                                                categoryName: "Settings", searchKeywords: ["Claude", "on device", "privacy", "model", "AI", "provider", "Sonnet", "Opus", "Haiku"])
     static let authenticationPolicy: IntentAuthenticationPolicy = .requiresAuthentication
     @Parameter(title: "Read Documents With") var reading: ModelProvider?
@@ -358,19 +359,24 @@ struct ChangeSettingsIntent: AppIntent {
 
     @MainActor func perform() async throws -> some ProvidesDialog {
         let toClaude = (reading == .claude && model.readingRoute != .claude) || (planning == .claude && !model.planWithClaude)
-        if toClaude || claudeModel != nil, model.claudeConfiguration == nil {
+        if toClaude, model.claudeConfiguration == nil {
             throw IntentFailure.message("Claude needs your Anthropic API key first. Add it in Horizon's Settings.")
+        }
+        if claudeModel != nil, model.usesReadingService || model.claudeKey.isEmpty {
+            throw IntentFailure.message(model.usesReadingService ? "Horizon's reading service always reads with Sonnet 5.5. To choose a model, use your own key in Horizon's Settings."
+                                                                  : "Choosing a Claude model needs your Anthropic API key first. Add it in Horizon's Settings.")
         }
         if toClaude {
             let sent = [reading == .claude && model.readingRoute != .claude ? "each document's text and pages" : nil,
                         planning == .claude && !model.planWithClaude ? "each plan's events, items and what you told the planner" : nil].compactMap { $0 }
-            let which = (claudeModel?.choice ?? model.claudeModel).displayName
-            try await requestConfirmation(actionName: .set, dialog: "Use Claude \(which)? \(Spoken.list(sent).sentenceStart) will be sent to Anthropic under your key.")
+            let which = model.usesReadingService ? ClaudeModelChoice.sonnet.displayName : (claudeModel?.choice ?? model.claudeModel).displayName
+            let how = model.usesReadingService ? "through Horizon's server" : "under your key"
+            try await requestConfirmation(actionName: .set, dialog: "Use Claude \(which)? \(Spoken.list(sent).sentenceStart) will be sent to Anthropic \(how).")
         }
         if let claudeModel { model.claudeModel = claudeModel.choice }
         if let reading { model.readingRoute = reading == .claude ? .claude : .onDevice }
         if let planning { model.planWithClaude = planning == .claude }
-        let claude = "Claude \(model.claudeModel.displayName)"
+        let claude = model.usesReadingService ? "Claude \(ClaudeModelChoice.sonnet.displayName), through Horizon," : "Claude \(model.claudeModel.displayName)"
         let reads = model.readingRoute == .claude ? "\(claude) reads documents" : "Documents are read on this device"
         let plans = model.planWithClaude ? (model.readingRoute == .claude ? "and plans your day" : "and \(claude) plans your day") : "and the device plans your day"
         let changed = reading != nil || planning != nil || claudeModel != nil

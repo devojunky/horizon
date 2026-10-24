@@ -17,6 +17,11 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DeviceLedger"] }],
   // Bindings and vars are not inherited by an environment, so each states its own below.
   "durable_objects": { "bindings": [{ "name": "LEDGER", "class_name": "DeviceLedger" }] },
+  // Per minute: the two open endpoints by network address (a campus shares one, so not tighter), reads by device key.
+  "ratelimits": [
+    { "name": "OPEN_LIMIT", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } },
+    { "name": "READ_LIMIT", "namespace_id": "1002", "simple": { "limit": 30, "period": 60 } }
+  ],
   "vars": {
     // The app as App Attest names it: team id, then bundle id.
     "APP_ID": "M29Z3F2B5D.com.daniel.horizon.app",
@@ -38,6 +43,11 @@
       "routes": [{ "pattern": "horizon-reading-dev.danielliang.dev", "custom_domain": true }],
       "workers_dev": false,
       "durable_objects": { "bindings": [{ "name": "LEDGER", "class_name": "DeviceLedger" }] },
+      // Per minute: the two open endpoints by network address (a campus shares one, so not tighter), reads by device key.
+      "ratelimits": [
+        { "name": "OPEN_LIMIT", "namespace_id": "2001", "simple": { "limit": 10, "period": 60 } },
+        { "name": "READ_LIMIT", "namespace_id": "2002", "simple": { "limit": 30, "period": 60 } }
+      ],
       "vars": {
         "APP_ID": "M29Z3F2B5D.com.daniel.horizon.app",
         "ATTEST_ENVIRONMENT": "development",
@@ -53,6 +63,11 @@
       "routes": [{ "pattern": "horizon-reading.danielliang.dev", "custom_domain": true }],
       "workers_dev": false,
       "durable_objects": { "bindings": [{ "name": "LEDGER", "class_name": "DeviceLedger" }] },
+      // Per minute: the two open endpoints by network address (a campus shares one, so not tighter), reads by device key.
+      "ratelimits": [
+        { "name": "OPEN_LIMIT", "namespace_id": "3001", "simple": { "limit": 10, "period": 60 } },
+        { "name": "READ_LIMIT", "namespace_id": "3002", "simple": { "limit": 30, "period": 60 } }
+      ],
       "vars": {
         "APP_ID": "M29Z3F2B5D.com.daniel.horizon.app",
         "ATTEST_ENVIRONMENT": "production",

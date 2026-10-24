@@ -9,7 +9,9 @@
 // No accounts and nothing of a request kept: the ledger holds a device's public key, its assertion counter and two
 // running totals. Errors come back in the API's own shape (`{type: "error", error: {type, message}}`), with types of
 // Horizon's own where the app must tell them apart: `horizon_quota` (the allowance is used up: not a 429, which the app
-// retries) and `horizon_attestation` (attest again).
+// retries), `horizon_unknown_key` (attest a new key), `horizon_attestation` (a proof that did not verify) and
+// `horizon_busy`. Too many requests from one network or one device are a plain 429 with Retry-After, which the app waits
+// out.
 
 import { AttestError, type AttestEnvironment, verifyAttestation } from "./appattest";
 import { fromBase64 } from "./bytes";
@@ -22,6 +24,8 @@ export { DeviceLedger };
 
 export interface Env {
   LEDGER: DurableObjectNamespace<DeviceLedger>;
+  OPEN_LIMIT: RateLimit;
+  READ_LIMIT: RateLimit;
   ANTHROPIC_API_KEY: string;
   CHALLENGE_SECRET: string;
   APP_ID: string;
@@ -45,6 +49,13 @@ function limits(env: Env): Limits {
 export async function handle(request: Request, env: Env, ctx: ExecutionContext, upstream: typeof fetch = fetch): Promise<Response> {
   const { pathname } = new URL(request.url);
   if (request.method !== "POST") return failure(405, "invalid_request_error", "Only POST is served here.");
+
+  // Anyone can ask for a challenge or send an attestation, and checking one costs Apple's certificate chain: a limit per
+  // network address. Reads are limited per device key before anything else is done for them.
+  const tooMany = () => failure(429, "rate_limit_error", "Too many requests; try again in a minute.", { "retry-after": "60" });
+  if (pathname === "/v1/challenge" || pathname === "/v1/attest") {
+    if (!(await env.OPEN_LIMIT.limit({ key: request.headers.get("cf-connecting-ip") ?? "unknown" })).success) return tooMany();
+  }
 
   if (pathname === "/v1/challenge") return Response.json({ challenge: await issueChallenge(env.CHALLENGE_SECRET) });
 
@@ -70,6 +81,7 @@ export async function handle(request: Request, env: Env, ctx: ExecutionContext, 
   if (pathname === "/v1/messages") {
     const keyId = request.headers.get("x-horizon-key-id"), assertion = request.headers.get("x-horizon-assertion");
     if (!keyId || !assertion) return failure(401, "horizon_attestation", "This server reads only for an attested Horizon.");
+    if (!(await env.READ_LIMIT.limit({ key: keyId })).success) return tooMany();
     // The assertion is signed over the body exactly as sent, so the body is read as bytes before anything parses it.
     const bytes = new Uint8Array(await request.arrayBuffer());
     const ledger = env.LEDGER.get(env.LEDGER.idFromName(keyId));
@@ -79,7 +91,7 @@ export async function handle(request: Request, env: Env, ctx: ExecutionContext, 
     if (!granted.ok) {
       console.log(JSON.stringify({ event: "refused", reason: granted.reason, detail: granted.detail }));
       switch (granted.reason) {
-        case "unknown-key": return failure(401, "horizon_attestation", "This device's key is not known here; attest again.");
+        case "unknown-key": return failure(401, "horizon_unknown_key", "This device's key is not known here; attest a new one.");
         case "bad-assertion": return failure(401, "horizon_attestation", "The request's assertion did not verify.");
         case "busy": return failure(409, "horizon_busy", "Another read from this device is under way.");
         case "quota": return failure(403, "horizon_quota", "This device's reading allowance is used up.", granted.resetsAt ? { "x-horizon-resets-at": granted.resetsAt } : {});

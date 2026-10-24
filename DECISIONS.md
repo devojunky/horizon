@@ -734,3 +734,33 @@ The owner: a tap on an item went straight to its editor. It should open a page o
   - One Anthropic workspace and key per environment, each with its own spend limit.
 - **For the app, when its side is built:** Debug builds talk to the development domain and Release builds (TestFlight) to production. The App Attest entitlement's environment follows the same split.
 - **Also committed:** `Server/pnpm-workspace.yaml`, which lets `cbor-extract`, `esbuild` and `workerd` run their install scripts (pnpm 10 blocks them by default).
+
+## 2026-10-23 · The reading service in the app
+
+- **What was left of the tester proxy, built.** Horizon now reads through its own service, and the service limits how fast anyone can knock.
+- **Which Claude is a setting of its own.** Settings' Claude section starts with "Through Horizon" or "With Your Own Key" (`AppModel.claudeAccess`). The reading route stays two choices: Claude, or the phone. A third route would have doubled every "Claude" in the app (the plan's switch, the intents, Coverage's waiting line), and the plan's switch follows the same Claude reading uses.
+- **Decided for the owner:**
+  - **A device with no key and the service offered starts on the service.** A tester's first document is then read with Claude, which is the point of the service. The route's default was already Claude; Settings says "go to Anthropic through Horizon's server, which keeps none of it", where it says "under your key" for a key. To ask on first launch instead, add a choice to the empty Coverage page.
+  - **The service reads with Sonnet 5.5 only.** The server sets the model, so the app writes the request for that model (`ClaudeConfiguration(service:)`), and its thinking setting is Sonnet 5.5's (`between_tools`). Asked by Siri to choose another model on the service, Change Settings says it reads with Sonnet 5.5 and points to the user's own key.
+  - **Offered where App Attest is: iOS on a device.** Not the simulator, and not the Mac, whose build carries no App Attest entitlement yet. `--show-reading-service` (DEBUG) offers it in the simulator to look at Settings, every attestation failing.
+  - **Debug builds talk to the development service, Release builds to production.** Both are set in `Base.xcconfig` (`HORIZON_READING_SERVICE`, `APP_ATTEST_ENVIRONMENT`), so a build and its service always agree on App Attest's environment, even a Release build run from Xcode.
+- **How a request is proved** (IngestKit's `ReadingService`, behind `ClaudeCredential.service`):
+  - The first request generates a key, fetches a challenge, has Apple attest the key over it, and registers it. The key's id goes in the Keychain, per service.
+  - Every request then carries an assertion over its exact bytes.
+  - Requests go out one at a time, from the assertion until the service answers with a status. The service accepts a counter only above the last it saw, and a read and a plan share the key. A test proves the order, and fails without the queue.
+  - A key the device lost (a reinstall keeps the Keychain's id, not the Secure Enclave's key) is replaced before anything is sent. A key the service does not know (`horizon_unknown_key`, a new type on the server) or whose proof failed is replaced once, and a second refusal is the answer.
+- **The service's answers, in the user's words.**
+  - The allowance used up says until when, and that documents wait or can be read on this device. It is not retried.
+  - Busy and unavailable are retried, then said.
+  - None of them mentions a key. All of them stop the drain, since every document from the device would get the same answer, and Coverage offers Try Again and Read on This Device.
+  - Test Connection now shows the reason alone. It used to open with "Claude could not read the document", a read's words, for the key too.
+- **Rate limits on the server.** Ten requests a minute from one network address to the two endpoints anyone can call (a campus shares an address, so no tighter), and thirty reads a minute per device key. Each is a 429 with Retry-After, which the app waits out.
+- **Privacy.**
+  - The manifest now declares what the service keeps: the App Attest key's id (Device ID) and the counts of what a device read (Other Usage Data). Neither is linked to the person or used for tracking; both are for app functionality. Documents and calendar events only pass through, and are not collected in Apple's sense. The App Store label must say the same at release.
+  - The Calendars purpose string says the day's events go to Anthropic "directly or through Horizon's reading service".
+- **Verified.**
+  - 191 IngestKit tests, eight of them new: a first read attests and then signs the request's own bytes; a kept key is used; an unknown key is replaced once; a lost key is replaced; the allowance; a refused attestation; busy and unavailable; the one-at-a-time queue.
+  - 140 HorizonCore tests: the service's answers stop the drain and are not the key's.
+  - 14 server tests, the rate limits among them. The App Intents suite, 10 of 10. iOS and Mac builds.
+  - In the simulator: Settings' Claude section, both choices, and Test Connection's refusal.
+  - Not verified until the server is redeployed and the phone tries it: a real attestation against the development service.

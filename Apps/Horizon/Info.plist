@@ -54,6 +54,8 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>HorizonReadingService</key>
+	<string>$(HORIZON_READING_SERVICE)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSApplicationCategoryType</key>
@@ -61,7 +63,7 @@
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
 	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>Horizon reads your calendar to plan your day around classes and appointments. With planning by Claude turned on, the day's events are sent to Anthropic.</string>
+	<string>Horizon reads your calendar to plan your day around classes and appointments. With planning by Claude turned on, the day's events are sent to Anthropic, directly or through Horizon's reading service.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Horizon scans printed syllabi and handouts with the camera.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>

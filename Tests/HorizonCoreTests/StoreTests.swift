@@ -914,7 +914,10 @@ struct StoreFollowThroughTests {
         let cases: [(ClaudeError, stops: Bool, settings: Bool)] = [
             (.unauthorized, true, true), (.forbidden(model: "claude-opus-5-5"), true, true), (.modelNotFound("claude-sonnet-9"), true, true),
             (.badRequest("max_tokens: too large"), true, true), (.billing, true, false), (.network("offline"), true, false),
-            (.rateLimited(retryAfter: 30), false, false), (.overloaded, false, false), (.server(status: 529, message: "rejected upstream"), false, false)]
+            (.rateLimited(retryAfter: 30), false, false), (.overloaded, false, false), (.server(status: 529, message: "rejected upstream"), false, false),
+            // Horizon's reading service answers every document from this device alike, and none of it is a key to check.
+            (.allowanceUsed(resetsAt: Date()), true, false), (.deviceRefused("App Attest is not available on this device"), true, false),
+            (.deviceUnknown, true, false), (.exhausted(attempts: 4, last: ClaudeError.serviceUnavailable.localizedDescription), true, false)]
         for (error, stops, settings) in cases {
             let why = error.localizedDescription
             #expect(IngestCoordinator.stopsDrain(why) == stops && IngestCoordinator.isKeyOrModelProblem(why) == settings, "\(why)")

@@ -36,7 +36,8 @@ struct SettingsView: View {
     }
 }
 
-/// The reading route as one choice, the Claude key and model, and the one small task Claude may take on.
+/// The reading route as one choice; which Claude (Horizon's reading service, where it is offered, or the user's own key,
+/// with its model); and the one small task Claude may take on.
 struct ReadingSettingsSections: View {
     @Environment(AppModel.self) private var model
     @State private var key = ""
@@ -45,17 +46,25 @@ struct ReadingSettingsSections: View {
     @State private var confirmRemove = false
 
     private var hasKey: Bool { !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    /// Horizon's reading service is offered here (an iPhone or iPad with App Attest, in a build that names the service).
+    private var serviceOffered: Bool { AppModel.readingService != nil }
+    private var canUseClaude: Bool { model.usesReadingService || hasKey }
     #if os(macOS)
     private let here = "this Mac"
     #else
     private let here = "the phone"
     #endif
 
+    private var claudeDetail: String {
+        if model.usesReadingService { return "Sonnet 5.5, through Horizon. The text and pages of every document go to Anthropic through Horizon's server, which keeps none of it." }
+        if hasKey { return "\(model.claudeModel.displayName). The text and pages of every document are sent to Anthropic under your key." }
+        return serviceOffered ? "Needs Horizon's service or a key, below." : "Needs a key, below."
+    }
+
     var body: some View {
         @Bindable var model = model
         Section {
-            RouteRow(title: "Claude", detail: hasKey ? "\(model.claudeModel.displayName). The text and pages of every document are sent to Anthropic under your key." : "Needs a key, below.",
-                     selected: model.readingRoute == .claude, disabled: !hasKey) { model.readingRoute = .claude }
+            RouteRow(title: "Claude", detail: claudeDetail, selected: model.readingRoute == .claude, disabled: !canUseClaude) { model.readingRoute = .claude }
             RouteRow(title: "On \(here)", detail: "Nothing leaves \(here). Less sure of tables and pictures; a long syllabus takes minutes.",
                      selected: model.readingRoute == .onDevice) { model.readingRoute = .onDevice }
         } header: {
@@ -73,52 +82,80 @@ struct ReadingSettingsSections: View {
             else if !had { model.readingRoute = .claude }                                            // a key entered is Claude asked for
         }
         .onChange(of: model.claudeModel) { _, _ in verdict = nil }
-        Section {
-            SecureField("API Key", text: $key, prompt: Text("sk-ant-…")).autocorrectionDisabled()   // no content type: as a password it drew AutoFill's offers to save one
-                #if os(iOS)
-                .textInputAutocapitalization(.never)
-                #endif
-            Picker("Model", selection: $model.claudeModel) {
-                ForEach(ClaudeModelChoice.allCases) { Text($0.displayName).tag($0) }
-            }
-            Text(model.claudeModel.detail).font(.footnote).foregroundStyle(.secondary)
-            Button {
-                Task { await test() }
-            } label: {
-                HStack {
-                    Text("Test Connection")
-                    Spacer()
-                    if testing { ProgressView().controlSize(.small) }
+        if serviceOffered {
+            Section {
+                RouteRow(title: "Through Horizon", detail: "No key needed. Sonnet 5.5, with a daily allowance for \(here).", selected: model.usesReadingService) {
+                    withAnimation { model.claudeAccess = .service; model.readingRoute = .claude; verdict = nil }   // Horizon's Claude chosen is Claude asked for
+                }
+                RouteRow(title: "With Your Own Key", detail: "A key from the Claude Console, billed to your Anthropic account, with the model of your choice.", selected: !model.usesReadingService) {
+                    withAnimation {
+                        model.claudeAccess = .ownKey; verdict = nil
+                        if model.claudeKey.isEmpty { model.readingRoute = .onDevice; model.planWithClaude = false }   // as with a key removed
+                    }
+                }
+                if model.usesReadingService { testRows }
+            } header: {
+                Kicker("Claude")
+            } footer: {
+                if model.usesReadingService {
+                    Text("Horizon's server passes each request to Anthropic and keeps none of it. It knows \(here) only by a key App Attest made for it, and counts what it reads against a daily allowance.")
                 }
             }
-            .disabled(!hasKey || testing)
-            if let verdict {
-                Label(verdict.text, systemImage: verdict.ok ? "checkmark.circle" : "exclamationmark.triangle")
-                    .foregroundStyle(verdict.ok ? .secondary : Design.accentInk).font(.footnote)
-            }
-            if hasKey {
-                // Asks first: the Console shows a key once, so one lost by a slip has to be made again.
-                Button("Remove Key…", role: .destructive) { confirmRemove = true }
-                    .confirmationDialog("Remove your Claude key?", isPresented: $confirmRemove, titleVisibility: .visible) {
-                        Button("Remove Key", role: .destructive) { key = "" }
-                        Button("Cancel", role: .cancel) {}
-                    } message: {
-                        Text("Documents are then read on \(here) and the day is planned there. To use Claude again, paste a key from the Claude Console.")
-                    }
-            }
-        } header: {
-            Kicker("Claude")
-        } footer: {
-            Text("Your own key from the Claude Console, kept in this device's Keychain and never synced; usage is billed to your Anthropic account. Removing the key turns Claude off.")
+            .animation(.default, value: verdict?.text)
         }
-        .animation(.default, value: hasKey)          // Remove Key comes with a key, animated
-        .animation(.default, value: verdict?.text)   // the test's verdict arrives under the button, animated
+        if !model.usesReadingService {
+            Section {
+                SecureField("API Key", text: $key, prompt: Text("sk-ant-…")).autocorrectionDisabled()   // no content type: as a password it drew AutoFill's offers to save one
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    #endif
+                Picker("Model", selection: $model.claudeModel) {
+                    ForEach(ClaudeModelChoice.allCases) { Text($0.displayName).tag($0) }
+                }
+                Text(model.claudeModel.detail).font(.footnote).foregroundStyle(.secondary)
+                testRows
+                if hasKey {
+                    // Asks first: the Console shows a key once, so one lost by a slip has to be made again.
+                    Button("Remove Key…", role: .destructive) { confirmRemove = true }
+                        .confirmationDialog("Remove your Claude key?", isPresented: $confirmRemove, titleVisibility: .visible) {
+                            Button("Remove Key", role: .destructive) { key = "" }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("Documents are then read on \(here) and the day is planned there. To use Claude again, paste a key from the Claude Console.")
+                        }
+                }
+            } header: {
+                Kicker(serviceOffered ? "Your key" : "Claude")
+            } footer: {
+                Text("Your own key from the Claude Console, kept in this device's Keychain and never synced; usage is billed to your Anthropic account. Removing the key turns Claude off.")
+            }
+            .animation(.default, value: hasKey)          // Remove Key comes with a key, animated
+            .animation(.default, value: verdict?.text)   // the test's verdict arrives under the button, animated
+        }
         Section {
-            Toggle("Plan the day with Claude", isOn: $model.planWithClaude).disabled(!hasKey)
+            Toggle("Plan the day with Claude", isOn: $model.planWithClaude).disabled(!canUseClaude)
         } header: {
             Kicker("Small tasks")
         } footer: {
-            Text("Planning the day is a small job \(here) does by itself. Turn this on for Claude's plans, with your instructions read more carefully; the day's calendar events, your items and what you told the planner are then sent to Anthropic.")
+            Text("Planning the day is a small job \(here) does by itself. Turn this on for Claude's plans, with your instructions read more carefully; the day's calendar events, your items and what you told the planner are then sent to Anthropic\(model.usesReadingService ? ", through Horizon's server" : "").")
+        }
+    }
+
+    /// Test Connection and its verdict: through the service (its first attestation, when it has none yet), or the key.
+    @ViewBuilder private var testRows: some View {
+        Button {
+            Task { await test() }
+        } label: {
+            HStack {
+                Text("Test Connection")
+                Spacer()
+                if testing { ProgressView().controlSize(.small) }
+            }
+        }
+        .disabled(!canUseClaude || testing)
+        if let verdict {
+            Label(verdict.text, systemImage: verdict.ok ? "checkmark.circle" : "exclamationmark.triangle")
+                .foregroundStyle(verdict.ok ? .secondary : Design.accentInk).font(.footnote)
         }
     }
 
@@ -126,7 +163,11 @@ struct ReadingSettingsSections: View {
         testing = true
         defer { testing = false }
         do {
-            verdict = (true, try await Ingestor.probe(claude: ClaudeConfiguration(apiKey: key, model: model.claudeModel)))
+            let configuration = model.usesReadingService ? model.claudeConfiguration : ClaudeConfiguration(apiKey: key, model: model.claudeModel)
+            guard let configuration else { return }
+            verdict = (true, try await Ingestor.probe(claude: configuration))
+        } catch IngestError.claudeUnavailable(let why) {
+            verdict = (false, why.sentenceStart + ".")   // the reason alone: "Claude could not read the document" is a read's words, not a test's
         } catch {
             verdict = (false, error.localizedDescription)
         }

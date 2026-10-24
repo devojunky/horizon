@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftData
 import AppIntents
 import HorizonCore
+import IngestKit
 import os
 #if os(iOS)
 import BackgroundTasks
@@ -39,6 +40,8 @@ struct HorizonApp: App {
         }
         if CommandLine.arguments.contains("--read-on-device") { model.readingRoute = .onDevice }
         if CommandLine.arguments.contains("--read-with-claude") { model.readingRoute = .claude }
+        // `--read-through-horizon`: Claude through Horizon's reading service, where it is offered (a device with App Attest).
+        if CommandLine.arguments.contains("--read-through-horizon") { model.claudeAccess = .service; model.readingRoute = .claude }
         #endif
         _model = State(initialValue: model)
         #if DEBUG
@@ -74,6 +77,16 @@ struct HorizonApp: App {
                         await model.importFiles([sample]); return
                     }
                     if CommandLine.arguments.contains("--demo-reading") { model.demoReading(); return }   // the reading section at its widest; nothing is read
+                    // `--probe-reading-service` [`--forget-reading-service-key`]: Test Connection through Horizon's reading service
+                    // without a tap (attesting a key first when there is none, or a new one with the second flag), its
+                    // answer printed: on a phone, `devicectl device process launch --console` shows it. Nothing is read.
+                    if CommandLine.arguments.contains("--probe-reading-service") {
+                        guard let service = AppModel.readingService else { print("horizon: reading service: not offered on this device"); return }
+                        if CommandLine.arguments.contains("--forget-reading-service-key") { await service.renew() }
+                        do { print("horizon: reading service: \(try await Ingestor.probe(claude: ClaudeConfiguration(service: service)))") }
+                        catch { print("horizon: reading service: \(error.localizedDescription)") }
+                        return
+                    }
                     // `--ingest-file <path>` reads any file the simulator can see: unreadable ones, duplicates, and so on.
                     if let i = CommandLine.arguments.firstIndex(of: "--ingest-file"), i + 1 < CommandLine.arguments.count {
                         await model.importFiles([URL(fileURLWithPath: CommandLine.arguments[i + 1])]); return

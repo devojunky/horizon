@@ -68,9 +68,26 @@ final class AppModel {
     var planWithClaude: Bool = AppModel.defaults.bool(forKey: "planWithClaude") {
         didSet { AppModel.defaults.set(planWithClaude, forKey: "planWithClaude") }
     }
-    /// What a read or plan on Claude uses, or nil without a key.
+    /// Which Claude: the user's own key, or Horizon's reading service, Claude through Horizon's server for someone with no
+    /// key of their own (`AppModel.readingService`; DECISIONS 2026-10-23 · The reading service in the app). Persisted;
+    /// until it is chosen, the service where it is offered and no key is stored, so a tester's first document is read
+    /// with Claude.
+    enum ClaudeAccess: String { case ownKey, service }
+    var claudeAccess: ClaudeAccess = AppModel.initialClaudeAccess() {
+        didSet { AppModel.defaults.set(claudeAccess.rawValue, forKey: "claudeAccess") }
+    }
+    private static func initialClaudeAccess() -> ClaudeAccess {
+        if let chosen = ClaudeAccess(rawValue: defaults.string(forKey: "claudeAccess") ?? "") { return chosen }
+        let keyed = scratchStore == nil && !(Keychain.read("claude") ?? "").isEmpty
+        return !keyed && readingService != nil ? .service : .ownKey
+    }
+    /// Whether Claude is the reading service's here: chosen, and offered on this device.
+    var usesReadingService: Bool { claudeAccess == .service && Self.readingService != nil }
+    /// What a read or plan on Claude uses: the reading service when that is the choice, else the user's key, or nil
+    /// with neither.
     var claudeConfiguration: ClaudeConfiguration? {
-        claudeKey.isEmpty ? nil : ClaudeConfiguration(apiKey: claudeKey, model: claudeModel)
+        if usesReadingService, let service = Self.readingService { return ClaudeConfiguration(service: service) }
+        return claudeKey.isEmpty ? nil : ClaudeConfiguration(apiKey: claudeKey, model: claudeModel)
     }
     /// Where the next read goes: Claude when chosen and keyed, else the device.
     var readRoute: IngestOptions.RoutePolicy { readingRoute == .claude && claudeConfiguration != nil ? .claude : .onDevice }
@@ -446,7 +463,8 @@ final class AppModel {
             if !items.isEmpty || !queued.isEmpty { await requestReminders() }
         }
         let route = readRoute
-        Self.log("drain: reminders \(remindersAuthorized.map { "\($0)" } ?? "unknown"), route \(route == .claude ? "claude (\(claudeModel.rawValue), key of \(claudeKey.count) chars)" : "onDevice")")
+        let claude = usesReadingService ? "claude (\(ClaudeModelChoice.sonnet.rawValue), through the reading service)" : "claude (\(claudeModel.rawValue), key of \(claudeKey.count) chars)"
+        Self.log("drain: reminders \(remindersAuthorized.map { "\($0)" } ?? "unknown"), route \(route == .claude ? claude : "onDevice")")
         if let queued = try? await store.queuedDocuments(), !queued.isEmpty {   // nothing to read: no line saying so
             withAnimation { statusLine = route == .claude ? "Reading documents with Claude…" : "Reading documents on this device…" }
         }

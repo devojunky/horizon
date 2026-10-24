@@ -18,6 +18,19 @@ public enum ClaudeError: Error, LocalizedError, Sendable, Equatable {
     case interrupted(String)
     case malformed(String)
     case exhausted(attempts: Int, last: String)
+    /// Horizon's reading service: this device has read its allowance, until `resetsAt` (the service's day and month are
+    /// UTC's). Waiting until then is the only fix, so no retry.
+    case allowanceUsed(resetsAt: Date?)
+    /// Horizon's reading service does not know this device's key (it was never attested there, or the service lost it).
+    /// The client attests a new key once before giving up.
+    case deviceUnknown
+    /// Horizon's reading service could not confirm this copy of Horizon: App Attest is missing, refused, or its proof did
+    /// not verify. After one new key, nothing a retry does changes it.
+    case deviceRefused(String)
+    /// Horizon's reading service is busy with another read from this device.
+    case serviceBusy
+    /// Horizon's reading service cannot reach Claude for anyone (its own account or key was refused).
+    case serviceUnavailable
 
     public var errorDescription: String? {
         switch self {
@@ -34,12 +47,27 @@ public enum ClaudeError: Error, LocalizedError, Sendable, Equatable {
         case .interrupted(let why): "the connection dropped (\(why))"
         case .malformed(let why): "the reply could not be read: \(why)"
         case .exhausted(let attempts, let last): "gave up after \(attempts) attempts; last: \(last)"
+        case .allowanceUsed(let resets):
+            "this device's allowance on Horizon's reading service is used up" + (resets.map { " until \($0.formatted(.dateTime.weekday(.wide).hour().minute()))" } ?? "")
+        case .deviceUnknown: "Horizon's reading service did not recognize this device"
+        case .deviceRefused(let why): "Horizon's reading service could not confirm this copy of Horizon (\(why))"
+        case .serviceBusy: "Horizon's reading service is busy with another read from this device"
+        case .serviceUnavailable: "Horizon's reading service is not available right now"
         }
     }
 
     var isRetryable: Bool {
         switch self {
-        case .rateLimited, .overloaded, .server, .network, .interrupted: true
+        case .rateLimited, .overloaded, .server, .network, .interrupted, .serviceBusy, .serviceUnavailable: true
+        default: false
+        }
+    }
+
+    /// Whether Horizon's reading service wants a new key from this device: it does not know the key, or the key's proof
+    /// did not verify (an older service said the first as the second).
+    var asksForANewKey: Bool {
+        switch self {
+        case .deviceUnknown, .deviceRefused: true
         default: false
         }
     }
@@ -168,6 +196,7 @@ public actor ClaudeClient {
         let urlRequest = try makeRequest(request)
         var attempt = 0
         var spent = Spent()
+        var renewed = false
         while true {
             attempt += 1
             try Task.checkCancellation()
@@ -178,6 +207,12 @@ public actor ClaudeClient {
                 return completion
             } catch let error as ClaudeError {
                 try Task.checkCancellation()   // a Cancel that cut the stream is a cancellation, on the last attempt too
+                if case .service(let signer) = configuration.credential, error.asksForANewKey, !renewed {
+                    renewed = true   // once: a second refusal is the answer
+                    log("claude: the reading service asked for a new key (\(error.localizedDescription)); attesting one")
+                    await signer.renew()
+                    continue
+                }
                 guard error.isRetryable else { throw error }
                 if attempt >= policy.attempts { throw ClaudeError.exhausted(attempts: attempt, last: error.localizedDescription) }
                 let delay: TimeInterval
@@ -206,7 +241,12 @@ public actor ClaudeClient {
     /// finished.
     private func attemptOnce(_ urlRequest: URLRequest, onText: @Sendable (String) async -> Void, spent: inout Spent) async throws -> Completion {
         let (http, body): (HTTPURLResponse, AsyncThrowingStream<String, any Error>)
-        do { (http, body) = try await transport.send(urlRequest) } catch { throw Self.mapTransport(error) }
+        do {
+            switch configuration.credential {
+            case .apiKey: (http, body) = try await transport.send(urlRequest)
+            case .service(let signer): (http, body) = try await signer.send(urlRequest, through: transport)   // the proof is made for each attempt
+            }
+        } catch { throw Self.mapTransport(error) }
         guard (200..<300).contains(http.statusCode) else { throw try await Self.failure(http, body, model: configuration.model.rawValue, log: log) }
         var text = "", stop: String?, ended = false
         var input = 0, cached = 0, output = 0
@@ -260,7 +300,7 @@ public actor ClaudeClient {
     func makeRequest(_ request: Request) throws -> URLRequest {
         var urlRequest = URLRequest(url: configuration.baseURL.appendingPathComponent("messages"))
         urlRequest.httpMethod = "POST"
-        urlRequest.setValue(configuration.apiKey, forHTTPHeaderField: "x-api-key")
+        if case .apiKey(let key) = configuration.credential { urlRequest.setValue(key, forHTTPHeaderField: "x-api-key") }   // the service holds its own
         urlRequest.setValue(Self.apiVersion, forHTTPHeaderField: "anthropic-version")
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
@@ -321,12 +361,22 @@ public actor ClaudeClient {
             let after = (http.value(forHTTPHeaderField: "retry-after")).flatMap(Double.init)
             return .rateLimited(retryAfter: after)
         }
-        return apiError(status: http.statusCode, type: error?["type"] as? String ?? "", message: message, model: model)
+        let classed = apiError(status: http.statusCode, type: error?["type"] as? String ?? "", message: message, model: model)
+        if case .allowanceUsed = classed {   // when the allowance comes back, which the service says in a header of its own
+            return .allowanceUsed(resetsAt: http.value(forHTTPHeaderField: "x-horizon-resets-at").flatMap { try? Date($0, strategy: .iso8601) })
+        }
+        return classed
     }
 
     static func apiError(status: Int, type: String, message: String, model: String) -> ClaudeError {
         let lowered = message.lowercased()
         switch type {
+        // Horizon's reading service (Server/src/index.ts) answers in the API's shape, with types of its own.
+        case "horizon_quota": return .allowanceUsed(resetsAt: nil)
+        case "horizon_unknown_key": return .deviceUnknown
+        case "horizon_attestation": return .deviceRefused(message)
+        case "horizon_busy": return .serviceBusy
+        case "horizon_unavailable": return .serviceUnavailable
         case "authentication_error": return .unauthorized
         case "permission_error": return .forbidden(model: model)
         case "billing_error": return .billing

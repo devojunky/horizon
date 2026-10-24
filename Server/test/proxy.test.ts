@@ -60,12 +60,13 @@ describe("a read through the proxy", () => {
   it("refuses a device it does not know, a replayed assertion, and one over another body", async () => {
     const stranger = await TestDevice.make(env.APP_ID);
     const unknown = await read(stranger, body);
-    expect([unknown.response.status, JSON.parse(unknown.text).error.type]).toEqual([401, "horizon_attestation"]);
+    expect([unknown.response.status, JSON.parse(unknown.text).error.type]).toEqual([401, "horizon_unknown_key"]);   // attest a new key
 
     const device = await attestedDevice();
     const assertion = await device.assert(body);
     expect((await read(device, body, { assertion })).response.status).toBe(200);
-    expect((await read(device, body, { assertion })).response.status).toBe(401);   // replayed
+    const replayed = await read(device, body, { assertion });
+    expect([replayed.response.status, JSON.parse(replayed.text).error.type]).toEqual([401, "horizon_attestation"]);
     expect((await read(device, body.replace("syllabus", "schedule"), { assertion: await device.assert(body) })).response.status).toBe(401);
   });
 
@@ -103,3 +104,23 @@ describe("challenges and attestations", () => {
     expect(stale.status).toBe(401);
   });
 });
+
+describe("rate limits", () => {
+  it("hold the open endpoints to ten a minute from one address, and reads to thirty a minute from one device", async () => {
+    const ctx = createExecutionContext();
+    const challenge = (ip: string) => handle(new Request("https://reading.example/v1/challenge", { method: "POST", headers: { "cf-connecting-ip": ip } }), env, ctx);
+    const statuses = [];
+    for (let i = 0; i < 11; i++) statuses.push((await challenge("203.0.113.7")).status);
+    expect(statuses.slice(0, 10).every((s) => s === 200)).toBe(true);
+    const limited = await challenge("203.0.113.7");
+    expect([limited.status, limited.headers.get("retry-after"), (await limited.json<{ error: { type: string } }>()).error.type]).toEqual([429, "60", "rate_limit_error"]);
+    expect((await challenge("198.51.100.20")).status).toBe(200);   // another address is its own
+
+    const device = await attestedDevice();
+    const reads: number[] = [];
+    for (let i = 0; i < 31; i++) reads.push((await read(device, body)).response.status);
+    expect(reads.slice(0, 30).filter((s) => s === 429).length).toBe(0);
+    expect(reads[30]).toBe(429);
+  });
+});
+

@@ -61,7 +61,7 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         NSRemindersFullAccessUsageDescription: Horizon writes your deadlines to a Reminders list called Horizon, so they still fire if you stop opening the app, and reads back what you check off there.
-        NSCalendarsFullAccessUsageDescription: Horizon reads your calendar to plan your day around classes and appointments. With planning by Claude turned on, the day's events are sent to Anthropic.
+        NSCalendarsFullAccessUsageDescription: Horizon reads your calendar to plan your day around classes and appointments. With planning by Claude turned on, the day's events are sent to Anthropic, directly or through Horizon's reading service.
         NSCameraUsageDescription: Horizon scans printed syllabi and handouts with the camera.
         NSSupportsLiveActivities: true
         NSUserActivityTypes:   # what a page shows, for Siri's "this" (`View.showsEntity`)
@@ -75,6 +75,7 @@ targets:
         BGTaskSchedulerPermittedIdentifiers: [com.daniel.horizon.ingest, com.daniel.horizon.activity]
         UIBackgroundModes: [processing, fetch]   # fetch: the refresh that moves the plan's Live Activity on (or ends it) while the app is not running
         LSSupportsOpeningDocumentsInPlace: true
+        HorizonReadingService: $(HORIZON_READING_SERVICE)   # Base.xcconfig: the development service for Debug, production for Release (`AppModel.readingService`)
         UTExportedTypeDeclarations:   # Export Library's file (`LibraryArchive`, `UTType.horizonLibrary`)
           - UTTypeIdentifier: com.daniel.horizon.library
             UTTypeDescription: Horizon Library
@@ -92,6 +93,7 @@ targets:
       path: Apps/Horizon/Horizon.entitlements
       properties:
         com.apple.security.application-groups: [group.com.daniel.horizon.app]
+        com.apple.developer.devicecheck.appattest-environment: $(APP_ATTEST_ENVIRONMENT)   # iOS only (the Mac's entitlements are their own): the reading service knows a device by App Attest
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.daniel.horizon.app   # the paid team's (DECISIONS 2026-10-23): com.daniel.horizon stays held by the free team, which cannot release it

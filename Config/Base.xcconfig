@@ -2,6 +2,13 @@
 // Local.xcconfig (git-ignored) is included after it and may set another DEVELOPMENT_TEAM for a build of one's own.
 DEVELOPMENT_TEAM = M29Z3F2B5D
 #include? "Local.xcconfig"
+// Horizon's reading service (Server/; DECISIONS 2026-10-23): Debug builds read through the development service with
+// App Attest's development environment, Release builds (TestFlight, the App Store) through production with production's,
+// so a build and the service it talks to always agree on the environment. `/$()/` keeps `//` from starting a comment.
+HORIZON_READING_SERVICE[config=Debug] = https:/$()/horizon-reading-dev.danielliang.dev/v1
+HORIZON_READING_SERVICE[config=Release] = https:/$()/horizon-reading.danielliang.dev/v1
+APP_ATTEST_ENVIRONMENT[config=Debug] = development
+APP_ATTEST_ENVIRONMENT[config=Release] = production
 // One version for the app and its extensions (App Store validation refuses a mismatch); raise the build for every upload.
 MARKETING_VERSION = 1.0
 CURRENT_PROJECT_VERSION = 1
