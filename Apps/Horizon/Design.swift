@@ -16,6 +16,9 @@ enum Design {
     /// amber (4.7:1, HIG's 4.5:1 for text); at night the orange already reads at about 10:1 and stays. It is also the
     /// tint (and the asset's AccentColor); marks, rings and fills keep `accent`.
     static let accentInk = dynamic(light: (0.659, 0.353, 0.0), dark: (1.0, 0.68, 0.26), increased: (light: (0.55, 0.27, 0.0), dark: (1.0, 0.76, 0.42)))
+    /// Words on a fill of the accent (a prominent button's, `prominent()`): the paper's dark face, about 10:1 on the
+    /// orange by day and at night. White there reads at about 1.9:1.
+    static let onAccent = Color(red: 0.082, green: 0.078, blue: 0.071)
     static let quiet = Color.secondary
     /// The page behind everything.
     static let paper = dynamic(light: (0.976, 0.965, 0.941), dark: (0.082, 0.078, 0.071))
@@ -133,6 +136,12 @@ extension View {
         #endif
     }
 
+    /// A page's prominent action (DECISIONS 2026-10-25 · Prominent buttons): the orange filled, by day and at night (a
+    /// fill is the accent's; the amber tint is for words), its words in `Design.onAccent`.
+    func prominent() -> some View {
+        buttonStyle(.borderedProminent).tint(Design.accent).modifier(OnAccent())
+    }
+
     /// Headline set like a magazine deck: serif, large, tight.
     func deck() -> some View { font(.system(.title2, design: .serif, weight: .semibold)) }
     /// The biggest line on a page.
@@ -180,6 +189,24 @@ extension View {
     /// keeps its own margins inside).
     func bleedRow() -> some View {
         listRowInsets(EdgeInsets(top: 0, leading: -Design.listPadding, bottom: 0, trailing: -Design.listPadding))
+    }
+}
+
+/// A prominent button's words in `Design.onAccent` while it shows the fill. iOS sets them white whatever the fill, and
+/// so does a Mac's toolbar (a Mac's page sets dark words on a light fill by itself). A disabled button, and on a Mac a
+/// button in a window that is not key, is drawn grey by the system with words of its own, and keeps them: ink set
+/// there all but vanished on the grey at night.
+private struct OnAccent: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+    #if os(macOS)
+    @Environment(\.controlActiveState) private var window
+    private var filled: Bool { isEnabled && window == .key }
+    #else
+    private var filled: Bool { isEnabled }
+    #endif
+
+    func body(content: Content) -> some View {
+        if filled { content.foregroundStyle(Design.onAccent) } else { content }
     }
 }
 

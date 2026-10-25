@@ -265,7 +265,7 @@ private struct ReviewDetail: View {
     /// delete the item, and the choice is between the two dates.
     private func actions(several: Bool, other: Obligation?, discards: Bool) -> some View {
         HStack(spacing: 10) {
-            Button(action: confirm) { ShortcutLabel(several ? "Confirm All" : "Confirm", keys: "⌘↩") }.buttonStyle(.borderedProminent)
+            Button(action: confirm) { ShortcutLabel(several ? "Confirm All" : "Confirm", keys: "⌘↩") }.prominent()
             if let other, let date = other.otherDate {
                 Button { useOther(other) } label: { Text("Use \(date.formatted(.dateTime.month(.abbreviated).day()))") }
                     .help("Confirm it due \(date.formatted(.dateTime.weekday(.wide).month(.wide).day())) instead")
@@ -278,7 +278,9 @@ private struct ReviewDetail: View {
 }
 
 /// A button's title with its keyboard shortcut after it, set as the menu bar sets it and a step quieter than the
-/// title. VoiceOver hears the title alone: the menu bar already tells it the shortcut.
+/// title: three quarters of its colour, which still reads at 4.5:1 or better at night (the secondary style's half read
+/// at about 3.4:1, on Confirm's orange and on Edit's grey alike). VoiceOver hears the title alone: the menu bar
+/// already tells it the shortcut.
 private struct ShortcutLabel: View {
     let title: String
     let keys: String
@@ -286,7 +288,7 @@ private struct ShortcutLabel: View {
     var body: some View {
         HStack(spacing: 5) {
             Text(title)
-            Text(keys).foregroundStyle(.secondary).accessibilityHidden(true)
+            Text(keys).opacity(0.75).accessibilityHidden(true)
         }
     }
 }

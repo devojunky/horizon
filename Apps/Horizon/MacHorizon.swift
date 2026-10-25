@@ -47,7 +47,7 @@ struct MacHorizonPage: View {
             if data.items.isEmpty {
                 ScrollView {
                     EditorialEmpty(title: "Nothing on the horizon.", deck: "Add a syllabus or a schedule, or drop one on this window, and the term appears here: every course, every day, how much each one carries.") {
-                        ImportMenu().buttonStyle(.borderedProminent)
+                        ImportMenu().prominent()
                     }
                     .padding(.horizontal, Design.margin)
                 }

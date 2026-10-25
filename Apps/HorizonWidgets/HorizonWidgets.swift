@@ -267,7 +267,8 @@ private struct DoneButton: View {
             Label("Done", systemImage: "checkmark").font(.subheadline.weight(.semibold))
         }
         .buttonStyle(.borderedProminent)
-        .tint(ActivityDesign.ink)   // white on the deeper amber reads at 5:1; on the bright orange it was under 2:1
+        .tint(ActivityDesign.accent)   // the app's prominent(): the orange with dark words, on the Lock Screen and the island alike
+        .foregroundStyle(ActivityDesign.onAccent)
         .controlSize(.small)
     }
 }
@@ -299,8 +300,8 @@ private struct ActivityKicker: View {
 
 enum ActivityDesign {
     static let accent = Color(red: 1.0, green: 0.68, blue: 0.26)
-    /// The app's `Design.accentInk` in light: a fill under white words.
-    static let ink = Color(red: 0.659, green: 0.353, blue: 0.0)
+    /// Words on the orange (the app's `Design.onAccent`): the paper's dark face, about 10:1; white read at 1.9:1.
+    static let onAccent = Color(red: 0.082, green: 0.078, blue: 0.071)
 }
 
 enum Clock {

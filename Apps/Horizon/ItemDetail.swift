@@ -159,9 +159,8 @@ struct ItemDetail: View {
         } else {
             Button(action: mark) {
                 actionLabel(ItemActions.markTitle(done: false), ItemActions.markImage(done: false), whole: whole)
-                    .foregroundStyle(Design.paper)   // cream on the deep amber by day, near black on the orange at night: both read
             }
-            .buttonStyle(.borderedProminent).tint(Design.accentInk)
+            .prominent()
             Button {
                 changed += 1
                 Task { await model.setSkipped(item.id, !skipped) }

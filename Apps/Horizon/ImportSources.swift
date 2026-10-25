@@ -29,12 +29,15 @@ struct ImportMenu<More: View>: View {
 
     var body: some View {
         Menu {
-            if let more {
-                Section("Add Document") { sources }
-                Section { more }
-            } else {
-                sources
+            Group {
+                if let more {
+                    Section("Add Document") { sources }
+                    Section { more }
+                } else {
+                    sources
+                }
             }
+            .tint(Design.accentInk)   // the items keep the app's tint: a prominent() menu's orange is its button's, and its icons on the menu read at 1.7:1
         } label: {
             if more == nil { Label("Add Document", systemImage: "doc.badge.plus") } else { Label("More", systemImage: "ellipsis.circle") }
         }

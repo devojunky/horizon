@@ -50,7 +50,7 @@ struct NowView: View {
                             Button { if model.planEdited, model.plan != nil { confirmingReplan = true } else { Task { await model.planToday() } } } label: {
                                 Label(model.plan == nil ? "Plan Today" : "Plan Again", systemImage: "sun.horizon").labelStyle(.titleAndIcon)
                             }
-                            .buttonStyle(.borderedProminent)   // the page's one prominent action, in words
+                            .prominent()   // the page's one prominent action, in words
                             .disabled(model.planning)
                             .help("Plan the rest of today (⇧⌘P)")
                         }
@@ -238,7 +238,7 @@ private struct PlanList: View {
                     }
                     if stage == .invitation {
                         EditorialEmpty(title: "Today, planned.", deck: "One plan for the rest of today, around your calendar, with a reason on every block. Tell the planner what to respect, then plan.") {
-                            Button("Plan Today", action: planToday).buttonStyle(.borderedProminent)
+                            Button("Plan Today", action: planToday).prominent()
                             #if os(iOS)   // a Mac has it in the column beside the page
                             Button("Tell the Planner…", action: tell).buttonStyle(.borderless)   // in a list row: its own tap, in the tint, as on any page
                             #endif

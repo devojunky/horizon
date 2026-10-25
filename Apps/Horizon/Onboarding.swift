@@ -11,7 +11,6 @@ struct OnboardingView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var typeSize
-    @Environment(\.colorScheme) private var colorScheme
     let finish: () -> Void
     @State private var page: Int
     @State private var replay = 0
@@ -94,11 +93,9 @@ struct OnboardingView: View {
                     Button {
                         if page < last { withAnimation(.snappy) { page += 1 } } else { close(begin: true) }
                     } label: {
-                        // At night the tint is the bright orange, where white words read at about 1.9:1: dark ink there.
                         Text(page < last ? "Continue" : "Begin").font(.headline).frame(maxWidth: .infinity).frame(minHeight: 30)
-                            .foregroundStyle(colorScheme == .dark ? Design.paper : .white)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .prominent()
                     .controlSize(.large)
                     .frame(maxWidth: 440)
                     .disabled(leaving)

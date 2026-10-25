@@ -440,7 +440,7 @@ struct DocumentsTable: View {
             if documents.isEmpty {
                 ScrollView {
                     EditorialEmpty(title: "No documents yet.", deck: "Add a syllabus, a schedule or a screenshot, or drop one on this window. Every document Horizon reads is listed here, with what became of it.") {
-                        ImportMenu().buttonStyle(.borderedProminent)
+                        ImportMenu().prominent()
                     }
                     .padding(.horizontal, Design.margin)
                 }

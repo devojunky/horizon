@@ -418,7 +418,7 @@ struct HorizonStripView: View {
                     if data.items.isEmpty {
                         ScrollView {
                             EditorialEmpty(title: "Nothing on the horizon.", deck: "Add a syllabus or a schedule and the term appears here as one strip: its weeks, and its days when you look closer.") {
-                                ImportMenu().buttonStyle(.borderedProminent)
+                                ImportMenu().prominent()
                             }
                             .padding(.horizontal, 20)
                         }
