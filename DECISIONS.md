@@ -763,4 +763,5 @@ The owner: a tap on an item went straight to its editor. It should open a page o
   - 140 HorizonCore tests: the service's answers stop the drain and are not the key's.
   - 14 server tests, the rate limits among them. The App Intents suite, 10 of 10. iOS and Mac builds.
   - In the simulator: Settings' Claude section, both choices, and Test Connection's refusal.
-  - Not verified until the server is redeployed and the phone tries it: a real attestation against the development service.
+  - On the owner's iPhone 16 Pro Max (iOS 27.2, 2026-10-25), after both Workers were redeployed: a real App Attest key attested with the development service (Apple's certificate chain, nonce, key id and environment all checked by `verifyAttestation`, first try), then a signed read answered 200. A second read 15 seconds later, the owner's own Test Connection, reused the kept key with its counter advanced, and passed too. Production has not seen an attestation; it needs a Release build (TestFlight's production environment).
+- **The owner kept the decisions above** (2026-10-25): the service is the start for a device with no key, the manifest's declarations stand, and Test Connection says the reason alone.
