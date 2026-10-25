@@ -7,13 +7,10 @@ import UIKit
 #endif
 
 /// Where documents come from inside the app: Files, the photo library, and (on iPhone/iPad) the document camera.
-/// Each source ends the same way: temporary files handed to `AppModel.importFiles`. Given more of a page's actions, it
-/// is that page's More menu, the sources first under "Add Document" (iOS's course page: one button in the bar leaves
-/// its title the room to sit centred).
-struct ImportMenu<More: View>: View {
+/// Each source ends the same way: temporary files handed to `AppModel.importFiles`.
+struct ImportMenu: View {
     /// Files what is imported under this course (the course page); nil lets the parser find the course.
     var courseID: UUID? = nil
-    private let more: More?
     @State private var files = false
     @State private var photos: ImportPickers.Photos?
     @State private var scanning = false
@@ -24,24 +21,24 @@ struct ImportMenu<More: View>: View {
     static var readable: [UTType] { [.pdf, .image, .plainText] }   // Word is read on a Mac only (AppKit's converter): not offered here
     #endif
 
-    init(courseID: UUID? = nil) where More == EmptyView { self.courseID = courseID; more = nil }
-    init(courseID: UUID? = nil, @ViewBuilder more: () -> More) { self.courseID = courseID; self.more = more() }
-
     var body: some View {
         Menu {
-            if let more {
-                Section("Add Document") { sources }
-                Section { more }
-            } else {
-                sources
-            }
+            ImportSourceButtons(files: $files, photos: $photos, scanning: $scanning)
         } label: {
-            if more == nil { Label("Add Document", systemImage: "doc.badge.plus") } else { Label("More", systemImage: "ellipsis.circle") }
+            Label("Add Document", systemImage: "doc.badge.plus")
         }
         .modifier(ImportPickers(courseID: courseID, files: $files, photos: $photos, scanning: $scanning))
     }
+}
 
-    @ViewBuilder private var sources: some View {
+/// The sources as buttons, for a menu of the page's own: iOS's course page lists them first in the system's overflow
+/// menu, and presents what they ask for with `ImportPickers` on the page itself.
+struct ImportSourceButtons: View {
+    @Binding var files: Bool
+    @Binding var photos: ImportPickers.Photos?
+    @Binding var scanning: Bool
+
+    var body: some View {
         Button { files = true } label: { Label("Files…", systemImage: "folder") }
         Button { photos = .images } label: { Label("Photo Library…", systemImage: "photo.on.rectangle") }
         #if os(iOS)
@@ -68,7 +65,7 @@ struct ImportPickers: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .fileImporter(isPresented: $files, allowedContentTypes: ImportMenu<EmptyView>.readable, allowsMultipleSelection: true) { result in
+            .fileImporter(isPresented: $files, allowedContentTypes: ImportMenu.readable, allowsMultipleSelection: true) { result in
                 if case .success(let urls) = result { Task { await model.importFiles(urls, courseID: courseID) } }
             }
             .photosPicker(isPresented: Binding(get: { photos != nil }, set: { if !$0 { photos = nil } }), selection: $picked, maxSelectionCount: 10,

@@ -154,6 +154,17 @@ extension View {
         #endif
     }
 
+    /// A row on the paper that opens a page beside its list, marked while that page is the one open there (HIG: keep
+    /// the selection highlighted in the pane that leads to the detail): the accent's soft fill, the app's selection.
+    /// Where the page is pushed over the list instead (a compact width) nothing is ever marked.
+    func onPaper(selected: Bool) -> some View {
+        #if os(macOS)
+        listRowSeparator(.hidden)
+        #else
+        listRowBackground(selected ? Design.accentSoft : Color.clear).listRowSeparatorTint(Design.rule)
+        #endif
+    }
+
     /// A row of a plain list set on the page's margins (`Design.margin`), with `top` and `bottom` of air: its words
     /// start where the page's title does, on either platform. A Mac's list gives a row its top inset below it as well
     /// (measured), so there the air is the row's own padding and the insets are the sides alone.
@@ -234,6 +245,19 @@ struct Kicker: View {
     }
 }
 
+/// A kicker over a block of a page's side column (a Mac's course page and Now; Now on iPhone Duo open and an iPad).
+struct RailSection<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: Content
+    init(_ title: String, @ViewBuilder content: () -> Content) { self.title = title; self.content = content() }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Kicker(title).accessibilityAddTraits(.isHeader)
+            content
+        }
+    }
+}
+
 /// A hairline rule.
 struct Hairline: View {
     var body: some View { Rectangle().fill(Design.rule).frame(height: 0.5) }
@@ -256,6 +280,59 @@ struct EditorialEmpty<Actions: View>: View {
         .accessibilityElement(children: .contain)
     }
 }
+
+#if os(iOS)
+/// A bar button's words where bars run along the top and the bottom, as the app sets them; where a bar stands at the
+/// display's edge (iPhone Duo closed, and open in landscape) the same button as a symbol with the words as its title.
+/// An item of words alone keeps a bar horizontal there, and costs a band across the top of the short outer display
+/// (HIG: minimize text buttons; give every item a title and a symbol, which overflow and VoiceOver use).
+struct BarLabel: View {
+    let title: String
+    let systemImage: String
+
+    init(_ title: String, systemImage: String) {
+        self.title = title; self.systemImage = systemImage
+    }
+
+    var body: some View {
+        if #available(iOS 27.1, *) { Edged(title: title, systemImage: systemImage) } else { Text(title) }
+    }
+
+    @available(iOS 27.1, *)
+    private struct Edged: View {
+        let title: String, systemImage: String
+        @Environment(\.toolbarVerticalEdge) private var edge   // nil where a bar never stands at the edge
+        var body: some View {
+            if edge == nil { Text(title) } else { Label(title, systemImage: systemImage) }
+        }
+    }
+}
+
+extension View {
+    /// Whether this page's bar stands at the display's edge (iPhone Duo closed, and open in landscape), kept in
+    /// `vertical`: a page leaves out of its toolbar what only a horizontal bar can hold, which would otherwise keep a
+    /// horizontal bar across the top for itself alone.
+    func readsVerticalBar(_ vertical: Binding<Bool>) -> some View {
+        modifier(VerticalBarReader(vertical: vertical))
+    }
+}
+
+private struct VerticalBarReader: ViewModifier {
+    @Binding var vertical: Bool
+    func body(content: Content) -> some View {
+        if #available(iOS 27.1, *) { content.modifier(Reading(vertical: $vertical)) } else { content }
+    }
+
+    @available(iOS 27.1, *)
+    private struct Reading: ViewModifier {
+        @Binding var vertical: Bool
+        @Environment(\.toolbarVerticalEdge) private var edge
+        func body(content: Content) -> some View {
+            content.onChange(of: edge != nil, initial: true) { _, standing in vertical = standing }
+        }
+    }
+}
+#endif
 
 /// Something is happening: a spinner with a kicker and a line, set like the rest of the page.
 struct WorkingLine: View {

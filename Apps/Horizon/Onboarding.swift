@@ -12,6 +12,7 @@ struct OnboardingView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.horizontalSizeClass) private var sizeClass
     let finish: () -> Void
     @State private var page: Int
     @State private var replay = 0
@@ -27,7 +28,7 @@ struct OnboardingView: View {
 
     private struct Page { let kicker: String, title: String, deck: String, aside: String? }
 
-    private var pages: [Page] {
+    private var pageWords: [Page] {
         let reads: String
         if model.usesReadingService {
             reads = "Claude reads it through Horizon's server, which keeps none of it, and every date is checked against the page itself."
@@ -48,66 +49,11 @@ struct OnboardingView: View {
         ]
     }
 
-    private var last: Int { pages.count - 1 }
+    private var last: Int { pageWords.count - 1 }
 
     var body: some View {
-        GeometryReader { proxy in
-            VStack(spacing: 0) {
-                HStack {
-                    Spacer()
-                    Button("Skip") { close(begin: false) }
-                        .foregroundStyle(.secondary)
-                        .opacity(page < last ? 1 : 0)
-                        .disabled(page >= last || leaving)
-                        .reachable()
-                }
-                .frame(height: 44)
-                .padding(.horizontal, Design.margin)
-
-                OnboardingStage(scene: OnboardingScene(rawValue: page) ?? .term, replay: replay, leaving: leaving)
-                    .opacity(stageGone ? 0 : 1)
-                    .frame(maxWidth: 440)
-                    .frame(height: stageHeight(in: proxy.size))
-                    .padding(.horizontal, Design.margin)
-                    .contentShape(Rectangle())
-                    .onTapGesture { if !leaving { replay += 1 } }   // the scene again: a way to look at it, not a control to find
-                    .accessibilityHidden(true)
-
-                TabView(selection: $page) {
-                    ForEach(pages.indices, id: \.self) { index in
-                        PageText(kicker: pages[index].kicker, title: pages[index].title, deck: pages[index].deck, aside: pages[index].aside).tag(index)
-                    }
-                }
-                .tabViewStyle(.page(indexDisplayMode: .never))
-                .opacity(leaving ? 0 : 1)
-
-                VStack(spacing: 18) {
-                    HStack(spacing: 7) {
-                        ForEach(pages.indices, id: \.self) { index in
-                            Capsule().fill(index == page ? Design.accent : Design.rule).frame(width: index == page ? 22 : 7, height: 7)
-                        }
-                    }
-                    .animation(reduceMotion ? nil : .snappy, value: page)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Page \(page + 1) of \(pages.count)")
-
-                    Button {
-                        if page < last { withAnimation(.snappy) { page += 1 } } else { close(begin: true) }
-                    } label: {
-                        // At night the tint is the bright orange, where white words read at about 1.9:1: dark ink there.
-                        Text(page < last ? "Continue" : "Begin").font(.headline).frame(maxWidth: .infinity).frame(minHeight: 30)
-                            .foregroundStyle(colorScheme == .dark ? Design.paper : .white)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .frame(maxWidth: 440)
-                    .disabled(leaving)
-                }
-                .padding(.horizontal, Design.margin)
-                .padding(.bottom, 12)
-                .opacity(leaving ? 0 : 1)
-            }
-            .frame(maxWidth: .infinity)
+        Group {
+            if #available(iOS 27.1, *), sizeClass == .regular { besideLayout } else { column }
         }
         // The page's own paper goes last, once nothing is drawn on it, so the app comes in on the same paper: a fade
         // through, never the stage over the app at half strength.
@@ -115,6 +61,105 @@ struct OnboardingView: View {
         .tint(Design.accentInk)
         .sensoryFeedback(.selection, trigger: page)
         .sensoryFeedback(.success, trigger: begun)
+    }
+
+    /// A phone (and iPhone Duo closed): the stage over the words, Continue under them, where the thumb is.
+    private var column: some View {
+        GeometryReader { proxy in
+            VStack(spacing: 0) {
+                skipRow
+                stage
+                    .frame(maxWidth: 440)
+                    .frame(height: stageHeight(in: proxy.size))
+                    .padding(.horizontal, Design.margin)
+                pages
+                footer
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    /// With room (iPhone Duo open, an iPad): the stage on one side and the words with their controls on the other,
+    /// rather than a column down the middle (HIG: with more room, expand the layout). An arrangement, so folded like a
+    /// book each has a half of the display and the scene never plays across the fold; propped like a laptop, the scene
+    /// is on the raised half and Continue on the half that lies flat (HIG: content for a distance on top, controls below).
+    @available(iOS 27.1, *)
+    private var besideLayout: some View {
+        ArrangementView {
+            stage
+                .frame(maxWidth: 560)
+                .padding(Design.margin)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } secondary: {
+            VStack(spacing: 0) {
+                skipRow
+                pages
+                footer
+            }
+            .frame(maxWidth: 560)
+            .frame(maxWidth: .infinity)
+        }
+        .arrangementViewStyle(.split)
+    }
+
+    private var skipRow: some View {
+        HStack {
+            Spacer()
+            Button("Skip") { close(begin: false) }
+                .foregroundStyle(.secondary)
+                .opacity(page < last ? 1 : 0)
+                .disabled(page >= last || leaving)
+                .reachable()
+        }
+        .frame(height: 44)
+        .padding(.horizontal, Design.margin)
+    }
+
+    private var stage: some View {
+        OnboardingStage(scene: OnboardingScene(rawValue: page) ?? .term, replay: replay, leaving: leaving)
+            .opacity(stageGone ? 0 : 1)
+            .contentShape(Rectangle())
+            .onTapGesture { if !leaving { replay += 1 } }   // the scene again: a way to look at it, not a control to find
+            .accessibilityHidden(true)
+    }
+
+    private var pages: some View {
+        TabView(selection: $page) {
+            ForEach(self.pageWords.indices, id: \.self) { index in
+                let words = self.pageWords[index]
+                PageText(kicker: words.kicker, title: words.title, deck: words.deck, aside: words.aside).tag(index)
+            }
+        }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .opacity(leaving ? 0 : 1)
+    }
+
+    private var footer: some View {
+        VStack(spacing: 18) {
+            HStack(spacing: 7) {
+                ForEach(pageWords.indices, id: \.self) { index in
+                    Capsule().fill(index == page ? Design.accent : Design.rule).frame(width: index == page ? 22 : 7, height: 7)
+                }
+            }
+            .animation(reduceMotion ? nil : .snappy, value: page)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Page \(page + 1) of \(pageWords.count)")
+
+            Button {
+                if page < last { withAnimation(.snappy) { page += 1 } } else { close(begin: true) }
+            } label: {
+                // At night the tint is the bright orange, where white words read at about 1.9:1: dark ink there.
+                Text(page < last ? "Continue" : "Begin").font(.headline).frame(maxWidth: .infinity).frame(minHeight: 30)
+                    .foregroundStyle(colorScheme == .dark ? Design.paper : .white)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .frame(maxWidth: 440)
+            .disabled(leaving)
+        }
+        .padding(.horizontal, Design.margin)
+        .padding(.bottom, 12)
+        .opacity(leaving ? 0 : 1)
     }
 
     /// The stage's height: its own proportion at the width it has, less on a short screen (landscape) and at the

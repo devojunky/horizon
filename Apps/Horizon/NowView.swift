@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 import HorizonCore
 import IngestKit
 
@@ -15,6 +16,8 @@ struct NowView: View {
     @State private var telling = false
     @State private var confirmingReplan = false
     @State private var revealed: UUID?   // the plan whose rows have arrived; a plan that came at once reveals its rows one after another
+    @State private var path: [Route] = []   // an item's page, from the rail beside the plan
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     private var stage: NowStage {
         if model.planning, model.planDraft.isEmpty { return .working }
@@ -22,22 +25,24 @@ struct NowView: View {
     }
 
     var body: some View {
-        PageStack {
+        PageStack(path: $path) {
             content
                 .navigationTitle("Now")
                 .toolbar {
                     #if os(iOS)
                     if model.plan != nil, !model.planning {
                         ToolbarItem(placement: .primaryAction) {
-                            Button("Plan Again") { if model.planEdited { confirmingReplan = true } else { Task { await model.planToday() } } }
+                            Button { if model.planEdited { confirmingReplan = true } else { Task { await model.planToday() } } } label: {
+                                BarLabel("Plan Again", systemImage: "arrow.clockwise")
+                            }
                         }
+                        .visibilityPriority(.high)   // the page's own act: the last to go to the overflow menu on a crowded side bar
                     }
-                    ToolbarItem(placement: .primaryAction) {
-                        Menu {
-                            Button { adding = true } label: { Label("Add Block…", systemImage: "plus") }
-                            Button { telling = true } label: { Label("Tell the Planner…", systemImage: "text.bubble") }
-                        } label: { Label("More", systemImage: "ellipsis.circle") }
-                        .disabled(model.planning)
+                    // The system's overflow menu (HIG: one overflow, the ellipsis kept for it), so iPhone Duo's side bar
+                    // never shows two.
+                    ToolbarOverflowMenu {
+                        Button { adding = true } label: { Label("Add Block…", systemImage: "plus") }.disabled(model.planning)
+                        Button { telling = true } label: { Label("Tell the Planner…", systemImage: "text.bubble") }.disabled(model.planning)
                     }
                     #else
                     ToolbarSpacer(.fixed, placement: .primaryAction)   // the page's own, apart from the window's
@@ -69,6 +74,9 @@ struct NowView: View {
                 .sheet(item: $editing) { PlanBlockEditor(block: $0) }
                 .sheet(isPresented: $adding) { PlanBlockEditor(block: nil) }
                 .sheet(isPresented: $telling) { PlannerNotesEditor() }
+                #if os(iOS)
+                .navigationDestination(for: Route.self) { RoutePage(route: $0) }
+                #endif
                 .onAppear {
                     model.expirePlanIfStale()
                     if MainTabs.debugFlag("--plan"), !model.planning { Task { await model.planToday() } }   // DEBUG: plans afresh, whatever is on file
@@ -93,16 +101,35 @@ struct NowView: View {
 
     /// On a Mac the day's context sits in a column beside the plan (tonight's end, what the planner was told, what
     /// is due soon); a phone keeps Tonight Until under the plan, and what the planner was told under the invitation.
+    /// With room on iOS (iPhone Duo open, an iPad) the column comes back beside the plan, or under it on a display
+    /// taller than wide (HIG: with more room, expand the layout). An arrangement, not a stack of the two: folded like a
+    /// book the system gives each half of the display one of them, so the timetable never runs across the fold; propped
+    /// like a laptop, the plan is on the raised half, to be read from the desk, and tonight's end and the week's items
+    /// on the half that lies flat, under the thumbs (HIG: content for a distance on top, controls below).
     @ViewBuilder private var content: some View {
         #if os(macOS)
         HStack(alignment: .top, spacing: 0) {
-            stages.frame(maxWidth: .infinity)
+            stages(beside: true).frame(maxWidth: .infinity)
             NowRail(end: model.tonightEnd, usualEnd: model.usualPlanHours.end, chooseEnd: chooseEnd, tell: { telling = true })
                 .frame(width: 300)
         }
         .background(Design.paper)
         #else
-        stages
+        if #available(iOS 27.1, *), sizeClass == .regular {
+            ArrangementView {
+                stages(beside: true)
+                    // Only a preference: folded, each side of the fold is one of the two whatever its share (a minimum the
+                    // side above a fold cannot hold left the column out in the table pose, and blanked the page in the book pose).
+                    .splitArrangementLayoutRatio(idealHorizontal: 0.62, idealVertical: 0.62)
+            } secondary: {
+                NowRail(end: model.tonightEnd, usualEnd: model.usualPlanHours.end, chooseEnd: chooseEnd, tell: { telling = true },
+                        openItem: { id in if !path.contains(.item(id)) { path.append(.item(id)) } })
+            }
+            .arrangementViewStyle(.split)
+            .background(Design.paper.ignoresSafeArea())   // the fold between the two halves is the page's paper too
+        } else {
+            stages(beside: false)
+        }
         #endif
     }
 
@@ -110,10 +137,11 @@ struct NowView: View {
     /// scroll view for another under the navigation bar (the large title faded out and back in when it did), and
     /// what arrives takes the place of what was there: the planning line becomes the timetable's foot as the first
     /// block comes, and the foot becomes Tonight Until when the plan settles, so nothing below the rows jumps.
-    private var stages: some View {
+    /// `beside`: the day's column stands beside the plan, and keeps what the plan's own foot and invitation hold on a phone.
+    private func stages(beside: Bool) -> some View {
         let plan = model.plan
         return TimelineView(.everyMinute) { context in   // on the minute itself, not a minute after the page appeared
-            PlanList(stage: stage, blocks: model.planning ? model.planDraft : plan?.blocks ?? [], note: model.planning ? nil : plan?.note,
+            PlanList(stage: stage, beside: beside, blocks: model.planning ? model.planDraft : plan?.blocks ?? [], note: model.planning ? nil : plan?.note,
                      now: context.date, asking: model.planning ? nil : plan?.awaitingAnswer(at: context.date)?.id,
                      streaming: model.planning, revealed: model.planning || model.planStreamed || revealed == plan?.id,
                      reduceMotion: reduceMotion, until: model.tonightEnd, usualEnd: model.usualPlanHours.end, instructions: model.planInstructions,
@@ -159,6 +187,9 @@ private enum NowStage { case working, timetable, invitation }
 /// settled, a row opens the editor and swipes away. With no plan, the invitation stands where the rows would.
 private struct PlanList: View {
     let stage: NowStage
+    /// The day's column stands beside the list (a Mac; iOS with room): tonight's end, Tell the Planner and what the
+    /// planner was told are there, not at the foot or under the invitation.
+    let beside: Bool
     let blocks: [PlanBlock]
     let note: String?
     let now: Date
@@ -239,9 +270,9 @@ private struct PlanList: View {
                     if stage == .invitation {
                         EditorialEmpty(title: "Today, planned.", deck: "One plan for the rest of today, around your calendar, with a reason on every block. Tell the planner what to respect, then plan.") {
                             Button("Plan Today", action: planToday).buttonStyle(.borderedProminent)
-                            #if os(iOS)   // a Mac has it in the column beside the page
-                            Button("Tell the Planner…", action: tell).buttonStyle(.borderless)   // in a list row: its own tap, in the tint, as on any page
-                            #endif
+                            if !beside {   // with the column beside the page, it is there
+                                Button("Tell the Planner…", action: tell).buttonStyle(.borderless)   // in a list row: its own tap, in the tint, as on any page
+                            }
                         }
                         .frame(maxWidth: 820, alignment: .leading)
                         .pageRow(top: 0, bottom: 0)
@@ -287,8 +318,7 @@ private struct PlanList: View {
                         .id("foot")
                         .pageRow(top: 0, bottom: 0)
                         .listRowSeparator(.hidden)
-                    #if os(iOS)   // a Mac keeps it in the column beside the page
-                    if stage == .invitation, !instructions.isEmpty {
+                    if !beside, stage == .invitation, !instructions.isEmpty {   // the column beside the page keeps it there
                         VStack(alignment: .leading, spacing: 8) {
                             Hairline()
                             Kicker("You told the planner").padding(.top, 12)
@@ -297,7 +327,6 @@ private struct PlanList: View {
                         .pageRow(top: 6, bottom: 20)
                         .listRowSeparator(.hidden)
                     }
-                    #endif
                 } header: {
                     #if os(iOS)
                     header
@@ -341,16 +370,14 @@ private struct PlanList: View {
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Planning the rest")
                 .transition(.fadeThrough)   // one place: the old out before the new in
+            } else if beside {
+                Color.clear.frame(height: 44).accessibilityHidden(true)   // tonight's end is in the column beside the page
             } else {
-                #if os(iOS)
                 // Where the plan stops, the choice of where it stops tonight.
                 TonightUntil(end: until, usual: usualEnd, choose: chooseEnd)
                     .padding(.leading, blocks.isEmpty ? 0 : 92 + 34)   // under the words, past the time column and the rail
                     .padding(.vertical, 14)
                     .transition(.fadeThrough)   // one place: the old out before the new in
-                #else
-                Color.clear.frame(height: 44).accessibilityHidden(true)
-                #endif
             }
         }
         .frame(maxWidth: 820, alignment: .leading)
@@ -547,5 +574,125 @@ extension PlanHours {
     static func endsAhead(including chosen: Int? = nil, now: Date = .now, calendar: Calendar = .current) -> [Int] {
         let day = PlanHours.day(of: now, calendar: calendar)
         return PlanHours.ends.filter { hour in hour == chosen || (moment(hour, on: day, calendar: calendar).map { $0 > now } ?? false) }
+    }
+}
+
+/// The column beside the day's plan wherever there is room for one (a Mac's window; iPhone Duo open, an iPad): where
+/// tonight ends, what the planner was told, and what is due in the coming week, the work a plan is made of. A phone
+/// keeps tonight's end at the foot of the plan and the rest in the planner's sheet; with room, all of it stays in view
+/// while the plan is read. An item opens its editor on a Mac and its page on iOS (`openItem`), as a tap on an item does
+/// everywhere else on each.
+struct NowRail: View {
+    let end: Int
+    let usualEnd: Int
+    var chooseEnd: (Int) -> Void
+    var tell: () -> Void
+    /// An item's page, pushed on Now's stack (iOS).
+    var openItem: (UUID) -> Void = { _ in }
+    @Environment(AppModel.self) private var model
+    #if os(macOS)
+    @Environment(MacNavigation.self) private var nav
+    #endif
+    @Query(filter: #Predicate<Obligation> { $0.deletedAt == nil && $0.due != nil }, sort: \Obligation.due) private var dated: [Obligation]
+    @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
+    @State private var editing: Obligation?
+
+    /// The most the column lists; the rest are counted, and Horizon lists them all.
+    private static let shown = 8
+
+    /// What falls due from today through the next seven days (by the calendar's days, so a change of the clocks moves
+    /// nothing in or out).
+    private var dueSoon: [Obligation] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let limit = calendar.date(byAdding: .day, value: 8, to: today) ?? today.addingTimeInterval(8 * 86_400)
+        return dated.filter { item in
+            guard item.completedAt == nil, let due = item.due else { return false }
+            return due >= today && due < limit
+        }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 30) {
+                RailSection("Tonight") {
+                    TonightUntil(end: end, usual: usualEnd, choose: chooseEnd)
+                    Text("For tonight only. Your usual hours are in Tell the Planner.").font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                RailSection("You told the planner") {
+                    Text(model.planInstructions.isEmpty ? "Nothing yet. A shift, practice, a night off: the planner works around what you tell it." : model.planInstructions)
+                        .font(.subheadline).foregroundStyle(model.planInstructions.isEmpty ? .secondary : .primary)
+                        .lineLimit(10).fixedSize(horizontal: false, vertical: true)
+                    #if os(macOS)
+                    Button("Tell the Planner…", action: tell).controlSize(.small).padding(.top, 2)
+                    #else
+                    Button("Tell the Planner…", action: tell).buttonStyle(.bordered).controlSize(.small).reachable().padding(.top, 2)
+                    #endif
+                }
+                RailSection("Due this week") {
+                    let due = dueSoon
+                    if due.isEmpty { Text("Nothing due in the next seven days.").font(.subheadline).foregroundStyle(.secondary) }
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(due.prefix(Self.shown)) { item in
+                            Button { open(item) } label: { DueRow(item: item) }
+                                .buttonStyle(.plain)
+                                #if os(macOS)
+                                .help("Edit \(item.title)")
+                                #else
+                                .accessibilityHint("Opens its details")
+                                #endif
+                        }
+                        if due.count > Self.shown {   // never a list that stops without saying so
+                            Button { seeAll() } label: {
+                                Text(due.count - Self.shown == 1 ? "And 1 more" : "And \(due.count - Self.shown) more").font(.subheadline).foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("See them all on the Horizon")
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, Self.leading)
+            .padding(.trailing, Design.margin)
+            .padding(.vertical, 24)
+        }
+        .scrollEdgeEffectStyle(.soft, for: .top)
+        .background(Design.paper)
+        .sheet(item: $editing) { ObligationEditor(mode: .edit($0), courses: courses) }
+    }
+
+    #if os(macOS)
+    /// Close to the plan it stands beside (the plan's own margin is on its far side).
+    private static let leading: CGFloat = 8
+    private func open(_ item: Obligation) { editing = item }
+    private func seeAll() { nav.show(.horizon) }
+    #else
+    /// A column of its own beside the plan (or under it), on the page's margin.
+    private static let leading = Design.margin
+    private func open(_ item: Obligation) { openItem(item.id) }
+    private func seeAll() { model.navigate(to: .page(.horizon)) }
+    #endif
+}
+
+/// An item due soon, in the column beside the plan: its name, its course and when, and what it is worth.
+private struct DueRow: View {
+    let item: Obligation
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title).fontWeight(.medium).lineLimit(2)
+                Text([item.course?.displayName, Design.due(item.due, hasTime: item.dueHasTime)].compactMap { $0 }.joined(separator: " · "))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Design.points(item.pointsAtStake).font(.subheadline.weight(.semibold))
+            #if os(iOS)
+            Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)   // it opens the item's page
+            #endif
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
     }
 }

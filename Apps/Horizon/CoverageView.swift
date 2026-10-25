@@ -30,8 +30,10 @@ struct CoverageList: View {
     var reading = false
     /// Documents with items but no course are on file: not nothing, even with no course yet.
     var hasUnfiled = false
-    /// Pushes a course page (the home stack's guarded push).
+    /// Opens a course page (beside Coverage where there is room, else pushed over it).
     var open: (Route) -> Void = { _ in }
+    /// Whether a page is the one open beside Coverage: its row is marked.
+    var isOpen: (Route) -> Bool = { _ in false }
     @Environment(AppModel.self) private var model
     @Environment(\.editMode) private var editMode
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }) private var courses: [Course]
@@ -65,8 +67,9 @@ struct CoverageList: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityHint("Opens the course")
+                .accessibilityAddTraits(isOpen(.course(story.course.id)) ? .isSelected : [])
                 .listRowSeparator(.visible)
-                .onPaper()
+                .onPaper(selected: isOpen(.course(story.course.id)))
                 .pageRow(top: 18, bottom: 18)
             }
         }

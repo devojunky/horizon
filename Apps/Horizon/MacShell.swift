@@ -213,7 +213,7 @@ struct MacRootView: View {
         .overlay { if dropping { DropVeil(course: shownCourse?.displayName).transition(.opacity) } }
         .animation(.snappy, value: dropping)
         .frame(minWidth: 980, minHeight: 620)
-        .fileImporter(isPresented: $nav.importing, allowedContentTypes: ImportMenu<EmptyView>.readable, allowsMultipleSelection: true) { result in
+        .fileImporter(isPresented: $nav.importing, allowedContentTypes: ImportMenu.readable, allowsMultipleSelection: true) { result in
             let course = shownCourse?.id
             if case .success(let urls) = result { Task { await model.importFiles(urls, courseID: course) } }
         }

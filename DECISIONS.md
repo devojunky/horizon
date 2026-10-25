@@ -787,3 +787,35 @@ The owner: a tap on an item went straight to its editor. It should open a page o
   - In the simulator under Xcode 27.2, each scene recorded and read frame by frame: the term assembling into the icon, the reading sweep with its dates thrown down, the reminders with their check, the missing week. Also the flow through Continue to Begin, the exit, and dark mode.
   - 191 IngestKit and 140 HorizonCore tests under the new toolchain; iOS, device and Mac builds.
   - Not verified: the haptics (the simulator has none, and the phone dropped off after the Xcode update), Reduce Motion, and the accessibility text sizes. The simulator's iOS 27.0 runtime will not run under Xcode 27.2, and its 27.2 runtime is not installed yet.
+
+## 2026-10-25 · iPhone Duo
+
+- **The owner asked** for full support for iPhone Duo (iOS 27.1): interactions designed for the device, layouts, hierarchy and spacing that fit it, checked in the iPhone Duo simulator against the HIG's Duo page and Apple's six Duo tech talks.
+- **Closed (the outer display, 466 by 678 points):** the app is the phone app it was, with its bars standing at the display's edge, as the system sets them for an app built with the 27.1 SDK. What kept a bar horizontal was made to stand there:
+  - **Words became symbols where the bar stands at the edge** (`BarLabel`, reading `toolbarVerticalEdge`): an editor's Cancel and Save (Close at the top of the bar, the confirming check under it), Plan Again, Coverage's Done. Elsewhere they keep their words. HIG: give every item a title and a symbol; minimize text buttons, which stay horizontal.
+  - **One overflow, the system's** (`ToolbarOverflowMenu`): Coverage's, Now's and a course page's More menus moved into it. HIG: reserve the ellipsis for the system's overflow menu.
+  - **What overflows last** (`visibilityPriority(.high)`): Add Document on Coverage, Plan Again on Now, the course filter on Horizon (it says whether the page is narrowed).
+  - **A course's page has no title in a standing bar.** The system set the name over the page there, a second copy right above the masthead's; the masthead is the title (`readsVerticalBar`).
+  - **The item page's Edit stays in words.** The text button, with the horizontal bar it keeps, is Apple's own exception (Edit stays horizontal), and the owner's choice (2026-10-13).
+- **Open (the inner display, 951 by 669 points):** a level more, with the same hierarchy as closed (HIG: Mail's list and message):
+  - **Coverage and Search** are a list beside the page it opens (`ListBesidePage`, a `NavigationSplitView`): a course beside Coverage, a result beside Search, an item pushed over its course. Closed, it collapses to the stack the phone has. What is open stays open as the device opens and closes, and the chosen row is marked in the accent's soft fill (HIG: highlight the selection that leads to the detail). Nothing is chosen for the user, so the page beside Coverage starts as plain paper.
+  - **Horizon:** the chart and its list side by side, so choosing a week fills the list at once, with no scroll down to it.
+  - **Now:** the day's column (tonight's end, what the planner was told, what is due this week) beside the plan, as on a Mac (`NowRail`, now shared; an item opens its page there).
+  - **Onboarding:** the stage beside its words, not a column in the middle.
+  - Each pair of panes is an `ArrangementView` split, so the system keeps it clear of the fold.
+- **Folded:**
+  - **Like a book:** each pane has a half of the display; nothing interactive crosses the fold.
+  - **Propped like a laptop (the table pose):** the arrangements put the chart, the plan or the scene on the raised half, to be read from the desk, and the lists and Continue on the flat half, under the thumbs (HIG: content for a distance on top, controls below). No layout of its own for a pose: it is the same arrangement, given a fold.
+  - The panes' shares are preferences only. A minimum the half above a fold could not hold left the second pane out in the table pose, and blanked Now in the book pose.
+- **Fixed on the way:** a row of days made afresh (the page's other layout) opens where the last one was, not at the term's start. A link to an item on a phone pushes its course's page, then the item over it.
+- **Decided for the owner:**
+  - **Split views, not the tab bar as a sidebar.** Horizon has four tabs. A sidebar would add a second way to the same places, and the HIG offers it for information-dense apps (Health).
+  - **No hinge effects, scene accessories or extra windows.** Nothing in Horizon calls for them (Apple: hinge data for interactions and effects only).
+  - **The plan's Live Activity is unchanged.** On the closed Duo the island sits in the side column; its compact (the sun over "2m") and its expanded presentation already read there.
+  - **The search field stays the system's.** Open, the system sets the tab bar's field at the top of every tab, as on an iPad. Closed, a field sometimes stays under Coverage's title after a page is popped. The build before this change does the same on the Duo, so that is the system's, and it is left alone.
+- **Verified** in the iPhone Duo simulator (iOS 27.1, Xcode 27.2's Device Hub), closed, open, folded as a book and propped as a laptop, by screenshots: portrait and both landscapes, with the bar on either side; right to left; and an iPad Air (the split views and panes apply there too). Also checked: continuity across opening and closing (a course or an item stays open, Back returns the same way), and links to an item. iOS and Mac builds pass.
+- **Not verified:**
+  - Split View on the inner display: the simulator's drag by the home indicator did not take.
+  - Picture in Picture, the keyboard's squeeze on the side bar, and Reduce Transparency.
+  - The App Resizability skill, which needs Xcode 27.1's own app.
+  - A physical iPhone Duo.

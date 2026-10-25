@@ -22,6 +22,12 @@ struct CourseView: View {
     @State private var nameUnderBar = false
     @State private var nameHeight: CGFloat = 40
     @State private var pageWidth: CGFloat = 0   // the bar's width, for the room a name has centred in it
+    /// The bar stands at the display's edge (iPhone Duo): no title goes there, and the name's custom view would keep a
+    /// horizontal bar across the top for itself alone.
+    @State private var barIsVertical = false
+    @State private var importingFiles = false
+    @State private var importingPhotos: ImportPickers.Photos?
+    @State private var scanning = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openRoute) private var openRoute   // an item's details, pushed on the stack this page is in
     // The course's items and documents come through queries, not its relationships: the store saves from a context of
@@ -72,7 +78,7 @@ struct CourseView: View {
             }
             PageSection("Items") {
                 ForEach(toDo) { row($0) }
-                if obligations.isEmpty { Text("No items yet. Add a document, or an item by hand, from the More menu above.").foregroundStyle(.secondary) }
+                if obligations.isEmpty { Text("No items yet. Add a document, or an item by hand, from the More menu.").foregroundStyle(.secondary) }
                 else if toDo.isEmpty { Text("Everything on file is done.").foregroundStyle(.secondary) }
             }
             .onPaper()
@@ -129,17 +135,28 @@ struct CourseView: View {
         // two copies of the name would say it twice.
         .onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y + $0.contentInsets.top > nameHeight + 4 } action: { _, under in nameUnderBar = under }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { pageWidth = $0 }
-        .navigationTitle(course.displayName)   // for the back button's menu and the system; the bar shows `BarName`
+        // For the back button's menu and the system; the bar shows `BarName`. Where the bar stands at the display's edge
+        // (iPhone Duo) there is no title in it: the system set the name over the page instead, a second copy right above
+        // the masthead's, so there the masthead is the title. (Removing the title item from the toolbar instead left the
+        // stack's bar with the system's title font when the page was popped: Coverage came back in sans serif.)
+        .navigationTitle(barIsVertical ? "" : course.displayName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .principal) { BarName(course: course, shown: nameUnderBar, room: pageWidth > 0 ? pageWidth - 2 * BarName.buttons : .infinity) }
-            ToolbarItem(placement: .primaryAction) {
-                ImportMenu(courseID: course.id) {   // one button, so the name has the bar's middle
+            if !barIsVertical {
+                ToolbarItem(placement: .principal) { BarName(course: course, shown: nameUnderBar, room: pageWidth > 0 ? pageWidth - 2 * BarName.buttons : .infinity) }
+            }
+            // One button, the system's overflow menu, so the name has the bar's middle; the ellipsis is the system's own,
+            // and on iPhone Duo's side bar there is never a second.
+            ToolbarOverflowMenu {
+                Section("Add Document") { ImportSourceButtons(files: $importingFiles, photos: $importingPhotos, scanning: $scanning) }
+                Section {
                     Button { addingItem = true } label: { Label("Add Item…", systemImage: "square.and.pencil") }
                     Button { editingCourse = true } label: { Label("Edit Course…", systemImage: "pencil") }
                 }
             }
         }
+        .readsVerticalBar($barIsVertical)
+        .modifier(ImportPickers(courseID: course.id, files: $importingFiles, photos: $importingPhotos, scanning: $scanning))
         .sheet(item: $editing) { ObligationEditor(mode: .edit($0), courses: courses) }
         .sheet(isPresented: $addingItem) { ObligationEditor(mode: .manual, courses: courses, preferredCourse: course.id) }   // added here: this course
         .sheet(isPresented: $editingCourse) { CourseEditor(course: course) }

@@ -17,7 +17,13 @@ struct EditorChrome: ViewModifier {
     private func tryCancel() { if dirty { confirmingDiscard = true } else { cancel() } }
 
     private func cancelButton() -> some View {
-        Button("Cancel", action: tryCancel)
+        Button(action: tryCancel) {
+            #if os(iOS)
+            BarLabel("Cancel", systemImage: "xmark")   // on iPhone Duo's side bar, Close's own symbol, at the top of it
+            #else
+            Text("Cancel")
+            #endif
+        }
             .confirmationDialog("Discard changes?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
                 Button("Discard Changes", role: .destructive, action: cancel)
                 Button("Keep Editing", role: .cancel) {}
@@ -26,12 +32,15 @@ struct EditorChrome: ViewModifier {
 
     func body(content: Content) -> some View {
         #if os(iOS)
+        // On iPhone Duo's outer display the sheet's bar stands at its side: Cancel and the confirming action become
+        // symbols so the bar can (Close at the top, then the action under it), and the form has the display's height,
+        // which the keyboard halves.
         content
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { cancelButton() }
-                ToolbarItem(placement: .confirmationAction) { Button(confirmTitle, action: confirm).disabled(confirmDisabled) }
+                ToolbarItem(placement: .confirmationAction) { Button(action: confirm) { BarLabel(confirmTitle, systemImage: "checkmark") }.disabled(confirmDisabled) }
             }
         #else
         content

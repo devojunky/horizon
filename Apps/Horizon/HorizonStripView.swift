@@ -171,6 +171,10 @@ private struct StripGeometry: Equatable {
     /// until `DaysStrip` is laid out and knows its own width, then spent. A request fired at a guessed moment raced
     /// the scroll view and was lost when it came first.
     var landing: Landing?
+    /// The day at the leading margin of the row on screen, kept as it scrolls once it has landed. A row made afresh
+    /// with no landing asked for opens there: the page's other layout (iPhone Duo opened or closed) makes a new row,
+    /// and the days in view stay in view. (A landing asked for at the change was spent by the row on its way out.)
+    var leadingDay: Date?
 
     struct ScrollRequest: Equatable {
         var x: CGFloat
@@ -190,6 +194,23 @@ private struct StripGeometry: Equatable {
 /// The list's rows as of the last pass. A bar that did not change keeps the closure it was made with (`equatable`),
 /// so what a tap needs to know about the page now is read from here, not captured then.
 @MainActor private final class RowsBox { var ids: [UUID] = [] }
+
+/// The handlers on the strip's place in the page, the same in either layout (`HorizonStripView.placing`).
+private struct StripPlacing: ViewModifier {
+    let inset: RestingPage.Inset
+    let isReady: Bool
+    let destination: AppDestination?
+    var note: (RestingPage.Inset) -> Void
+    var ready: () -> Void
+    var go: (AppDestination?) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: inset, initial: true) { _, inset in note(inset) }
+            .onChange(of: isReady, initial: true) { _, isReady in if isReady { ready() } }   // once there is a term and a real layout (the first pass is zero wide)
+            .onChange(of: destination) { _, destination in go(destination) }
+    }
+}
 #endif
 
 /// Everything the page draws from, worked out once per pass instead of once per use.
@@ -294,6 +315,7 @@ struct HorizonStripView: View {
     @State private var listHeadY: CGFloat?           // where the list begins on the screen, to know when a chosen period's items are under the fold (nil: never laid out, so far below it)
     @State private var resting = RestingPage()       // the page's height with the large title showing: what the strip is sized for
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @ScaledMetric(relativeTo: .caption2) private var labelHeight: CGFloat = 16
     /// A band's name grows with the text size as far as the first accessibility size (`bandLabels` stops there), so
     /// the strip stays a chart; its line is as tall as the name.
@@ -307,9 +329,10 @@ struct HorizonStripView: View {
     /// header, the range's underline), whichever way it was asked for (a tab, a tap, a pinch). Less motion: a fade.
     private var levelChange: Animation { reduceMotion ? .easeInOut(duration: 0.2) : .smooth(duration: 0.35) }
 
-    private func geometry(in size: CGSize, data: StripData) -> StripGeometry {
+    /// `listBelow`: the list's head shares the page with the strip (one column); beside it, the strip has the height.
+    private func geometry(in size: CGSize, data: StripData, listBelow: Bool = true) -> StripGeometry {
         let rows = max(data.bands.count, 1)
-        let spare = Double(size.height - chromeAbove - listHead) - 38 - 16   // less the axis and the foot
+        let spare = Double(size.height - chromeAbove - (listBelow ? listHead : 0)) - 38 - 16   // less the axis and the foot
         let row = CGFloat(Strip.rowHeight(rows: rows, available: spare, minimum: Double(bandLabelHeight) + 28))
         let bar = Strip.barWidth(level, width: Double(size.width) - 40, weeks: data.weeks, minimumBar: Strip.minimumBar(touch: touch))
         return StripGeometry(rows: rows, rowHeight: row, labelHeight: bandLabelHeight, barWidth: CGFloat(bar), level: level)
@@ -356,93 +379,19 @@ struct HorizonStripView: View {
         let listed = listed(data)
         let _ = rows.ids = listed.map(\.id)
         PageStack(path: $path) {
-            GeometryReader { geo in
-                let g = geometry(in: CGSize(width: geo.size.width, height: resting.height(of: geo)), data: data)
-                let contentWidth = CGFloat(data.periods.count) * g.barWidth + g.inset * 2
-                ScrollViewReader { page in
-                    List {
-                        Section {
-                            RangeTabs(selection: Binding(get: { level }, set: { setLevel($0, data: data, g: g, width: geo.size.width) }))
-                                .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
-                            StripHeader(level: level, cell: cell(for: chosen, among: data.items), total: data.items.count, ahead: ahead(data),
-                                        collisions: data.collisions, course: data.narrowedTo?.name)
-                                .pageRow(top: 8, bottom: 10)
-                            // The strip's key, in the same place at both levels so the strip under it never moves (a
-                            // row that came and went with the level moved the strip as it changed, and the two levels
-                            // showed through each other a line apart): at the semester what the colour means; at the
-                            // days, when the term does not fit across, a line with all of it and where the strip is in it.
-                            ZStack(alignment: .leading) {
-                                if level == .days, contentWidth > geo.size.width + 1 {
-                                    TermOverview(data: data, motion: motion, g: g, viewport: geo.size.width, calendar: calendar)
-                                        .transition(.fadeThrough)
-                                } else {
-                                    HeatLegend(period: level == .weeks ? "week" : "day")
-                                        .dynamicTypeSize(...DynamicTypeSize.accessibility1)   // on one line in the key's 44 points at every size
-                                        .transition(.fadeThrough)
-                                }
-                            }
-                            .frame(height: 44)
-                            .pageRow(top: 0, bottom: 2)
-                            strip(data, g, width: geo.size.width) { period in
-                                guard Date().timeIntervalSince(motion.pinchedAt) > 0.4 else { return }   // two fingers lifting are not a tap
-                                if level == .weeks {   // the overview: look closer here, with the week chosen so the list is its work
-                                    held = period.start
-                                    motion.landing = .init(date: period.start, place: .margin)   // the week's first day at the leading margin
-                                    withAnimation(levelChange) { chosen = period; level = .days }
-                                } else {
-                                    withAnimation(.default) { chosen = chosen == period ? nil : period }   // the same day again lets it go
-                                }
-                                if chosen != nil { reveal(page, viewportBottom: geo.frame(in: .global).maxY) }
-                            }
-                            .bleedRow()   // edge to edge: the strip keeps the page's margins inside itself
+            Group {
+                if #available(iOS 27.1, *), sizeClass == .regular { besideLayout(data, listed) } else { onePage(data, listed) }
+            }
+            .overlay {
+                if data.items.isEmpty {
+                    ScrollView {
+                        EditorialEmpty(title: "Nothing on the horizon.", deck: "Add a syllabus or a schedule and the term appears here as one strip: its weeks, and its days when you look closer.") {
+                            ImportMenu().buttonStyle(.borderedProminent)
                         }
-                        .listRowSeparator(.hidden)
-                        .onPaper()
-                        Section {
-                            comingUp(listed, data: data)
-                        } header: {
-                            listHeader(data).onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { listHeadY = $0 }
-                        }
-                        .onPaper()
+                        .padding(.horizontal, 20)
                     }
-                    .listStyle(.plain)
-                    .environment(\.defaultMinListRowHeight, 1)
-                    .paper()
-                    // Rows that come and go on their own (a check's linger running out, a sync, a document read) move
-                    // on the default curve. A change the page makes brings its own transaction (a level change, a
-                    // choice), and this leaves it alone: an implicit animation here would override it, and the
-                    // range's underline would slide on one curve while the strip changed level on another.
-                    .transaction(value: listed.map(\.id)) { if $0.animation == nil { $0.animation = .default } }
+                    .background(Design.paper)
                 }
-                .overlay {
-                    if data.items.isEmpty {
-                        ScrollView {
-                            EditorialEmpty(title: "Nothing on the horizon.", deck: "Add a syllabus or a schedule and the term appears here as one strip: its weeks, and its days when you look closer.") {
-                                ImportMenu().buttonStyle(.borderedProminent)
-                            }
-                            .padding(.horizontal, 20)
-                        }
-                        .background(Design.paper)
-                    }
-                }
-                .onChange(of: RestingPage.Inset(width: geo.size.width, top: geo.safeAreaInsets.top), initial: true) { _, inset in resting.note(inset) }
-                .onChange(of: !data.periods.isEmpty && geo.size.width > 0, initial: true) { _, ready in   // once there is a term and a real layout (the first pass is zero wide)
-                    guard ready, !placed else { return }
-                    placed = true
-                    if level == .days { motion.landing = .init(date: Date(), place: .fraction(0.2)) }   // DEBUG `--zoom-days`: the days open on today, a little in from the leading edge (what is ahead matters most)
-                    if MainTabs.debugOnce("--filter-second-course"), data.choices.count > 1 { filter = data.choices[1].kind }   // DEBUG: narrowed to a course without a tap
-                    if MainTabs.debugOnce("--scrub-week"), let heavy = data.collisions.first?.day ?? data.items.first?.due {   // DEBUG: a week chosen from the overview without a tap, as the tap does it
-                        let week = Strip.period(containing: heavy, level: .weeks, calendar: calendar)
-                        held = week.start
-                        motion.landing = .init(date: week.start, place: .margin)
-                        chosen = week; level = .days
-                    }
-                    if MainTabs.debugOnce("--check-first-coming-up"), let first = listed.first {   // DEBUG: a check without a tap, to see the row linger and leave
-                        Task { try? await Task.sleep(for: .seconds(2)); mark(first.id, true) }
-                    }
-                    go(model.destination, data: data)   // asked for before the strip was laid out (the tab's first showing)
-                }
-                .onChange(of: model.destination) { _, destination in if placed { go(destination, data: data) } }
             }
             .background(Design.paper.ignoresSafeArea())
             .navigationTitle("Horizon")
@@ -460,6 +409,7 @@ struct HorizonStripView: View {
                         }
                         .accessibilityValue(data.narrowedTo?.name ?? "All courses")
                     }
+                    .visibilityPriority(.high)   // it says whether the page is narrowed: the last to go to the overflow menu
                 }
             }
             .sheet(item: $editing) { ObligationEditor(mode: $0.state == .pendingReview ? .review($0) : .edit($0), courses: courses) }
@@ -469,6 +419,146 @@ struct HorizonStripView: View {
             }
             #endif
         }
+    }
+
+    /// The page as one scroll (a phone; iPhone Duo closed): the range, the header, the strip, then the list.
+    private func onePage(_ data: StripData, _ listed: [Obligation]) -> some View {
+        GeometryReader { geo in
+            let g = geometry(in: CGSize(width: geo.size.width, height: resting.height(of: geo)), data: data)
+            ScrollViewReader { page in
+                List {
+                    chartSection(data, g, width: geo.size.width) { reveal(page, viewportBottom: geo.frame(in: .global).maxY) }
+                    Section {
+                        comingUp(listed, data: data)
+                    } header: {
+                        listHeader(data).onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { listHeadY = $0 }
+                    }
+                    .onPaper()
+                }
+                .listStyle(.plain)
+                .environment(\.defaultMinListRowHeight, 1)
+                .paper()
+                // Rows that come and go on their own (a check's linger running out, a sync, a document read) move
+                // on the default curve. A change the page makes brings its own transaction (a level change, a
+                // choice), and this leaves it alone: an implicit animation here would override it, and the
+                // range's underline would slide on one curve while the strip changed level on another.
+                .transaction(value: listed.map(\.id)) { if $0.animation == nil { $0.animation = .default } }
+            }
+            .modifier(placing(data, width: geo.size.width, inset: RestingPage.Inset(width: geo.size.width, top: geo.safeAreaInsets.top)))
+        }
+    }
+
+    /// The page with room (iPhone Duo open, an iPad): the strip and its list side by side, or the strip over its list
+    /// on a display taller than wide, so the list is in view whatever the strip shows, and choosing a week or a day
+    /// fills it at once (HIG: with more room, expand the layout; the same rows, the same order of reading). An
+    /// arrangement rather than a stack of the two: folded like a book the system gives each half of the display one of
+    /// them, the strip never across the fold; propped like a laptop, the strip on the raised half, to be read at a
+    /// distance, and the list with its rings to check off on the half that lies flat (HIG: content for a distance on
+    /// top, controls below; no layout of its own for a pose).
+    @available(iOS 27.1, *)
+    private func besideLayout(_ data: StripData, _ listed: [Obligation]) -> some View {
+        ArrangementView {
+            GeometryReader { geo in
+                let g = geometry(in: CGSize(width: geo.size.width, height: resting.height(of: geo)), data: data, listBelow: false)
+                List {
+                    chartSection(data, g, width: geo.size.width) {}
+                }
+                .listStyle(.plain)
+                .environment(\.defaultMinListRowHeight, 1)
+                .paper()
+                .modifier(placing(data, width: geo.size.width, inset: RestingPage.Inset(width: geo.size.width, top: geo.safeAreaInsets.top)))
+            }
+            // Only a preference: folded, each side of the fold is one of the two whatever its share (a minimum the side
+            // above a fold cannot hold left the list out in the table pose).
+            .splitArrangementLayoutRatio(idealHorizontal: 0.62, idealVertical: 0.58)
+        } secondary: {
+            ScrollViewReader { list in
+                List {
+                    Section {
+                        comingUp(listed, data: data)
+                    } header: {
+                        listHeader(data).id("head")
+                    }
+                    .onPaper()
+                }
+                .listStyle(.plain)
+                .environment(\.defaultMinListRowHeight, 1)
+                .paper()
+                .transaction(value: listed.map(\.id)) { if $0.animation == nil { $0.animation = .default } }
+                .onChange(of: chosen) { _, _ in withAnimation(.snappy) { list.scrollTo("head", anchor: .top) } }   // a new period's list from its head
+            }
+        }
+        .arrangementViewStyle(.split)
+    }
+
+    /// The range, the header, the strip's key and the strip: the page's head and its chart, in either layout. A tap on
+    /// the chart chooses a period; `revealList` brings that period's rows up when the list is below the strip.
+    private func chartSection(_ data: StripData, _ g: StripGeometry, width: CGFloat, revealList: @escaping () -> Void) -> some View {
+        let contentWidth = CGFloat(data.periods.count) * g.barWidth + g.inset * 2
+        return Section {
+            RangeTabs(selection: Binding(get: { level }, set: { setLevel($0, data: data, g: g, width: width) }))
+                .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
+            StripHeader(level: level, cell: cell(for: chosen, among: data.items), total: data.items.count, ahead: ahead(data),
+                        collisions: data.collisions, course: data.narrowedTo?.name)
+                .pageRow(top: 8, bottom: 10)
+            // The strip's key, in the same place at both levels so the strip under it never moves (a
+            // row that came and went with the level moved the strip as it changed, and the two levels
+            // showed through each other a line apart): at the semester what the colour means; at the
+            // days, when the term does not fit across, a line with all of it and where the strip is in it.
+            ZStack(alignment: .leading) {
+                if level == .days, contentWidth > width + 1 {
+                    TermOverview(data: data, motion: motion, g: g, viewport: width, calendar: calendar)
+                        .transition(.fadeThrough)
+                } else {
+                    HeatLegend(period: level == .weeks ? "week" : "day")
+                        .dynamicTypeSize(...DynamicTypeSize.accessibility1)   // on one line in the key's 44 points at every size
+                        .transition(.fadeThrough)
+                }
+            }
+            .frame(height: 44)
+            .pageRow(top: 0, bottom: 2)
+            strip(data, g, width: width) { period in
+                guard Date().timeIntervalSince(motion.pinchedAt) > 0.4 else { return }   // two fingers lifting are not a tap
+                if level == .weeks {   // the overview: look closer here, with the week chosen so the list is its work
+                    held = period.start
+                    motion.landing = .init(date: period.start, place: .margin)   // the week's first day at the leading margin
+                    withAnimation(levelChange) { chosen = period; level = .days }
+                } else {
+                    withAnimation(.default) { chosen = chosen == period ? nil : period }   // the same day again lets it go
+                }
+                if chosen != nil { revealList() }
+            }
+            .bleedRow()   // edge to edge: the strip keeps the page's margins inside itself
+        }
+        .listRowSeparator(.hidden)
+        .onPaper()
+    }
+
+    /// What the strip's place on the page does as it is laid out, in either layout: the page's resting height noted,
+    /// the strip opened on today once there is a term and a width, and the app's own requests for the strip taken.
+    private func placing(_ data: StripData, width: CGFloat, inset: RestingPage.Inset) -> some ViewModifier {
+        StripPlacing(inset: inset, isReady: !data.periods.isEmpty && width > 0, destination: model.destination,
+                     note: { resting.note($0) },
+                     ready: { place(data) },
+                     go: { if placed { go($0, data: data) } })
+    }
+
+    /// The strip's first layout with a term: it opens on today, and takes what was asked for before it was laid out.
+    private func place(_ data: StripData) {
+        guard !placed else { return }
+        placed = true
+        if level == .days { motion.landing = .init(date: Date(), place: .fraction(0.2)) }   // DEBUG `--zoom-days`: the days open on today, a little in from the leading edge (what is ahead matters most)
+        if MainTabs.debugOnce("--filter-second-course"), data.choices.count > 1 { filter = data.choices[1].kind }   // DEBUG: narrowed to a course without a tap
+        if MainTabs.debugOnce("--scrub-week"), let heavy = data.collisions.first?.day ?? data.items.first?.due {   // DEBUG: a week chosen from the overview without a tap, as the tap does it
+            let week = Strip.period(containing: heavy, level: .weeks, calendar: calendar)
+            held = week.start
+            motion.landing = .init(date: week.start, place: .margin)
+            chosen = week; level = .days
+        }
+        if MainTabs.debugOnce("--check-first-coming-up"), let first = listed(data).first {   // DEBUG: a check without a tap, to see the row linger and leave
+            Task { try? await Task.sleep(for: .seconds(2)); mark(first.id, true) }
+        }
+        go(model.destination, data: data)   // asked for before the strip was laid out (the tab's first showing)
     }
 
     /// The strip at either level, and over it the bands' names, which stay put. A name has its own line above its
@@ -753,7 +843,10 @@ private struct DaysStrip: View {
                 })
         }
         .scrollPosition($position)
-        .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.x } action: { _, offset in motion.offset = offset }
+        .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.x } action: { _, offset in
+            motion.offset = offset
+            if landed, !bars.isEmpty { motion.leadingDay = bars[min(max(Int((offset / g.barWidth).rounded()), 0), bars.count - 1)].period.start }
+        }
         .onScrollGeometryChange(for: Frame.self) { Frame(viewport: $0.containerSize.width, content: $0.contentSize.width) } action: { _, frame in
             land(in: frame)   // laid out (or resized): a landing waiting for that goes now
         }
@@ -770,8 +863,11 @@ private struct DaysStrip: View {
     private func land(in laidOut: Frame?) {
         if let laidOut { laid = laidOut }
         let frame = laidOut ?? laid
-        guard let landing = motion.landing, let first = bars.first, frame.viewport > 0, frame.content >= contentWidth - 1 else { return }
+        guard let first = bars.first, frame.viewport > 0, frame.content >= contentWidth - 1 else { return }
+        let resume = landed ? nil : motion.leadingDay.map { StripMotion.Landing(date: $0, place: .margin) }   // a new row, nothing asked: where the last one was
+        guard let landing = motion.landing ?? resume else { landed = true; return }
         motion.landing = nil
+        landed = true
         let days = calendar.dateComponents([.day], from: first.period.start, to: calendar.startOfDay(for: landing.date)).day ?? 0
         let index = CGFloat(min(max(days, 0), bars.count - 1))
         let x = switch landing.place {
@@ -781,6 +877,8 @@ private struct DaysStrip: View {
         position.scrollTo(x: max(0, min(x, contentWidth - frame.viewport)))
     }
     @State private var laid = Frame(viewport: 0, content: 0)
+    /// This row has been placed (on a landing, or where the last row was): from then on it says where it is.
+    @State private var landed = false
 }
 
 /// Applies a pinch in progress to the row of bars: a stretch of the layer, nothing redrawn. Alone in reading

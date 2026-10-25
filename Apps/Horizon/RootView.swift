@@ -166,9 +166,12 @@ struct IntakeStatus: View {
 
 #if os(iOS)
 /// The home screen is Coverage (SPEC §6.1). Intake status and the review queue sit above it; the strip and the day
-/// plan are the next tabs. Pulling the page down reads what is queued and syncs with Reminders.
+/// plan are the next tabs. Pulling the page down reads what is queued and syncs with Reminders. Where the display is
+/// wide (iPhone Duo open, an iPad) the page a row opens stands beside Coverage, as Mail sets a message beside its list;
+/// where it is not, it is pushed over Coverage as ever (`ListBesidePage`).
 struct RootView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @Query(sort: \Obligation.due) private var obligations: [Obligation]
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
     @Query(filter: #Predicate<SourceDocument> { $0.course == nil && $0.deletedAt == nil }) private var looseDocuments: [SourceDocument]
@@ -177,20 +180,28 @@ struct RootView: View {
     @Query(filter: #Predicate<SourceDocument> { $0.deletedAt != nil }) private var deletedDocuments: [SourceDocument]
     @State private var addingByHand = false
     @State private var addingCourse = false
+    /// The page Coverage has open: beside it, or pushed over it; nil is Coverage alone.
+    @State private var selection: Route?
+    /// What that page has pushed over itself (an item from a course's page).
     @State private var path: [Route] = []
     @State private var editing: EditMode = .inactive   // owned here and handed to the list, so the toolbar and the rows agree
 
     private var live: [Obligation] { obligations.filter { $0.deletedAt == nil } }
     /// What sits in Recently Deleted: courses, and documents deleted on their own.
     private var binned: Int { binnedCourses.count + deletedDocuments.filter(\.isBinned).count }
-    /// A page, pushed once: a second push while it is up is ignored.
+    /// The page a row of Coverage opens, in place of whatever was open, pushed over it or not: once (a second tap while
+    /// it is up changes nothing).
     private func open(_ route: Route) {
-        guard !path.contains(route) else { return }
-        path.append(route)
+        guard selection != route || !path.isEmpty else { return }
+        path = []
+        selection = route
     }
+    /// The row's page is the one open beside the list, or under what it opened there (HIG: the selection that leads to
+    /// the detail stays marked); never marked where pages are pushed over the list instead.
+    private func isOpen(_ route: Route) -> Bool { sizeClass == .regular && selection == route }
 
-    /// A page the app was asked for (`AppModel.destination`: a link, an intent, Spotlight): the stack becomes that page
-    /// alone over Coverage, whatever was pushed before.
+    /// A page the app was asked for (`AppModel.destination`: a link, an intent, Spotlight): that page alone over (or
+    /// beside) Coverage, whatever was open before.
     private func go(_ destination: AppDestination?) {
         let route: Route?
         switch destination {
@@ -205,29 +216,44 @@ struct RootView: View {
         case .item(let id):   // the item where it lives: its details over its course's page, so Back goes to the course
             model.destination = nil
             guard let item = live.first(where: { $0.id == id }) else { model.lastError = "That item is no longer in Horizon."; return }
-            if let course = item.course, courses.contains(where: { $0.id == course.id }) { path = [.course(course.id), .item(id)] } else { path = [.item(id)] }
+            guard let course = item.course, courses.contains(where: { $0.id == course.id }) else { selection = .item(id); path = []; return }
+            let page = Route.course(course.id)
+            if selection == page { path = [.item(id)]; return }
+            // The course's page first, the item over it once that page is up: on a phone the split view pushes the
+            // course's page as the selection changes, and an item asked for in the same moment was dropped.
+            path = []
+            selection = page
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(450))
+                if selection == page, path.isEmpty { path = [.item(id)] }
+            }
             return
         default: return
         }
         model.destination = nil
-        path = route.map { [$0] } ?? []
+        selection = route
+        path = []
     }
     private var pending: [Obligation] { live.filter { $0.state == .pendingReview && $0.completedAt == nil } }   // done needs no review
 
     var body: some View {
-        NavigationStack(path: $path) {
-            List {
+        ListBesidePage(selection: $selection, path: $path) {
+            List(selection: $selection) {
                 IntakeStatus(openDocuments: { open(.documents) }, openSettings: { open(.settings) })
                 if !pending.isEmpty {
-                    NavigationLink { ReviewView() } label: {
+                    Button { open(.review) } label: {
                         HStack(alignment: .firstTextBaseline) {
                             Text(pending.count == 1 ? "One item to review" : "\(pending.count) items to review").font(.system(.title3, design: .serif, weight: .semibold))
                                 .contentTransition(.numericText())
                             Spacer()
+                            Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
                         }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Opens Review")
                     .listRowSeparator(.hidden)
-                    .onPaper()
+                    .onPaper(selected: isOpen(.review))
                     .listRowInsets(EdgeInsets(top: 16, leading: 20, bottom: 4, trailing: 20))
                 }
                 let unfiled = looseDocuments.filter { doc in doc.status == .parsed && obligations.contains { $0.deletedAt == nil && $0.sourceDocument?.id == doc.id } }   // through the query, not the relationship
@@ -244,12 +270,12 @@ struct RootView: View {
                     .buttonStyle(.plain)
                     .accessibilityHint("Opens Documents")
                     .listRowSeparator(.hidden)
-                    .onPaper()
+                    .onPaper(selected: isOpen(.documents))
                     .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 4, trailing: 20))
                 }
-                CoverageList(reading: model.reading != nil, hasUnfiled: !unfiled.isEmpty, open: open)
+                CoverageList(reading: model.reading != nil, hasUnfiled: !unfiled.isEmpty, open: open, isOpen: isOpen)
                 if binned > 0 {
-                    RecentlyDeletedRow(count: binned) { open(.recentlyDeleted) }
+                    RecentlyDeletedRow(count: binned, selected: isOpen(.recentlyDeleted)) { open(.recentlyDeleted) }
                 }
             }
             .listStyle(.plain)
@@ -267,24 +293,14 @@ struct RootView: View {
             .animation(.default, value: looseDocuments.count)
             .animation(.default, value: courses.map(\.id))
             .animation(.default, value: binned)
-            .navigationDestination(for: Route.self) { route in
-                switch route {
-                case .course(let id):
-                    if let course = courses.first(where: { $0.id == id }) { CourseView(course: course) } else { EmptyView() }
-                case .documents: DocumentsView()
-                case .recentlyDeleted: RecentlyDeletedView()
-                case .settings: SettingsView()
-                case .review: ReviewView()
-                case .item(let id): ItemDetail(id: id)
-                }
-            }
             .onChange(of: model.destination, initial: true) { _, destination in go(destination) }
             .onChange(of: courses.map(\.id)) { _, ids in   // a course deleted while its page is open: the page goes too
-                let gone = path.contains { if case .course(let id) = $0 { !ids.contains(id) } else { false } }
-                if gone { withAnimation { path.removeAll { if case .course(let id) = $0 { !ids.contains(id) } else { false } } } }
+                let gone: (Route) -> Bool = { if case .course(let id) = $0 { !ids.contains(id) } else { false } }
+                if let selection, gone(selection) { withAnimation { self.selection = nil; path = [] } }
+                else if path.contains(where: gone) { withAnimation { path.removeAll(where: gone) } }
             }
             .onChange(of: courses.count, initial: true) { _, count in
-                if MainTabs.debugFlag("--open-course"), count > 0, path.isEmpty, let first = courses.first { open(.course(first.id)) }
+                if MainTabs.debugFlag("--open-course"), count > 0, selection == nil, let first = courses.first { open(.course(first.id)) }
             }
             .onAppear {   // once per launch: coming back to Coverage must not push or bin again
                 if MainTabs.debugOnce("--open-documents") { open(.documents) }
@@ -300,36 +316,105 @@ struct RootView: View {
                 #endif
             }
             .navigationTitle("Coverage")
-            #if os(iOS)
             .navigationBarTitleDisplayMode(.large)
-            #endif
             .toolbar {
                 if editing.isEditing {
-                    ToolbarItem(placement: .primaryAction) { Button("Done") { withAnimation { editing = .inactive } } }
+                    ToolbarItem(placement: .primaryAction) { Button { withAnimation { editing = .inactive } } label: { BarLabel("Done", systemImage: "checkmark") } }
                 } else {
-                ToolbarItem(placement: .primaryAction) { ImportMenu() }
-                ToolbarItem(placement: .primaryAction) {
-                    Menu {
-                        Button { open(.documents) } label: { Label("Documents", systemImage: "doc.text") }
-                        Button { open(.settings) } label: { Label("Settings", systemImage: "gearshape") }
-                        Divider()
-                        Button { addingByHand = true } label: { Label("Add Item…", systemImage: "square.and.pencil") }
-                        Button { addingCourse = true } label: { Label("Add Course…", systemImage: "book") }
-                        if !courses.isEmpty {
-                            Button { withAnimation { editing = .active } } label: { Label("Edit Courses", systemImage: "arrow.up.arrow.down") }
+                    ToolbarItem(placement: .primaryAction) { ImportMenu() }
+                        .visibilityPriority(.high)   // the page's way in: the last to go to the overflow menu on a crowded side bar
+                    // The system's overflow menu (HIG: one overflow, the ellipsis kept for it), so iPhone Duo's side bar
+                    // never shows two.
+                    ToolbarOverflowMenu {
+                        Section {
+                            Button { open(.documents) } label: { Label("Documents", systemImage: "doc.text") }
+                            Button { open(.settings) } label: { Label("Settings", systemImage: "gearshape") }
                         }
-                    } label: { Label("More", systemImage: "ellipsis.circle") }
-                }
+                        Section {
+                            Button { addingByHand = true } label: { Label("Add Item…", systemImage: "square.and.pencil") }
+                            Button { addingCourse = true } label: { Label("Add Course…", systemImage: "book") }
+                            if !courses.isEmpty {
+                                Button { withAnimation { editing = .active } } label: { Label("Edit Courses", systemImage: "arrow.up.arrow.down") }
+                            }
+                        }
+                    }
                 }
             }
             .environment(\.editMode, $editing)
             .onAppear { if MainTabs.debugOnce("--edit-courses") { editing = .active } }
             .sheet(isPresented: $addingByHand) { ObligationEditor(mode: .manual, courses: courses) }
             .sheet(isPresented: $addingCourse) { CourseEditor(course: nil) }
+        } aside: {
+            PageAside()
         }
-        // On the stack, not its first page: the pages pushed onto it (a course's, Documents) take their environment from
-        // the stack, and set on the first page it never reached them (a tapped item on a course's page went nowhere).
-        .environment(\.openRoute, OpenRouteAction(open: open))
+    }
+}
+
+/// A list beside the page it opens where the display is wide (iPhone Duo open, an iPad), and the page pushed over the
+/// list where it is not (a phone, the Duo closed): one `NavigationSplitView`, which collapses to a stack at a compact
+/// width and keeps what is open as the device opens and closes (HIG: with room, show another level, as Mail sets a
+/// message beside its list, and keep the hierarchy the same; HIG: the system keeps a split view's columns clear of
+/// the fold). The list is a `List(selection:)` on `selection`, which is what the split view expands and collapses by,
+/// and its rows set it; a page's own links push over it on `path` (`openRoute`).
+struct ListBesidePage<Sidebar: View, Aside: View>: View {
+    @Binding var selection: Route?
+    @Binding var path: [Route]
+    let sidebar: Sidebar
+    /// The page's place before anything is chosen, where it stands beside the list.
+    let aside: Aside
+
+    init(selection: Binding<Route?>, path: Binding<[Route]>, @ViewBuilder sidebar: () -> Sidebar, @ViewBuilder aside: () -> Aside) {
+        _selection = selection; _path = path
+        self.sidebar = sidebar(); self.aside = aside()
+    }
+
+    var body: some View {
+        NavigationSplitView {
+            sidebar.navigationSplitViewColumnWidth(min: 300, ideal: 360)   // no maximum: folded, the system splits the display evenly at the fold
+        } detail: {
+            NavigationStack(path: $path) {
+                Group {
+                    if let selection { RoutePage(route: selection).id(selection) } else { aside }
+                }
+                .navigationDestination(for: Route.self) { RoutePage(route: $0) }
+            }
+            // On the stack, not its first page: the pages pushed onto it take their environment from the stack, and set
+            // on the first page it never reached them (a tapped item on a course's page went nowhere).
+            .environment(\.openRoute, OpenRouteAction { route in
+                guard route != selection, !path.contains(route) else { return }   // pushed once: a second tap while it goes up is ignored
+                path.append(route)
+            })
+        }
+        .navigationSplitViewStyle(.balanced)
+    }
+}
+
+/// A route's page: what a stack pushes, and what a split view's detail shows.
+struct RoutePage: View {
+    let route: Route
+    @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
+
+    var body: some View {
+        switch route {
+        case .course(let id):
+            if let course = courses.first(where: { $0.id == id }) { CourseView(course: course) }
+        case .documents: DocumentsView()
+        case .recentlyDeleted: RecentlyDeletedView()
+        case .settings: SettingsView()
+        case .review: ReviewView()
+        case .item(let id): ItemDetail(id: id)
+        }
+    }
+}
+
+/// The page beside a list before anything in it is chosen: the paper alone. The list beside it says what there is to
+/// open; a line here telling the user to choose would only say it again. Nothing is chosen for them either: closed, a
+/// choice made on their behalf would stand over the list they left (the hierarchy would change with the fold).
+struct PageAside: View {
+    var body: some View {
+        Design.paper.ignoresSafeArea()
+            .toolbar(removing: .title)
+            .accessibilityHidden(true)
     }
 }
 
@@ -338,6 +423,8 @@ struct RootView: View {
 /// The quiet way into Recently Deleted, at the foot of a list, only while something is in it.
 struct RecentlyDeletedRow: View {
     let count: Int
+    /// Its page is the one open beside the list.
+    var selected = false
     var open: () -> Void
 
     var body: some View {
@@ -358,7 +445,7 @@ struct RecentlyDeletedRow: View {
             .accessibilityHint("Opens Recently Deleted")
         }
         .listRowSeparator(.hidden)
-        .onPaper()
+        .onPaper(selected: selected)
         .listRowInsets(EdgeInsets(top: 16, leading: 20, bottom: 16, trailing: 20))
         .transition(.opacity)
     }

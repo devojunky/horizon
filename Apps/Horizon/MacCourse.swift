@@ -182,19 +182,6 @@ private struct CourseRail: View {
     }
 }
 
-/// A kicker over a block of a page's side column.
-struct RailSection<Content: View>: View {
-    let title: String
-    @ViewBuilder var content: Content
-    init(_ title: String, @ViewBuilder content: () -> Content) { self.title = title; self.content = content() }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Kicker(title).accessibilityAddTraits(.isHeader)
-            content
-        }
-    }
-}
-
 /// The grade table as bars: each row's share of the grade, the longest row's bar the rail's width, deeper in the
 /// accent as the share grows (the strip's colour for what is at stake), and under the name what the syllabus says of
 /// its rhythm: how often, how many, how many dropped, and where the work lives.

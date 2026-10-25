@@ -70,15 +70,22 @@ struct SearchPage: View {
     @Query(filter: #Predicate<Course> { $0.deletedAt == nil }, sort: \Course.code) private var courses: [Course]
     @Query(filter: #Predicate<SourceDocument> { $0.deletedAt == nil }) private var documents: [SourceDocument]
     @Query private var policies: [Policy]
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    /// The page a result opens: beside the results where there is room (iPhone Duo open, an iPad), else pushed over them.
+    @State private var selection: Route?
+    /// What that page has pushed over itself (an item from a course's page).
     @State private var path: [Route] = []
     @State private var preview: URL?
     @State private var finds = SpotlightFinds()
 
-    /// A page pushed once: a second push while it is up is ignored (a course's page and an item's, from here).
-    private func push(_ route: Route) {
-        guard !path.contains(route) else { return }
-        path.append(route)
+    /// A result's page, in place of whatever was open: once (a second tap while it is up changes nothing).
+    private func open(_ route: Route) {
+        guard selection != route || !path.isEmpty else { return }
+        path = []
+        selection = route
     }
+    /// The result's page is the one open beside the results, or under what it opened there.
+    private func isOpen(_ route: Route) -> Bool { sizeClass == .regular && selection == route }
 
     private var livePolicies: [PolicySnapshot] { policies.filter { $0.course != nil && $0.course?.deletedAt == nil }.map(PolicySnapshot.init) }
 
@@ -88,8 +95,8 @@ struct SearchPage: View {
     }
 
     var body: some View {
-        NavigationStack(path: $path) {
-            List {
+        ListBesidePage(selection: $selection, path: $path) {
+            List(selection: $selection) {
                 if model.searchText.trimmingCharacters(in: .whitespaces).isEmpty {
                     suggestions
                 } else {
@@ -106,15 +113,9 @@ struct SearchPage: View {
                 let found = await SpotlightSearch.finds(for: model.searchText)
                 if !Task.isCancelled { finds = found }
             }
-            .navigationDestination(for: Route.self) { route in
-                switch route {
-                case .course(let id): if let course = courses.first(where: { $0.id == id }) { CourseView(course: course) }
-                case .item(let id): ItemDetail(id: id)
-                default: EmptyView()
-                }
-            }
+        } aside: {
+            PageAside()
         }
-        .environment(\.openRoute, OpenRouteAction(open: push))   // on the stack, so a course's page pushed here opens its items here too
         .quickLookPreview($preview)
     }
 
@@ -138,8 +139,8 @@ struct SearchPage: View {
                 if let block { nowRow(block) }
                 ForEach(suggested, id: \.id) { suggestion in
                     if let o = obligations.first(where: { $0.id == suggestion.id }) {
-                        Button { push(.item(o.id)) } label: { ObligationRow(obligation: o, disclosure: true) }
-                            .buttonStyle(.plain).onPaper()
+                        Button { open(.item(o.id)) } label: { ObligationRow(obligation: o, disclosure: true) }
+                            .buttonStyle(.plain).onPaper(selected: isOpen(.item(o.id)))
                             .accessibilityHint(Self.why(suggestion.reason))
                     }
                 }
@@ -189,7 +190,7 @@ struct SearchPage: View {
         return ScrollView(.horizontal) {
             HStack(spacing: 8) {
                 ForEach(ordered) { course in
-                    Button { push(.course(course.id)) } label: { Text(course.displayName).lineLimit(1) }
+                    Button { open(.course(course.id)) } label: { Text(course.displayName).lineLimit(1) }
                         .buttonStyle(.bordered).buttonBorderShape(.capsule).tint(Design.accentInk)
                         .appEntityIdentifier(EntityIdentifier(for: CourseEntity.self, identifier: course.id))
                 }
@@ -233,7 +234,7 @@ struct SearchPage: View {
             Section {
                 ForEach(results.items) { item in
                     if let o = obligations.first(where: { $0.id == item.id }) {
-                        Button { model.rememberSearch(); push(.item(o.id)) } label: { ObligationRow(obligation: o, disclosure: true) }.buttonStyle(.plain).onPaper()
+                        Button { model.rememberSearch(); open(.item(o.id)) } label: { ObligationRow(obligation: o, disclosure: true) }.buttonStyle(.plain).onPaper(selected: isOpen(.item(o.id)))
                     }
                 }
             } header: { Kicker("Items") }.onPaper()
@@ -241,7 +242,7 @@ struct SearchPage: View {
         if !results.courses.isEmpty {
             Section {
                 ForEach(results.courses) { course in
-                    Button { model.rememberSearch(); push(.course(course.id)) } label: {
+                    Button { model.rememberSearch(); open(.course(course.id)) } label: {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(course.displayName).font(.system(.headline, design: .serif))
                             if course.code != course.displayName, !course.code.isEmpty { Text(course.code).font(.caption).foregroundStyle(.secondary) }
@@ -250,14 +251,14 @@ struct SearchPage: View {
                     }
                     .buttonStyle(.plain)
                     .appEntityIdentifier(EntityIdentifier(for: CourseEntity.self, identifier: course.id))
-                    .onPaper()
+                    .onPaper(selected: isOpen(.course(course.id)))
                 }
             } header: { Kicker("Courses") }.onPaper()
         }
         if !results.policies.isEmpty {
             Section {
                 ForEach(results.policies) { policy in
-                    Button { model.rememberSearch(); if let id = policy.courseID { push(.course(id)) } } label: {
+                    Button { model.rememberSearch(); if let id = policy.courseID { open(.course(id)) } } label: {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("\(PolicyLookup.name(policy.kind)) · \(policy.courseName ?? "")").font(.system(.headline, design: .serif))
                             Text(policy.text).font(.callout).foregroundStyle(.secondary).lineLimit(3)
