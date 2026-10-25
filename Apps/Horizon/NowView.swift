@@ -263,7 +263,7 @@ private struct PlanList: View {
                         .animation(.spring(duration: 0.5).delay(reduceMotion ? 0 : Double(index) * 0.05), value: revealed)
                         .swipeActions(edge: .leading, allowsFullSwipe: !streaming) {
                             if !streaming {
-                                Button(block.isDone ? "Not Done" : "Done", systemImage: block.isDone ? "arrow.uturn.backward" : "checkmark") { mark(block.id, !block.isDone) }.tint(Design.accentInk)
+                                AccentSwipe(block.isDone ? "Not Done" : "Done", systemImage: block.isDone ? "arrow.uturn.backward" : "checkmark") { mark(block.id, !block.isDone) }
                                 if canSkip(block) { Button(skipTitle(block), systemImage: block.isSkipped ? "arrow.uturn.backward" : "forward.end") { skip(block.id, !block.isSkipped) }.tint(.gray) }
                             }
                         }

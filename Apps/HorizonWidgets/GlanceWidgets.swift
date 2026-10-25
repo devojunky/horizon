@@ -169,6 +169,7 @@ struct WeekWidget: Widget {
 struct WeekView: View {
     let entry: GlanceEntry
     @Environment(\.widgetRenderingMode) private var rendering
+    @Environment(\.self) private var environment
 
     var body: some View {
         if let glance = entry.glance {
@@ -205,10 +206,15 @@ struct WeekView: View {
         VStack(spacing: 3) {
             Text(day.day.formatted(.dateTime.weekday(.narrow))).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
             ZStack {
+                // A day with work is laid on the paper, as the app's strip lays its cells, so its count's ink is worked
+                // out on the colour it is shown on: at night the system draws the widget's own background lighter than
+                // the paper, and a white count on a middling day fell to 4.3:1.
+                if day.heat > 0, rendering == .fullColor { RoundedRectangle(cornerRadius: 5).fill(GlanceDesign.paper) }
                 RoundedRectangle(cornerRadius: 5).fill(.primary.opacity(0.06))
                 RoundedRectangle(cornerRadius: 5).fill(fill.opacity(day.heat))   // the strip's colour: the share of the grade that day
-                if day.count > 0 { Text("\(day.count)").font(.caption.weight(.bold)).monospacedDigit() }
+                if day.count > 0 { count(day) }
             }
+            .compositingGroup()   // what a count cuts out, it cuts out of its own cell
             .frame(height: 38)
             .overlay(alignment: .bottom) {
                 if day.pileup { Capsule().fill(GlanceDesign.ink).frame(height: 3).padding(.horizontal, 6).offset(y: 5).widgetAccentable() }   // a pileup starts here
@@ -221,6 +227,25 @@ struct WeekView: View {
     }
 
     private var fill: Color { rendering == .fullColor ? GlanceDesign.accent : .primary }
+
+    /// A day's count: in full colour black or white by the cell (`countInk`). A tinted or clear Home Screen draws the
+    /// fill and the count in one colour, and a heavy day's count vanished into its cell (1:1): there a count is cut out
+    /// of a fill past 0.375, where the hole reads better than the figure (measured on a tinted screen at night: 3.4:1
+    /// where the two cross, about 5 to 11:1 above; the system takes these colours from the wallpaper).
+    @ViewBuilder private func count(_ day: Glance.Day) -> some View {
+        let figure = Text("\(day.count)").font(.caption.weight(.bold)).monospacedDigit()
+        if rendering == .fullColor { figure.foregroundStyle(countInk(day)) } else if day.heat > 0.375 { figure.blendMode(.destinationOut) } else { figure }
+    }
+
+    /// A day's count in black or white by its heat as the screen shows it, the rule the app's strip sets its counts by
+    /// (`Strip.countInk`): in the primary colour it was white on the orange of a heavy day at night (1.9:1). The ground
+    /// is the paper the cell is laid on, under its veil of the primary colour.
+    private func countInk(_ day: Glance.Day) -> Color {
+        func rgb(_ color: Color) -> Strip.RGB { let c = color.resolve(in: environment); return (Double(c.red), Double(c.green), Double(c.blue)) }
+        let ground = Strip.mix(rgb(.primary), at: 0.06, over: rgb(GlanceDesign.paper))
+        let ink = Strip.countInk(cell: Strip.luminance(Strip.mix(rgb(GlanceDesign.accent), at: day.heat, over: ground)))
+        return ink.dark ? .black.opacity(ink.opacity) : .white
+    }
 
     private static func dayString(_ date: Date) -> String {
         let c = Calendar.current.dateComponents([.year, .month, .day], from: date)

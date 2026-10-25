@@ -117,14 +117,14 @@ struct MacReviewPage: View {
         Table(rows, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("Item", value: \.title) { row in Text(row.title).fontWeight(.medium).lineLimit(1).help(row.title) }
                 .width(min: 100, ideal: 120)
-            TableColumn("Course", value: \.course) { row in Text(row.course).foregroundStyle(.secondary).lineLimit(1).help(row.course) }
+            TableColumn("Course", value: \.course) { row in Text(row.course).foregroundStyle(.rowSecondary).lineLimit(1).help(row.course) }
                 .width(min: 60, ideal: 70)
             TableColumn("Due", value: \.due) { row in
                 Text(row.hasDue ? Design.due(row.due, hasTime: row.dueHasTime) : "Date TBA").monospacedDigit().lineLimit(1)
             }
             .width(min: 80, ideal: 90)
             TableColumn("Weight", value: \.weight) { row in
-                Group { if row.weight >= 0 { Design.points(row.weight).fontWeight(.semibold) } else { Text("—").foregroundStyle(.tertiary) } }
+                Group { if row.weight >= 0 { Design.points(row.weight).fontWeight(.semibold) } else { Text("—").foregroundStyle(.rowTertiary) } }
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .width(min: 46, ideal: 50, max: 80)

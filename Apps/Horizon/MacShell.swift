@@ -473,7 +473,7 @@ struct DocumentsTable: View {
             TableColumn("Document", value: \.displayName) { doc in   // two lines on every row, so the rows keep one height
                 VStack(alignment: .leading, spacing: 2) {
                     Text(doc.displayName).fontWeight(.medium).lineLimit(1)
-                    Text(doc.displayName != doc.filename ? doc.filename : Self.kind(doc)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)   // the file it came as
+                    Text(doc.displayName != doc.filename ? doc.filename : Self.kind(doc)).font(.caption).foregroundStyle(.rowSecondary).lineLimit(1).truncationMode(.middle)   // the file it came as
                 }
                 .padding(.vertical, 3)
                 .help(doc.displayName)
@@ -481,10 +481,10 @@ struct DocumentsTable: View {
             .width(min: 140, ideal: 190)
             TableColumn("Status", value: \.statusLabel) { doc in
                 HStack(spacing: 4) {
-                    Text(doc.statusLabel).foregroundStyle(doc.status == .failed ? Design.accentInk : .primary)
+                    Text(doc.statusLabel).foregroundStyle(doc.status == .failed ? AnyShapeStyle(.rowAccent) : AnyShapeStyle(.primary))
                         .help(doc.failure ?? "")   // why it could not be read, on hover
                     if !doc.warnings.isEmpty {   // what the read had to say, on hover
-                        Text(doc.warnings.count == 1 ? "· 1 note" : "· \(doc.warnings.count) notes").foregroundStyle(.secondary)
+                        Text(doc.warnings.count == 1 ? "· 1 note" : "· \(doc.warnings.count) notes").foregroundStyle(.rowSecondary)
                             .help(doc.warnings.joined(separator: "\n"))
                     }
                 }
@@ -498,15 +498,15 @@ struct DocumentsTable: View {
                         ForEach(courses) { course in Button(course.displayName) { Task { await model.assignDocument(doc.id, to: course.id) } } }
                     }
                     .fixedSize()
-                } else { Text("—").foregroundStyle(.tertiary) }
+                } else { Text("—").foregroundStyle(.rowTertiary) }
             }
             .width(min: 90, ideal: 110)
             TableColumn("Added", value: \.queuedAt) { doc in Text(Self.added(doc.queuedAt)).monospacedDigit().lineLimit(1) }.width(min: 90, ideal: 110)
             TableColumn("Read") { doc in
                 if doc.status == .parsed {
-                    Text("\(doc.inputTokens) in · \(doc.outputTokens) out · \(doc.durationMs / 1000) s · \(Self.routeName(doc.route))").monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+                    Text("\(doc.inputTokens) in · \(doc.outputTokens) out · \(doc.durationMs / 1000) s · \(Self.routeName(doc.route))").monospacedDigit().foregroundStyle(.rowSecondary).lineLimit(1)
                         .help("\(doc.inputTokens) tokens in, \(doc.outputTokens) out, \(doc.durationMs / 1000) seconds, read \(Self.routeName(doc.route) == "Claude" ? "by Claude" : Self.routeName(doc.route))")
-                } else { Text("—").foregroundStyle(.tertiary) }
+                } else { Text("—").foregroundStyle(.rowTertiary) }
             }
             .width(min: 80, ideal: 100)
         }
@@ -663,7 +663,7 @@ struct RecentlyDeletedTable: View {
         Table(entries, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("Name", value: \.name) { entry in Text(entry.name).fontWeight(.medium).lineLimit(1).help(entry.name) }.width(min: 140, ideal: 220)
             TableColumn("Kind", value: \.kindName) { entry in Text(entry.kindName) }.width(min: 70, ideal: 80)
-            TableColumn("Holds", value: \.held) { entry in Text(holds(entry)).foregroundStyle(.secondary).lineLimit(1) }.width(min: 90, ideal: 130)
+            TableColumn("Holds", value: \.held) { entry in Text(holds(entry)).foregroundStyle(.rowSecondary).lineLimit(1) }.width(min: 90, ideal: 130)
             TableColumn("Deleted", value: \.deletedAt) { entry in Text(entry.deletedAt.formatted(.relative(presentation: .named))).lineLimit(1) }.width(min: 90, ideal: 110)
             TableColumn("Gone in", value: \.expiry) { entry in Text(remaining(entry)).monospacedDigit() }.width(min: 60, ideal: 70)
         }

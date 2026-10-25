@@ -19,7 +19,9 @@ enum Design {
     /// Words on a fill of the accent (a prominent button's, `prominent()`): the paper's dark face, about 10:1 on the
     /// orange by day and at night. White there reads at about 1.9:1.
     static let onAccent = Color(red: 0.082, green: 0.078, blue: 0.071)
-    static let quiet = Color.secondary
+    /// The accent where the system sets white words on it and nothing else can be set there: the amber by day and at
+    /// night (white on it 5.1:1; 7.1:1 in the deeper amber Increase Contrast asks for). A Mac's swipe action is one.
+    static let accentDeep = dynamic(light: (0.659, 0.353, 0.0), dark: (0.659, 0.353, 0.0), increased: (light: (0.55, 0.27, 0.0), dark: (0.55, 0.27, 0.0)))
     /// The page behind everything.
     static let paper = dynamic(light: (0.976, 0.965, 0.941), dark: (0.082, 0.078, 0.071))
     /// A sheet laid on the page: form cells, chips.
@@ -40,7 +42,7 @@ enum Design {
     static func points(_ value: Double?) -> Text {
         guard let value else { return Text("") }
         let figure = Text(value, format: .number.precision(.fractionLength(0...1))).monospacedDigit()
-        let sign = Text("%").foregroundStyle(quiet)
+        let sign = Text("%").foregroundStyle(.rowSecondary)
         return Text("\(figure)\(sign)")
     }
 
@@ -207,6 +209,53 @@ private struct OnAccent: ViewModifier {
 
     func body(content: Content) -> some View {
         if filled { content.foregroundStyle(Design.onAccent) } else { content }
+    }
+}
+
+/// Quiet or accent words in a row that can be selected: their own style, and the selection's on a row the system
+/// highlights (`backgroundProminence` increased), as Finder's and Mail's columns turn white there. The secondary style
+/// is white at about 70% on a selected row, 4.3:1 on a Mac table's selection by day and 2.2:1 on the orange at night;
+/// the amber's words all but vanished on it.
+struct OnSelection<Base: ShapeStyle>: ShapeStyle {
+    let base: Base
+    func resolve(in environment: EnvironmentValues) -> some ShapeStyle {
+        environment.backgroundProminence == .increased ? AnyShapeStyle(.primary) : AnyShapeStyle(base)
+    }
+}
+
+extension ShapeStyle where Self == OnSelection<HierarchicalShapeStyle> {
+    static var rowSecondary: Self { OnSelection(base: .secondary) }
+    static var rowTertiary: Self { OnSelection(base: .tertiary) }
+}
+
+extension ShapeStyle where Self == OnSelection<Color> {
+    /// `Design.accentInk`'s words in a row (a document that failed).
+    static var rowAccent: Self { OnSelection(base: Design.accentInk) }
+}
+
+/// A row's own swipe action on the accent (Done, Confirm), as a prominent button is: on iOS the orange with its glyph in
+/// `Design.onAccent`, by day and at night. iOS draws a swipe action as a circle of its tint with the glyph on it, white
+/// whatever the tint, and takes no foreground style from the button (white on the orange read at 1.9:1 at night); a
+/// symbol in palette mode keeps the colour it is given. A Mac sets the action's words in white itself, so there the
+/// fill is `Design.accentDeep`.
+struct AccentSwipe: View {
+    let title: String
+    let systemImage: String
+    let action: () -> Void
+
+    init(_ title: String, systemImage: String, action: @escaping () -> Void) {
+        self.title = title; self.systemImage = systemImage; self.action = action
+    }
+
+    var body: some View {
+        #if os(iOS)
+        Button(action: action) {
+            Label { Text(title) } icon: { Image(systemName: systemImage).symbolRenderingMode(.palette).foregroundStyle(Design.onAccent) }
+        }
+        .tint(Design.accent)
+        #else
+        Button(title, systemImage: systemImage, action: action).tint(Design.accentDeep)
+        #endif
     }
 }
 

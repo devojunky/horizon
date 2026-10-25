@@ -563,8 +563,11 @@ struct DoneMark: View {
         let line: CGFloat = size > 16 ? 1.5 : 1.25
         ZStack {
             if done {
+                // The check is cut out of the disc, so it is whatever the disc lies on: the paper, or a selected row's
+                // highlight. In the paper's colour it vanished on a Mac's selected row by day, where the disc is white.
                 Circle().fill(.primary).frame(width: size, height: size)
-                Image(systemName: "checkmark").font(.system(size: size / 2, weight: .bold)).foregroundStyle(Design.paper)
+                    .overlay { Image(systemName: "checkmark").font(.system(size: size / 2, weight: .bold)).blendMode(.destinationOut) }
+                    .compositingGroup()
             } else if skipped {
                 Circle().strokeBorder(.secondary, style: StrokeStyle(lineWidth: line, dash: [size / 8, size / 8])).frame(width: size, height: size)
             } else {
@@ -592,7 +595,7 @@ extension View {
                            delete: @escaping () -> Void) -> some View {
         self
             .swipeActions(edge: .leading) {
-                Button(done ? "Not Done" : "Done", systemImage: ItemActions.markImage(done: done)) { mark(!done) }.tint(Design.accentInk)
+                AccentSwipe(done ? "Not Done" : "Done", systemImage: ItemActions.markImage(done: done)) { mark(!done) }
                 Button(ItemActions.skipTitle(skipped: skipped), systemImage: ItemActions.skipImage(skipped: skipped)) { skip(!skipped) }.tint(.gray)
             }
             .swipeActions(edge: .trailing) {

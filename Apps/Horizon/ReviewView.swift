@@ -34,7 +34,7 @@ struct ReviewView: View {
                 }
                 .padding(.vertical, 4)
                 .onPaper()
-                .swipeActions(edge: .leading) { Button("Confirm", systemImage: "checkmark") { Task { await model.confirm(item.id) } }.tint(Design.accentInk) }
+                .swipeActions(edge: .leading) { AccentSwipe("Confirm", systemImage: "checkmark") { Task { await model.confirm(item.id) } } }
                 .swipeActions(edge: .trailing) {
                     if item.otherDate == nil { Button("Discard", systemImage: "trash", role: .destructive) { Task { await model.discard(item.id) } } }
                 }
