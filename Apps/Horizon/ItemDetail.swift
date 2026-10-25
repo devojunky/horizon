@@ -189,12 +189,12 @@ struct ItemDetail: View {
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 10) {
                     Button("Confirm", systemImage: "checkmark") { changed += 1; Task { await model.confirm(item.id) } }
-                        .buttonStyle(.bordered).tint(Design.accentInk).reachable()
+                        .bordered().reachable()
                     if let other = item.otherDate {
                         Button("Use \(other.formatted(.dateTime.month(.abbreviated).day()))") {
                             changed += 1; Task { await model.confirm(item.id, edits: ObligationEdits(due: .some(other))) }
                         }
-                        .buttonStyle(.bordered).reachable()
+                        .bordered().reachable()
                     }
                 }
                 .controlSize(.small)

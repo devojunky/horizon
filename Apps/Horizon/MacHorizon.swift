@@ -110,6 +110,7 @@ struct MacHorizonPage: View {
                 Kicker(ChartHeader.name(of: chosen, calendar: calendar, style: .short))
                 Spacer()
                 Button("Show Coming Up") { self.chosen = nil }
+                    .bordered()
                     .controlSize(.small)
                     .keyboardShortcut(.cancelAction)
                     .help("List what is coming up instead (Escape)")

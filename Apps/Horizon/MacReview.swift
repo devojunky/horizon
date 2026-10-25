@@ -268,11 +268,12 @@ private struct ReviewDetail: View {
             Button(action: confirm) { ShortcutLabel(several ? "Confirm All" : "Confirm", keys: "⌘↩") }.prominent()
             if let other, let date = other.otherDate {
                 Button { useOther(other) } label: { Text("Use \(date.formatted(.dateTime.month(.abbreviated).day()))") }
+                    .bordered()
                     .help("Confirm it due \(date.formatted(.dateTime.weekday(.wide).month(.wide).day())) instead")
             }
-            if !several { Button(action: edit) { ShortcutLabel("Edit…", keys: "↩") } }
+            if !several { Button(action: edit) { ShortcutLabel("Edit…", keys: "↩") }.bordered() }
             Spacer(minLength: 0)
-            if discards { Button(role: .destructive, action: discard) { ShortcutLabel(several ? "Discard All" : "Discard", keys: "⌘⌫") } }
+            if discards { Button(role: .destructive, action: discard) { ShortcutLabel(several ? "Discard All" : "Discard", keys: "⌘⌫") }.bordered() }
         }
     }
 }

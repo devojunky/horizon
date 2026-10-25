@@ -73,7 +73,7 @@ struct CourseEditor: View {
                         }
                     }
                     .onDelete { meetings.remove(atOffsets: $0) }
-                    Button("Add Meeting", systemImage: "plus") { withAnimation { meetings.append(MeetingRow()) } }
+                    Button("Add Meeting", systemImage: "plus") { withAnimation { meetings.append(MeetingRow()) } }.macBordered()
                 } header: { Kicker("Meetings") }
                 Section {
                     ForEach($components) { $component in
@@ -108,7 +108,7 @@ struct CourseEditor: View {
                         .padding(.vertical, 2)
                     }
                     .onDelete { components.remove(atOffsets: $0) }
-                    Button("Add Component", systemImage: "plus") { withAnimation { components.append(ComponentRow()) } }
+                    Button("Add Component", systemImage: "plus") { withAnimation { components.append(ComponentRow()) } }.macBordered()
                 } header: {
                     Kicker("Grade")
                 } footer: {
@@ -125,13 +125,13 @@ struct CourseEditor: View {
                         }
                     }
                     .onDelete { breaks.remove(atOffsets: $0) }
-                    Button("Add Break", systemImage: "plus") { withAnimation { breaks.append(BreakRow()) } }
+                    Button("Add Break", systemImage: "plus") { withAnimation { breaks.append(BreakRow()) } }.macBordered()
                 } header: {
                     Kicker("No class")
                 }
                 if let course {
                     Section {
-                        Button("Delete Course", role: .destructive) { Task { await model.deleteCourse(course.id) }; dismiss() }
+                        Button("Delete Course", role: .destructive) { Task { await model.deleteCourse(course.id) }; dismiss() }.macBordered()
                     } footer: {
                         Text("It goes to Recently Deleted with its items, their reminders, and its documents, and can be restored from there for 30 days.")
                     }

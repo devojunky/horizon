@@ -19,6 +19,9 @@ enum Design {
     /// Words on a fill of the accent (a prominent button's, `prominent()`): the paper's dark face, about 10:1 on the
     /// orange by day and at night. White there reads at about 1.9:1.
     static let onAccent = Color(red: 0.082, green: 0.078, blue: 0.071)
+    /// Words on a tint of the accent (a bordered button's bezel, `bordered()`): the same ink by day, 15:1 on the orange's
+    /// tint where the amber read 3.7:1 on its own; at night the accent's words (`accentInk`'s faces), on a tint gone dark.
+    static let onAccentTint = dynamic(light: (0.082, 0.078, 0.071), dark: (1.0, 0.68, 0.26), increased: (light: (0.082, 0.078, 0.071), dark: (1.0, 0.76, 0.42)))
     /// The accent where the system sets white words on it and nothing else can be set there: the amber by day and at
     /// night (white on it 5.1:1; 7.1:1 in the deeper amber Increase Contrast asks for). A Mac's swipe action is one.
     static let accentDeep = dynamic(light: (0.659, 0.353, 0.0), dark: (0.659, 0.353, 0.0), increased: (light: (0.55, 0.27, 0.0), dark: (0.55, 0.27, 0.0)))
@@ -141,7 +144,23 @@ extension View {
     /// A page's prominent action (DECISIONS 2026-10-25 · Prominent buttons): the orange filled, by day and at night (a
     /// fill is the accent's; the amber tint is for words), its words in `Design.onAccent`.
     func prominent() -> some View {
-        buttonStyle(.borderedProminent).tint(Design.accent).modifier(OnAccent())
+        buttonStyle(.borderedProminent).tint(Design.accent).modifier(OnAccent(ink: Design.onAccent))
+    }
+
+    /// A page's other actions (Edit, Try Again, Cancel; DECISIONS 2026-10-25 · The accent under words and glyphs): the
+    /// orange's tint for a bezel, a step quieter than `prominent()`, its words in `Design.onAccentTint`, ink by day.
+    func bordered() -> some View {
+        buttonStyle(.bordered).tint(Design.accent).modifier(OnAccent(ink: Design.onAccentTint))
+    }
+
+    /// A button a Mac draws bordered whatever its style (in a form, a sheet's foot, a page): `bordered()` there. iOS
+    /// keeps its own, a form's row of the tint's words.
+    func macBordered() -> some View {
+        #if os(macOS)
+        bordered()
+        #else
+        self
+        #endif
     }
 
     /// Headline set like a magazine deck: serif, large, tight.
@@ -194,11 +213,13 @@ extension View {
     }
 }
 
-/// A prominent button's words in `Design.onAccent` while it shows the fill. iOS sets them white whatever the fill, and
-/// so does a Mac's toolbar (a Mac's page sets dark words on a light fill by itself). A disabled button, and on a Mac a
-/// button in a window that is not key, is drawn grey by the system with words of its own, and keeps them: ink set
-/// there all but vanished on the grey at night.
+/// A button's words in `ink` while it shows the accent: a prominent button's fill, whose words iOS and a Mac's toolbar
+/// set white whatever the fill (a Mac's page sets dark words on a light fill by itself), or a bordered button's tint,
+/// whose words the system sets in the tint itself. A disabled button, and on a Mac a button in a window that is not
+/// key, is drawn grey by the system with words of its own, and keeps them: ink set there all but vanished on the grey
+/// at night.
 private struct OnAccent: ViewModifier {
+    let ink: Color
     @Environment(\.isEnabled) private var isEnabled
     #if os(macOS)
     @Environment(\.controlActiveState) private var window
@@ -208,7 +229,7 @@ private struct OnAccent: ViewModifier {
     #endif
 
     func body(content: Content) -> some View {
-        if filled { content.foregroundStyle(Design.onAccent) } else { content }
+        if filled { content.foregroundStyle(ink) } else { content }
     }
 }
 

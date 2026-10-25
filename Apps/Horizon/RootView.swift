@@ -125,11 +125,11 @@ struct IntakeStatus: View {
                           systemImage: "cloud").foregroundStyle(.secondary)
                     HStack(spacing: 10) {
                         if keyProblem(first) {
-                            Button("Check Key…", action: openSettings).buttonStyle(.bordered).controlSize(.small).reachable()
+                            Button("Check Key…", action: openSettings).bordered().controlSize(.small).reachable()
                         } else {
-                            Button("Try Again") { Task { await model.drainAndSync() } }.buttonStyle(.bordered).controlSize(.small).reachable()
+                            Button("Try Again") { Task { await model.drainAndSync() } }.bordered().controlSize(.small).reachable()
                         }
-                        Button(count == 1 ? "Read on This \(Self.device)…" : "Read Them on This \(Self.device)…") { confirmDevice = first }.buttonStyle(.bordered).controlSize(.small).reachable()
+                        Button(count == 1 ? "Read on This \(Self.device)…" : "Read Them on This \(Self.device)…") { confirmDevice = first }.bordered().controlSize(.small).reachable()
                     }
                 }
             }
@@ -137,7 +137,7 @@ struct IntakeStatus: View {
             VStack(alignment: .leading, spacing: 8) {
                 Label("Reminders access is off, so deadlines stay in Horizon and never reach your lists.", systemImage: "exclamationmark.triangle").foregroundStyle(Design.accentInk)
                 #if os(iOS)
-                Button("Open Settings") { if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) } }.buttonStyle(.bordered).controlSize(.small).reachable()
+                Button("Open Settings") { if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) } }.bordered().controlSize(.small).reachable()
                 #else
                 Button("Open System Settings") { if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders") { openURL(url) } }.controlSize(.small)
                 #endif
@@ -145,7 +145,7 @@ struct IntakeStatus: View {
         case .listGone:
             VStack(alignment: .leading, spacing: 8) {
                 Label("The Horizon list is gone from Reminders, so deadlines stay in Horizon until it is back.", systemImage: "exclamationmark.triangle").foregroundStyle(Design.accentInk)
-                Button("Recreate List") { Task { await model.recreateRemindersList() } }.buttonStyle(.bordered).controlSize(.small).reachable()
+                Button("Recreate List") { Task { await model.recreateRemindersList() } }.bordered().controlSize(.small).reachable()
             }
         case .failed:
             if let failure = readFailure {

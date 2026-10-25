@@ -96,7 +96,7 @@ struct ObligationEditor: View {
                 }
                 if item != nil {
                     Section {
-                        Button("Delete Item", role: .destructive) { confirmingDelete = true }
+                        Button("Delete Item", role: .destructive) { confirmingDelete = true }.macBordered()
                     } footer: {
                         Text("Deleting removes it from Reminders as well.")
                     }

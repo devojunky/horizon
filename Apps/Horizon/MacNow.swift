@@ -44,7 +44,7 @@ struct NowRail: View {
                     Text(model.planInstructions.isEmpty ? "Nothing yet. A shift, practice, a night off: the planner works around what you tell it." : model.planInstructions)
                         .font(.subheadline).foregroundStyle(model.planInstructions.isEmpty ? .secondary : .primary)
                         .lineLimit(10).fixedSize(horizontal: false, vertical: true)
-                    Button("Tell the Planner…", action: tell).controlSize(.small).padding(.top, 2)
+                    Button("Tell the Planner…", action: tell).bordered().controlSize(.small).padding(.top, 2)
                 }
                 RailSection("Due this week") {
                     let due = dueSoon

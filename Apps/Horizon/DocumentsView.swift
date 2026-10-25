@@ -54,7 +54,7 @@ struct DocumentsView: View {
                                     Button("Read on This Device…", systemImage: "iphone") { confirmDevice = doc }.reachable()
                                 }
                             }
-                            .buttonStyle(.bordered).controlSize(.small).padding(.top, 2)
+                            .bordered().controlSize(.small).padding(.top, 2)
                         }
                         ForEach(doc.warnings, id: \.self) { Text($0).font(.footnote).foregroundStyle(.secondary) }
                     }

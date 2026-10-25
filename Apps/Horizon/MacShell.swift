@@ -880,7 +880,7 @@ struct MacSettingsView: View {
                 DeviceSettingsSections()
                 Section {
                     LabeledContent("Folder") { Text(WatchedFolder.url.path(percentEncoded: false)).foregroundStyle(.secondary).textSelection(.enabled) }
-                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([WatchedFolder.url]) }
+                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([WatchedFolder.url]) }.bordered()
                 } header: {
                     Kicker("Inbox")
                 } footer: {

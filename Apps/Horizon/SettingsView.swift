@@ -21,6 +21,7 @@ struct SettingsView: View {
                 Button("Ingest Sample Syllabus", systemImage: "ladybug") {
                     if let sample = Bundle.main.url(forResource: "sample-syllabus", withExtension: "pdf") { Task { await model.importFiles([sample]) } }
                 }
+                .macBordered()
             } header: {
                 Kicker("Debug")
             } footer: {
@@ -117,6 +118,7 @@ struct ReadingSettingsSections: View {
                 if hasKey {
                     // Asks first: the Console shows a key once, so one lost by a slip has to be made again.
                     Button("Remove Key…", role: .destructive) { confirmRemove = true }
+                        .macBordered()
                         .confirmationDialog("Remove your Claude key?", isPresented: $confirmRemove, titleVisibility: .visible) {
                             Button("Remove Key", role: .destructive) { key = "" }
                             Button("Cancel", role: .cancel) {}
@@ -152,6 +154,7 @@ struct ReadingSettingsSections: View {
                 if testing { ProgressView().controlSize(.small) }
             }
         }
+        .macBordered()
         .disabled(!canUseClaude || testing)
         if let verdict {
             Label(verdict.text, systemImage: verdict.ok ? "checkmark.circle" : "exclamationmark.triangle")
@@ -186,7 +189,7 @@ struct DeviceSettingsSections: View {
                 #if os(iOS)
                 Button("Open Settings") { if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) } }
                 #else
-                Button("Open System Settings") { if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders") { openURL(url) } }
+                Button("Open System Settings") { if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders") { openURL(url) } }.bordered()
                 #endif
             }
             LabeledContent("Device", value: AppModel.deviceName)

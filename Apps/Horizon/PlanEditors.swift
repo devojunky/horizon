@@ -68,12 +68,12 @@ struct PlanBlockEditor: View {
                 }
                 if let block {
                     Section {
-                        Button(block.isDone ? "Mark Not Done" : "Mark Done", systemImage: block.isDone ? "arrow.uturn.backward" : "checkmark") { model.markBlock(block.id, done: !block.isDone); dismiss() }
+                        Button(block.isDone ? "Mark Not Done" : "Mark Done", systemImage: block.isDone ? "arrow.uturn.backward" : "checkmark") { model.markBlock(block.id, done: !block.isDone); dismiss() }.macBordered()
                         if block.isSkipped || Date() < block.end || block.asksWhenOver {   // a meal or an event that is over was not "not finished"
                             Button(block.isSkipped ? (block.wasLeftUnfinished ? "Undo Not Finished" : "Undo Skip") : Date() >= block.end ? "Not Finished" : "Skip Block",
-                                   systemImage: block.isSkipped ? "arrow.uturn.backward" : "forward.end") { model.skipBlock(block.id, skipped: !block.isSkipped); dismiss() }
+                                   systemImage: block.isSkipped ? "arrow.uturn.backward" : "forward.end") { model.skipBlock(block.id, skipped: !block.isSkipped); dismiss() }.macBordered()
                         }
-                        Button("Delete Block", role: .destructive) { model.deleteBlock(block.id); dismiss() }
+                        Button("Delete Block", role: .destructive) { model.deleteBlock(block.id); dismiss() }.macBordered()
                     }
                 }
             }

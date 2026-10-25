@@ -103,9 +103,9 @@ struct LibrarySettingsSection: View {
                     #endif
                 }
                 #if os(macOS)
-                Button("Quit Horizon") { NSApp.terminate(nil) }
+                Button("Quit Horizon") { NSApp.terminate(nil) }.bordered()
                 #endif
-                Button("Cancel Import", role: .cancel) { model.cancelImport() }
+                Button("Cancel Import", role: .cancel) { model.cancelImport() }.macBordered()
             } else {
                 Button {
                     exporting = true
@@ -116,6 +116,7 @@ struct LibrarySettingsSection: View {
                 } label: {
                     if exporting { Label("Exporting…", systemImage: "square.and.arrow.up") } else { Label("Export Library…", systemImage: "square.and.arrow.up") }
                 }
+                .macBordered()
                 .disabled(exporting)
                 // Each presentation hangs on its own row: on a Form's section they never present.
                 .fileMover(isPresented: Binding(get: { exported != nil }, set: { if !$0 { exported = nil } }), file: exported) { result in
@@ -124,6 +125,7 @@ struct LibrarySettingsSection: View {
                     exported = nil
                 }
                 Button("Import Library…", systemImage: "square.and.arrow.down") { choosingImport = true }
+                    .macBordered()
                     .fileImporter(isPresented: $choosingImport, allowedContentTypes: [.horizonLibrary]) { result in
                         switch result {
                         case .success(let file):
