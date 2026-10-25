@@ -25,6 +25,10 @@ public actor IngestCoordinator {
     private let parse: Parser
     private let name: Namer
     private let progress: @Sendable (DocumentProgress) -> Void
+    /// Whether the device has a model to read with at all (Apple Intelligence supported, on or not): where it has none, a
+    /// document cleared for the device (`readOnDevice`, a permission to use it instead of waiting for Claude, given on a
+    /// build that offered it everywhere) takes the drain's route like any other, or it could never be read.
+    private var deviceReads = true
     /// The read under way: its document, and the task reading it (stopped when the user deletes the document).
     private var reading: (id: UUID, task: Task<IngestResult, any Error>)?
     /// Documents found with nothing to name them from while they wait to be read (a picture, a scan): not opened again to
@@ -85,7 +89,7 @@ public actor IngestCoordinator {
         case IngestError.unsupportedFile(let ext) where ext.hasPrefix("docx"): "Word documents can only be read on a Mac. Save it as a PDF and add that instead."
         case IngestError.unsupportedFile(let ext): "Horizon cannot read .\(ext) files."
         case IngestError.extractionFailed: "The model found nothing in it to read."
-        case IngestError.modelUnavailable(let why): "The device model is unavailable: \(why)"
+        case IngestError.modelUnavailable(let why): "\(why.prefix(1).uppercased() + why.dropFirst())."   // the reason carries its own way out
         default: error.localizedDescription
         }
     }
@@ -156,6 +160,7 @@ public actor IngestCoordinator {
     /// the user has cleared for the device (`readOnDevice`) goes to the device whatever the setting.
     public func setRoute(_ route: IngestOptions.RoutePolicy) { options.route = route }
     public func setClaude(_ configuration: ClaudeConfiguration?) { options.claude = configuration }
+    public func setDeviceReads(_ reads: Bool) { deviceReads = reads }
 
     /// Names the documents on file that nobody has tried to name: those read before titles existed, or while the
     /// device model was away. A few per call, quietly; a document the model has no name for is marked so, and a model
@@ -194,7 +199,7 @@ public actor IngestCoordinator {
             let url = storage.url(sha256: doc.sha256, extension: doc.kind)
             guard storage.exists(sha256: doc.sha256, extension: doc.kind) else { continue }   // ingested on another device
             var perDocument = options
-            if doc.readOnDevice { perDocument.route = .onDevice }   // the user's word, for this document
+            if doc.readOnDevice, deviceReads { perDocument.route = .onDevice }   // the user's word, for this document
             if let courseID = doc.courseID, let known = try? await store.knownCourse(for: courseID) { perDocument.knownCourse = known }   // filed under a course: read it as that course's
             // A document with no title yet is named along the way (the device model's small task, whatever reads it);
             // the title is kept the moment it arrives, so a read that then fails still leaves the document named.
@@ -218,9 +223,9 @@ public actor IngestCoordinator {
                 if !Task.isCancelled, (try? await store.document(id: doc.id))?.deletedAt != nil { continue }
                 switch error {
                 case IngestError.modelNotReady(let why):
-                    try? await store.markDocument(id: doc.id, status: .queued, failure: "Waiting for the on-device model: \(why)")
-                    reports.append(Report(document: doc, summary: nil, failure: "Waiting for the on-device model: \(why)"))
-                    break documents   // nothing else will parse until the model is ready
+                    try? await store.markDocument(id: doc.id, status: .queued, failure: "Waiting for Apple Intelligence: \(why)")
+                    reports.append(Report(document: doc, summary: nil, failure: "Waiting for Apple Intelligence: \(why)"))
+                    if options.route == .onDevice { break documents }   // nothing else will parse until the model is ready; on Claude's route only the documents cleared for the device wait
                 case IngestError.claudeUnavailable(let why):
                     // Claude could not read it now: it waits (a processing task with the network, the next drain, or the
                     // user's word to read it on the device). Never read on the device unasked.

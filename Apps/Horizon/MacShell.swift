@@ -196,9 +196,9 @@ struct MacRootView: View {
                 .toolbar {
                     if shownCourse != nil { ToolbarSpacer(.flexible, placement: .primaryAction) }   // a course's page keeps its title off the toolbar: this holds the buttons at the trailing edge, where every other page has them
                     ToolbarItemGroup(placement: .primaryAction) {   // both are File menu commands as well
-                        ImportMenu(courseID: shownCourse?.id).help(shownCourse.map { "Add a document to \($0.displayName) (⌘O)" } ?? "Add a document to read (⌘O)")
+                        ImportMenu(courseID: shownCourse?.id).help(shownCourse.map { "Read a document into \($0.displayName) (⌘O)" } ?? "Read a syllabus, a schedule or a screenshot (⌘O)")
                         Button { Task { await model.drainAndSync() } } label: { Label("Sync with Reminders", systemImage: "arrow.triangle.2.circlepath") }
-                            .help("Read what is queued and sync with Reminders (⌘R)")
+                            .help("Read anything waiting, then update Reminders (⌘R)")
                     }
                 }
         }
@@ -228,7 +228,7 @@ struct MacRootView: View {
         .confirmationDialog("Replace the plan you edited?", isPresented: $nav.confirmingReplan, titleVisibility: .visible) {
             Button("Plan Again", role: .destructive) { model.planAgain() }
         } message: {
-            Text("Your changes to today's blocks are lost.")
+            if let end = model.pendingTonightEnd { Text("To plan until \(PlanHours.label(end)) tonight.") }
         }
         .onChange(of: nav.confirmingReplan) { _, asking in if !asking { model.pendingTonightEnd = nil } }   // not planned again: tonight's end stays as it was
         .onChange(of: courses.map(\.id)) { _, ids in   // the course on show was deleted (here, or on another device): back to Coverage
@@ -439,7 +439,7 @@ struct DocumentsTable: View {
         Group {
             if documents.isEmpty {
                 ScrollView {
-                    EditorialEmpty(title: "No documents yet.", deck: "Add a syllabus, a schedule or a screenshot, or drop one on this window. Every document Horizon reads is listed here, with what became of it.") {
+                    EditorialEmpty(title: "No documents yet.", deck: "Add a syllabus, a schedule or a screenshot, or drop one on this window.") {
                         ImportMenu().prominent()
                     }
                     .padding(.horizontal, Design.margin)
@@ -447,7 +447,7 @@ struct DocumentsTable: View {
                 .keyboardStaysInSidebar()
             } else {
                 VStack(alignment: .leading, spacing: 0) {
-                    PageLine("Everything Horizon has been given to read. Select a document and press Space to look at it.")
+                    PageLine("Select a document and press Space to look at it.")
                     table
                 }
             }
@@ -460,7 +460,7 @@ struct DocumentsTable: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The Mac's own model is less sure of tables and pictures than Claude, and it takes minutes on a long document. Nothing is sent to Anthropic.")
+            Text("Your Mac is less sure of tables and pictures than Claude, and takes minutes on a long document. Nothing is sent to Anthropic.")
         }
         .quickLookPreview($preview)
         .navigationTitle("Documents")
@@ -522,7 +522,7 @@ struct DocumentsTable: View {
             if docs.contains(where: Self.canRetry) {
                 Button("Retry") { retry(docs) }
             }
-            if docs.contains(where: Self.waitsForClaude) {
+            if model.deviceModel.canRead, docs.contains(where: Self.waitsForClaude) {   // no offer that cannot work: Apple Intelligence not supported here, or turned off
                 Button("Read on This Mac Instead…") { confirmDevice = docs.filter(Self.waitsForClaude) }
             }
             if docs.count == 1, let doc = docs.first, doc.course == nil, doc.status == .parsed, !courses.isEmpty {
@@ -553,7 +553,7 @@ struct DocumentsTable: View {
             ids: Set(docs.map(\.id)),
             look: one.flatMap { doc in model.hasFile(doc) ? { look(at: doc) } : nil },
             retry: docs.contains(where: Self.canRetry) ? { retry(docs) } : nil,
-            readOnDevice: docs.contains(where: Self.waitsForClaude) ? { confirmDevice = docs.filter(Self.waitsForClaude) } : nil,
+            readOnDevice: model.deviceModel.canRead && docs.contains(where: Self.waitsForClaude) ? { confirmDevice = docs.filter(Self.waitsForClaude) } : nil,
             fileUnder: loose.map { doc in courses.map { course in (name: course.displayName, file: { file(doc.id, under: course.id) }) } } ?? [])
     }
 
@@ -628,13 +628,13 @@ struct RecentlyDeletedTable: View {
         Group {
             if entries.isEmpty {
                 ScrollView {
-                    EditorialEmpty(title: "Nothing deleted lately.", deck: "A course or document you delete waits here for 30 days, and can be put back until then.") { EmptyView() }
+                    EditorialEmpty(title: "Nothing deleted lately.", deck: "A course or document you delete waits here for 30 days.") { EmptyView() }
                         .padding(.horizontal, Design.margin)
                 }
                 .keyboardStaysInSidebar()
             } else {
                 VStack(alignment: .leading, spacing: 0) {
-                    PageLine("Deleted courses and documents wait here for 30 days. Double-click one to put it back.")
+                    PageLine("Kept for 30 days, then removed for good. Double-click one to put it back.")
                     table(entries)
                 }
             }

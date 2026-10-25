@@ -42,7 +42,7 @@ struct CoverageList: View {
 
     var body: some View {
         if courses.isEmpty, !reading, !hasUnfiled {
-            EditorialEmpty(title: "Nothing on file.", deck: "Add a syllabus, a schedule, or a screenshot of an assignment list. Horizon reads it, writes the deadlines to Reminders, and tells you where it is still blind.") {
+            EditorialEmpty(title: "Nothing on file.", deck: "Add a syllabus, a schedule, or a screenshot of an assignment list.") {   // what Horizon does with it, onboarding has said
                 ImportMenu().prominent()
             }
             .listRowSeparator(.hidden)

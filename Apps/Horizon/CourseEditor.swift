@@ -48,7 +48,7 @@ struct CourseEditor: View {
                     FieldRow(label: "Instructor", prompt: "Name", text: $instructor).textContentType(.name)
                     FieldRow(label: "Room", prompt: "Rogers Hall 204", text: $room)
                 } footer: {
-                    Text("The name is what Horizon shows for the course and adds to each reminder.")
+                    Text("Also shown on each of its reminders.")
                 }
                 Section {
                     Toggle("Term dates", isOn: $hasTermDates.animation())
@@ -117,7 +117,7 @@ struct CourseEditor: View {
                 } footer: {
                     let total = components.compactMap(\.weight).reduce(0, +)
                     let overflow = total > 100.5 ? "The weights add up to \(total.formatted(.number.precision(.fractionLength(0...1))))%, more than a whole grade. " : ""
-                    Text("\(overflow)Weights set the points at stake on each item and the colour of its mark on the strip. Count is how many of the component there are; Drops is how many lowest scores are dropped. The site is where its work lives; Coverage says when nothing has ever been read from there.")
+                    Text("\(overflow)Weights set each item's points at stake, and the colour of its mark on the strip.")
                 }
                 Section {
                     ForEach($breaks) { $span in
@@ -136,7 +136,7 @@ struct CourseEditor: View {
                     Section {
                         Button("Delete Course", role: .destructive) { Task { await model.deleteCourse(course.id) }; dismiss() }.macBordered()
                     } footer: {
-                        Text("It goes to Recently Deleted with its items, their reminders, and its documents, and can be restored from there for 30 days.")
+                        Text("It goes to Recently Deleted with its items, reminders and documents, for 30 days.")
                     }
                 }
             }

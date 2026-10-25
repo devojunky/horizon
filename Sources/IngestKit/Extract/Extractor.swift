@@ -70,7 +70,10 @@ actor Extractor {
             let model = SystemLanguageModel.default
             switch model.availability {
             case .available: break
-            case .unavailable(.modelNotReady): throw IngestError.modelNotReady("assets are still loading")
+            case .unavailable(.modelNotReady): throw IngestError.modelNotReady("its model is still downloading")   // clears by itself: the document waits
+            // Neither of these clears by itself: the read fails at once, saying what would let it through, with Retry.
+            case .unavailable(.appleIntelligenceNotEnabled): throw IngestError.modelUnavailable("Apple Intelligence is turned off; turn it on to read here")
+            case .unavailable(.deviceNotEligible): throw IngestError.modelUnavailable("Apple Intelligence isn't available here; choose Claude in Settings to read it")
             case .unavailable(let reason): throw IngestError.modelUnavailable(String(describing: reason))
             }
             let instructions = try await model.tokenCount(for: Instructions(IngestInstructions.text))

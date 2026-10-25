@@ -472,6 +472,37 @@ struct StoreTests {
         #expect(done.first?.summary?.created == 5 && parsed.status == .parsed)
     }
 
+    @Test func aDocumentWaitingForTheDeviceModelHoldsUpNoneOfClaudes() async throws {
+        let store = try Fixture.store()
+        let storage = DocumentStorage.temporary()
+        func file(_ text: String) throws -> URL {
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("w-\(UUID().uuidString).txt")
+            try text.write(to: url, atomically: true, encoding: .utf8)
+            return url
+        }
+        // Settings reads with Claude; the newer document was cleared for the device, whose model is still coming in.
+        let parses = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac", parse: { _, options in
+            if options.route == .onDevice { throw IngestError.modelNotReady("loading") }
+            return Fixture.calculus()
+        })
+        let older = try await parses.enqueue(fileURL: file("older syllabus"))
+        try await Task.sleep(for: .milliseconds(20))   // queued later: read first (newest first)
+        let newer = try await parses.enqueue(fileURL: file("newer syllabus"))
+        try await store.readOnDevice(id: newer.id)
+        _ = await parses.drain()
+        let docs = try await store.documents()
+        #expect(docs.first { $0.id == older.id }?.status == .parsed)    // Claude's went on past it
+        #expect(docs.first { $0.id == newer.id }?.status == .queued)    // and it waits for the model
+
+        // Where the device has no model at all, a document once cleared for it takes the drain's route instead.
+        let routes = Routes()
+        let noModel = IngestCoordinator(store: store, storage: storage, sync: nil, deviceName: "Mac", parse: { _, options in routes.append(options.route); return Fixture.calculus() })
+        await noModel.setDeviceReads(false)
+        _ = await noModel.drain()
+        #expect(routes.value == [.claude])
+        #expect(try await store.documents().first { $0.id == newer.id }?.status == .parsed)
+    }
+
     @Test func coordinatorForwardsProgressWithTheDocument() async throws {
         let store = try Fixture.store()
         let storage = DocumentStorage.temporary()

@@ -37,30 +37,21 @@ struct BinEntry: Identifiable, Equatable {
             items = document.binnedObligations.count; documents = 0
         }
 
-        /// What restoring brings back, in words.
-        var brings: String {
-            var parts: [String] = []
-            if items > 0 { parts.append(items == 1 ? "one item" : "\(items) items") }
-            if documents > 0 { parts.append(documents == 1 ? "its document" : "its \(documents) documents") }
-            switch (kind, parts.isEmpty) {
-            case (.course, true): return "Restoring brings the course back."
-            case (.course, false): return "Restoring brings back the course with \(parts.joined(separator: " and "))."
-            case (.document, true): return "Restoring puts it back on file. Nothing on file came from it."
-            case (.document, false): return "Restoring puts it back on file with \(parts.joined(separator: " and ")). Items another document has since updated stay as they are."
-            }
-        }
+        /// What a restore does that neither Restore nor the row says (the row counts what went with it): a document's
+        /// items that another document has since updated stay as they are.
+        var brings: String { kind == .document && items > 0 ? "Items another document has since updated stay as they are." : "" }
 }
 
 extension RecentlyDeletedView {
     var body: some View {
         List {
             if courses.isEmpty, documents.isEmpty {
-                EditorialEmpty(title: "Nothing deleted lately.", deck: "A course or document you delete waits here for 30 days, and can be put back until then.") {}
+                EditorialEmpty(title: "Nothing deleted lately.", deck: "A course or document you delete waits here for 30 days.") {}
                     .listRowSeparator(.hidden)
                     .onPaper()
                     .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
             } else {
-                Text("Kept for 30 days, then removed for good. Tap one to restore it.")
+                Text("Kept for 30 days, then removed for good.")
                     .font(.subheadline).foregroundStyle(.secondary)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 8, trailing: 20))
@@ -118,7 +109,7 @@ extension RecentlyDeletedView {
             Button("Restore") { restore(entry) }
             Button("Delete for Good", role: .destructive) { erase(entry) }
         } message: {
-            Text(entry.brings + " Deleting it for good cannot be undone.")
+            Text([entry.brings, "Deleting it for good cannot be undone."].filter { !$0.isEmpty }.joined(separator: " "))
         }
         .confirmationDialog("Delete \(entry.name) for good?", isPresented: Binding(get: { erasing?.id == entry.id }, set: { if !$0 { erasing = nil } }), titleVisibility: .visible) {
             Button("Delete for Good", role: .destructive) { erase(entry) }

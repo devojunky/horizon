@@ -228,9 +228,8 @@ struct ItemDetail: View {
                 .padding(.vertical, 6)
             } else {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("No description yet.").foregroundStyle(.secondary)
-                    Text("Ask Siri, “Add a note to this,” while this page is open, or write one yourself.")
-                        .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Text("Ask Siri, “Add a note to this,” while this page is open.")   // the button under it says the rest
+                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     Button("Add Description…") { editing = Editing(item: item, describing: true) }.buttonStyle(.borderless).padding(.top, 4)
                 }
                 .padding(.vertical, 6)

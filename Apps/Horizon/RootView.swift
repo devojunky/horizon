@@ -47,8 +47,8 @@ struct IntakeStatus: View {
     var readFailure: String? {
         let failed = documents.filter { $0.status == .failed }
         guard let first = failed.first else { return nil }
-        guard failed.count == 1 else { return "\(failed.count) documents could not be read. See them in Documents." }
-        return "Could not read \(first.displayName): \(first.failure ?? "")" + (first.retryHelps ? " Retry it from Documents." : "")
+        guard failed.count == 1 else { return "\(failed.count) documents could not be read." }   // the row opens Documents, chevron and all
+        return "Could not read \(first.displayName): \(first.failure ?? "")"
     }
 
     /// Documents Claude could not read yet, in one line, with the way out: try again, or let the device read one.
@@ -60,13 +60,7 @@ struct IntakeStatus: View {
         document.failure.map(IngestCoordinator.isKeyOrModelProblem) ?? false   // the drain's own test: a retired model is the key's page's too
     }
 
-    #if os(macOS)
-    private static let device = "Mac"   // what the Mac's own pages call it (Documents: "Read on This Mac")
-    private static let deviceInText = "Mac"   // a proper noun mid-sentence keeps its capital
-    #else
-    private static let device = "Device"
-    private static let deviceInText = "device"
-    #endif
+    private static let device = AppModel.deviceKind   // "Read on This iPhone", as the Mac's own pages say "Read on This Mac"; a proper noun keeps its capital mid-sentence
 
     /// What stands on the page until it is dealt with, one at a time, in this order.
     private enum Notice: Hashable { case waiting, remindersOff, listGone, failed }
@@ -103,14 +97,14 @@ struct IntakeStatus: View {
             }
             .listRowSeparator(.hidden)
             .onPaper()
-            .confirmationDialog("Read on this \(Self.deviceInText) instead?", isPresented: Binding(get: { confirmDevice != nil }, set: { if !$0 { confirmDevice = nil } }), titleVisibility: .visible) {
+            .confirmationDialog("Read on this \(Self.device) instead?", isPresented: Binding(get: { confirmDevice != nil }, set: { if !$0 { confirmDevice = nil } }), titleVisibility: .visible) {
                 Button(waitingForClaude.count == 1 ? "Read on This \(Self.device)" : "Read All on This \(Self.device)") {
                     let ids = waitingForClaude.map(\.id)
                     Task { for id in ids { await model.readOnDevice(documentID: id) } }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("The device model is less sure of tables and pictures than Claude, and it takes minutes on a long document. Nothing is sent to Anthropic.")
+                Text("Your \(Self.device) is less sure of tables and pictures than Claude, and takes minutes on a long document.")
             }
         }
     }
@@ -129,7 +123,9 @@ struct IntakeStatus: View {
                         } else {
                             Button("Try Again") { Task { await model.drainAndSync() } }.bordered().controlSize(.small).reachable()
                         }
-                        Button(count == 1 ? "Read on This \(Self.device)…" : "Read Them on This \(Self.device)…") { confirmDevice = first }.bordered().controlSize(.small).reachable()
+                        if model.deviceModel.canRead {   // no offer that cannot work: Apple Intelligence not supported here, or turned off
+                            Button(count == 1 ? "Read on This \(Self.device)…" : "Read Them on This \(Self.device)…") { confirmDevice = first }.bordered().controlSize(.small).reachable()
+                        }
                     }
                 }
             }

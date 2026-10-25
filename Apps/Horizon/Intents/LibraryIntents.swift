@@ -31,6 +31,12 @@ struct ReadDocumentIntent: LongRunningIntent {
     @Parameter(title: "Choose From", description: "Given no file or document, where Horizon opens to choose one.", default: .screenshots) var source: ImportChoice
     @Dependency var model: AppModel
 
+    /// What a read on the device is told where it cannot work: Apple Intelligence not supported (Change Settings too), or off.
+    @MainActor static func noDeviceModel(_ state: DeviceModel = .unsupported) -> String {
+        state == .off ? "Apple Intelligence is turned off on this \(AppModel.deviceKind). Turn it on to read here."
+                      : "This \(AppModel.deviceKind) doesn't support Apple Intelligence, so only Claude can read documents here."
+    }
+
     static var parameterSummary: some ParameterSummary {
         When(\.$document, .hasAnyValue) {
             Summary("Read \(\.$document) into \(\.$course)") { \.$onThisDevice }
@@ -53,12 +59,13 @@ struct ReadDocumentIntent: LongRunningIntent {
         if courseID != nil, try await model.intentCourse(courseID) == nil { throw IntentFailure.message("That course is no longer in Horizon.") }
         // On This Device is the user's word for these documents; with Settings reading by Claude, it's asked once more,
         // as Read on This Device… asks in the app. Read on the device already, there's nothing to ask.
+        if onThisDevice, !model.deviceModel.canRead { throw IntentFailure.message(Self.noDeviceModel(model.deviceModel)) }   // as the app offers no read that cannot work
         let askFirst = onThisDevice && model.readingRoute == .claude
         let outcome: [ReadOutcome]
 
         if !files.isEmpty {
             if askFirst {
-                try await requestConfirmation(actionName: .continue, dialog: "Read \(files.count == 1 ? "it" : "them") on this device instead of with Claude? Nothing leaves the device; tables and pictures are read less well.")
+                try await requestConfirmation(actionName: .continue, dialog: "Read \(files.count == 1 ? "it" : "them") on this \(AppModel.deviceKind) instead of with Claude? Tables and pictures are read less well.")
             }
             let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Shared-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -91,7 +98,7 @@ struct ReadDocumentIntent: LongRunningIntent {
                 throw IntentFailure.message("Reading \(snapshot.displayName) again would fail the same way: \(snapshot.failure ?? "the file can't be read").")
             case .queued, .failed, .cancelled, .awaitingCloudParse:
                 if askFirst {
-                    try await requestConfirmation(actionName: .continue, dialog: "Read \(snapshot.displayName) on this device instead of with Claude? Nothing leaves the device; tables and pictures are read less well.")
+                    try await requestConfirmation(actionName: .continue, dialog: "Read \(snapshot.displayName) on this \(AppModel.deviceKind) instead of with Claude? Tables and pictures are read less well.")
                 }
                 let progress = self.progress
                 let model = self.model
@@ -358,6 +365,7 @@ struct ChangeSettingsIntent: AppIntent {
     }
 
     @MainActor func perform() async throws -> some ProvidesDialog {
+        if reading == .thisDevice, !model.deviceModel.supported { throw IntentFailure.message(ReadDocumentIntent.noDeviceModel()) }   // as Settings greys the route
         let toClaude = (reading == .claude && model.readingRoute != .claude) || (planning == .claude && !model.planWithClaude)
         if toClaude, model.claudeConfiguration == nil {
             throw IntentFailure.message("Claude needs your Anthropic API key first. Add it in Horizon's Settings.")
@@ -377,8 +385,8 @@ struct ChangeSettingsIntent: AppIntent {
         if let reading { model.readingRoute = reading == .claude ? .claude : .onDevice }
         if let planning { model.planWithClaude = planning == .claude }
         let claude = model.usesReadingService ? "Claude \(ClaudeModelChoice.sonnet.displayName), through Horizon," : "Claude \(model.claudeModel.displayName)"
-        let reads = model.readingRoute == .claude ? "\(claude) reads documents" : "Documents are read on this device"
-        let plans = model.planWithClaude ? (model.readingRoute == .claude ? "and plans your day" : "and \(claude) plans your day") : "and the device plans your day"
+        let reads = model.readingRoute == .claude ? "\(claude) reads documents" : "Documents are read on this \(AppModel.deviceKind)"
+        let plans = model.planWithClaude ? (model.readingRoute == .claude ? "and plans your day" : "and \(claude) plans your day") : "and your \(AppModel.deviceKind) plans your day"
         let changed = reading != nil || planning != nil || claudeModel != nil
         return .result(dialog: "\(changed ? "Done. " : "")\(reads) \(plans).")
     }

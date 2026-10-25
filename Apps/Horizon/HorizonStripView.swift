@@ -417,7 +417,7 @@ struct HorizonStripView: View {
                 .overlay {
                     if data.items.isEmpty {
                         ScrollView {
-                            EditorialEmpty(title: "Nothing on the horizon.", deck: "Add a syllabus or a schedule and the term appears here as one strip: its weeks, and its days when you look closer.") {
+                            EditorialEmpty(title: "Nothing on the horizon.", deck: "Add a syllabus or a schedule, and its term appears here.") {
                                 ImportMenu().prominent()
                             }
                             .padding(.horizontal, 20)
@@ -1239,7 +1239,7 @@ private struct StripHeader: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(kicker("Term")).font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(.secondary).lineLimit(1)   // the subject, at either level: not the range's name under the other range's tab
                     Text(summary).deck().lineLimit(deckLines)
-                    Text(level == .weeks ? "Tap a week to look closer." : "Tap a day to read it. Pinch for the semester.").font(.subheadline).foregroundStyle(.secondary).lineLimit(noteLines)
+                    Text(level == .weeks ? "Tap a week to look closer." : "Pinch for the semester.").font(.subheadline).foregroundStyle(.secondary).lineLimit(noteLines)   // a day's bar is a button, as the week's tap taught
                         .contentTransition(.opacity)
                 }
                 .transition(.fadeThrough)
