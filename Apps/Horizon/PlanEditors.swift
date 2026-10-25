@@ -148,7 +148,7 @@ struct PlannerNotesEditor: View {
                     Text("What the planner should respect")
                 } footer: {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Standing rules or today's, in your words. The planner reads this every time you plan; calendar events stay fixed either way. Takes effect the next time you plan.")
+                        Text("Standing rules or today's, in your words. It takes effect the next time you plan; calendar events stay fixed either way.")
                         if text.count > limit - 300 { Text("\(text.count) of \(limit) characters").monospacedDigit() }
                     }
                 }
@@ -158,7 +158,7 @@ struct PlannerNotesEditor: View {
                 } header: {
                     Text("Your day")
                 } footer: {
-                    Text("The hours the planner fills on a usual day, from the moment you plan. An end after midnight is that night. For one late night, change Tonight Until on Now instead.")
+                    Text("For one late night, change Tonight Until on Now instead.")
                 }
             }
             .paper()

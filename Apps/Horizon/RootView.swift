@@ -47,8 +47,8 @@ struct IntakeStatus: View {
     var readFailure: String? {
         let failed = documents.filter { $0.status == .failed }
         guard let first = failed.first else { return nil }
-        guard failed.count == 1 else { return "\(failed.count) documents could not be read. See them in Documents." }
-        return "Could not read \(first.displayName): \(first.failure ?? "")" + (first.retryHelps ? " Retry it from Documents." : "")
+        guard failed.count == 1 else { return "\(failed.count) documents could not be read." }   // the row opens Documents, chevron and all
+        return "Could not read \(first.displayName): \(first.failure ?? "")"
     }
 
     /// Documents Claude could not read yet, in one line, with the way out: try again, or let the device read one.
@@ -104,7 +104,7 @@ struct IntakeStatus: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Your \(Self.device) is less sure of tables and pictures than Claude, and takes minutes on a long document. Nothing is sent to Anthropic.")
+                Text("Your \(Self.device) is less sure of tables and pictures than Claude, and takes minutes on a long document.")
             }
         }
     }
@@ -123,7 +123,7 @@ struct IntakeStatus: View {
                         } else {
                             Button("Try Again") { Task { await model.drainAndSync() } }.buttonStyle(.bordered).controlSize(.small).reachable()
                         }
-                        if model.deviceModel.supported {   // with no model of its own here, Claude is the only reader: no offer that cannot work
+                        if model.deviceModel.canRead {   // no offer that cannot work: Apple Intelligence not supported here, or turned off
                             Button(count == 1 ? "Read on This \(Self.device)…" : "Read Them on This \(Self.device)…") { confirmDevice = first }.buttonStyle(.bordered).controlSize(.small).reachable()
                         }
                     }

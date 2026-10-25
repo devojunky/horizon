@@ -57,7 +57,7 @@ struct OnboardingView: View {
         ]
         if Self.offersChoice {
             pages.append(Page(kicker: "Your choice", title: "Your \(device) supports Apple Intelligence.",
-                              deck: "So it can read every syllabus itself, and not a word leaves your \(device). Or Claude can read it in the cloud. Switch any time in Settings.",
+                              deck: "So it can read every syllabus itself, and not a word leaves your \(device). Switch any time in Settings.",   // the two cards under it are the choice: the words do not narrate them
                               aside: nil, scene: .choose))
         }
         return pages
@@ -203,8 +203,8 @@ private struct ReaderChoice: View {
     private var deviceDetail: String {
         switch model.deviceModel {
         case .off: "Turn on Apple Intelligence in the Settings app first."
-        case .downloading: "Private and offline. Ready once Apple Intelligence finishes downloading."
-        default: "Private and offline. Slower, and less sure of tables and pictures."
+        case .downloading: "Ready once Apple Intelligence finishes downloading."
+        default: "Slower, and less sure of tables and pictures."   // private, the deck has said
         }
     }
 
@@ -260,8 +260,13 @@ struct OnboardingStage: View {
     let replay: Int
     let leaving: Bool
     /// The reader on file, for the choice's scene: Claude (the cloud lit, a page sent up to it) or the device.
-    var claude = false
+    let claude: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(scene: OnboardingScene, replay: Int, leaving: Bool, claude: Bool = false) {
+        self.scene = scene; self.replay = replay; self.leaving = leaving; self.claude = claude
+        _claudeChosen = State(initialValue: claude)   // right from the first run, before any change has been seen
+    }
 
     static let top: CGFloat = 150
     static let aspect: CGFloat = 620 / 1024
@@ -303,7 +308,7 @@ struct OnboardingStage: View {
     @State private var toCloud: CGFloat = 0
     @State private var travel: CGFloat = 0
     @State private var travelShown = false
-    @State private var claudeChosen = false   // `claude` as it is now: a running choreography sees the view it began with
+    @State private var claudeChosen: Bool   // `claude` as it is now: a running choreography sees the view it began with
     @State private var sends = 0
     @State private var shown: OnboardingScene?
     @State private var lastReplay = 0
@@ -750,7 +755,7 @@ struct OnboardingStage: View {
     /// The device rises in front of the sun as the sun rose from behind the horizon, its screen comes on, and it reads a
     /// page right there; then the cloud comes in beside it, and when Claude is the reader a page goes up to it.
     private func choose() async {
-        let claude = self.claude   // the view this run began with is the one on screen now
+        let claude = claudeChosen   // as it is now: a card tapped during the fade before this run is not undone by it
         quietly {
             horizon = 1; sun = 1
             deviceRise = 0; screenLit = 0; screenBeam = 0; screenBeamShown = 0; screenChips = [false, false]

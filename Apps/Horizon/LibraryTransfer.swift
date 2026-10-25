@@ -149,9 +149,9 @@ struct LibrarySettingsSection: View {
             Kicker("Library")
         } footer: {
             #if os(iOS)
-            Text("Your courses, items, documents and settings in one file, for another Horizon to import. Save it outside Horizon's own folder, which goes with the app. Your Claude key isn't included.")
+            Text("Includes your documents and settings, not your Claude key. Save it outside Horizon's own folder, which goes with the app.")
             #else
-            Text("Your courses, items, documents and settings in one file, for another Horizon to import. Your Claude key isn't included.")
+            Text("Includes your documents and settings, not your Claude key.")
             #endif
         }
         .onAppear { model.loadPendingImport() }

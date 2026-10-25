@@ -523,6 +523,7 @@ final class AppModel {
         }
         await coordinator.setClaude(claudeConfiguration)
         await coordinator.setRoute(route)
+        await coordinator.setDeviceReads(deviceModel.supported)   // no model here: a document once cleared for the device takes the route
         let reports = await coordinator.drain()
         withAnimation { reading = nil }   // however the read ended, the live section must not outlive it
         if let id = cancelledDocument {

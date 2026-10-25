@@ -76,7 +76,7 @@ struct MacCoursePage: View {
         .toolbar {   // Add Document is the window's, and on this page files under the course
             ToolbarSpacer(.fixed, placement: .primaryAction)
             ToolbarItem(placement: .primaryAction) {
-                Button("Edit") { editingCourse = true }.help("Edit the course: its name, code, term and grade table (⌘E)")
+                Button("Edit") { editingCourse = true }.help("Change its name, code, term or grade table (⌘E)")
             }
         }
         .sheet(item: $editing) { ObligationEditor(mode: .edit($0), courses: courses) }

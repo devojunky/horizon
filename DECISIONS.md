@@ -802,8 +802,13 @@ The owner: a tap on an item went straight to its editor. It should open a page o
 - **Decided for the owner:**
   - **The page offers the choice, not only describes it.** The reader on file is already ticked, so Continue and Begin leave it as it is, and onboarding still asks for nothing. A student who wants nothing to leave the iPhone would otherwise have their first syllabus read by Claude before they found Settings. Two cards, "On This iPhone" and "Claude", each with what it trades and what it sends.
   - **Last, not straight after Reading.** The term's marks still carry from Reading into Reminders, and the choice is the reveal before Begin. Skip passes it like any page, so the default stands. The Reading page still says who reads; it drops its "yours to choose in Settings" aside when this page follows.
-  - **"Supports" includes Apple Intelligence turned off or still downloading.** The page shows and the choice stays open; a document for the device then waits ("Waiting for Apple Intelligence: it is turned off", read the moment it is on) rather than failing. Settings' row says how to turn it on, or that it is downloading.
-  - **Greyed only where it cannot run:** `SystemLanguageModel`'s `deviceNotEligible`, IngestKit's `DeviceModel.unsupported`. There the device's row is greyed with "This iPhone doesn't support Apple Intelligence.", there is no fifth page, and Read on This iPhone… goes from Coverage, Documents, and the Mac's table and File menu. Siri's Read Document (On This Device) and Change Settings say why rather than set a route that cannot read.
+  - **"Supports" includes Apple Intelligence turned off or still downloading.** The page shows and the choice stays open, and Settings' row says how to turn it on, or that it is downloading.
+    - Still downloading, a document for the device waits for it, as before. That clears by itself.
+    - Turned off, a read on the device fails at once with the way out ("Apple Intelligence is turned off; turn it on to read here.", Retry), since nothing turns it back on by itself. A first draft made it a wait too; the review found that held Siri's Read Document for its full ten minutes, and kept the document off Coverage, which announces only failures and waits for Claude.
+  - **Greyed only where it cannot run:** `SystemLanguageModel`'s `deviceNotEligible`, IngestKit's `DeviceModel.unsupported`. There the device's row is greyed with "This iPhone doesn't support Apple Intelligence." and there is no fifth page. Siri's Read Document (On This Device) and Change Settings say why rather than set a route that cannot read.
+  - **Read on This iPhone… only where it can work** (`DeviceModel.canRead`: ready, or downloading). It goes from Coverage, Documents, and the Mac's table and File menu where Apple Intelligence is unsupported or turned off, and Siri's On This Device says which.
+  - **A document once cleared for the device, where there is no device model,** takes the route Settings gives (`IngestCoordinator.setDeviceReads`). Earlier builds offered Read on This Device… everywhere, and the clearance survives a delete and a share again, so such a document could otherwise never be read. The clearance was the user's permission to use the device instead of waiting for Claude, given while Settings said Claude.
+  - **A document waiting for the device model no longer stops a drain that reads with Claude.** It used to stop every document behind it, Claude's included, until the model was in. The review found it; a test holds it (`aDocumentWaitingForTheDeviceModelHoldsUpNoneOfClaudes`).
   - **Such a device with no Claude to read with** (no key, no server) sends its documents to wait for Claude ("no API key", with Check Key…), where before they failed on a model that is not there. Nothing is sent, since there is nothing to send with. A route the user chose for the device is never moved to Claude; read where it cannot run, it fails with "Apple Intelligence isn't available here. Choose Claude in Settings to read it."
   - **Settings, cut.** Kept: what each choice sends (the project's rule). Gone:
     - the Read Documents footer (Coverage says it when it happens);
@@ -823,4 +828,51 @@ The owner: a tap on an item went straight to its editor. It should open a page o
     - both cards tapped, the stage turning each way, and a dot going up to the cloud on choosing Claude;
     - the exit through Begin, dark mode, and an iPad Air (its own outline, "On This iPad").
   - With `--apple-intelligence unsupported`: four pages, the Reading page keeping its aside, an out-of-range page landing on the last. Settings with the device's row greyed beside Through Horizon. With `off`: the row open, saying how to turn it on.
-  - Not verified: the haptics (the simulator has none), Reduce Motion, the accessibility text sizes, a real device without Apple Intelligence, and Siri's two refusals. The App Intents suite was not run; only the intents' `perform` changed, not their shape.
+  - The App Intents suite, 10 of 10, on the test simulator with the seed simulator's library copied in.
+  - A reviewer agent read the whole diff. Six findings, all fixed:
+    - a trailing comment that had swallowed the strip hint's style;
+    - Apple Intelligence off as a wait (above), three findings in one;
+    - the onboarding stage reading the choice as it was before the fade (it now starts from the live one);
+    - the device-cleared document that could never be read.
+  - The new test fails without its fix. 141 HorizonCore tests.
+  - Not verified: the haptics (the simulator has none), Reduce Motion, the accessibility text sizes, a real device without Apple Intelligence, and Siri's two refusals.
+
+## 2026-10-25 · Copy says only what the screen does not
+
+- **The owner asked**, after cutting "Choose here" from the new page, for the whole app's copy to stop stating the obvious, with what the HIG says about redundancy.
+- **The HIG's rules applied:**
+  - Writing: every word earns its place, and a setting gets a description only where its label is not enough.
+  - Alerts: the body never explains the buttons.
+  - Offering help: a help tag never repeats its control's name, and standard components are not explained.
+  - Toolbars: a title goes when it is redundant.
+- **What went.** Each one said what was already on screen.
+  - **Onboarding's choice page.** "Choose here" (the owner's cut). The deck's "Or Claude can read it in the cloud": the Claude card is that. The device card's "Private and offline": the deck's "not a word leaves your iPhone" says it.
+  - **Coverage and Horizon (iOS).**
+    - Coverage's empty page no longer says what Horizon does; onboarding has.
+    - The strip's empty page no longer says how the strip works.
+    - At the days, the hint is "Pinch for the semester.", without "Tap a day to read it." The week's tap taught it.
+    - Coverage's failure row no longer says "See them in Documents" or "Retry it from Documents": the row opens Documents, chevron and all.
+  - **Now (iOS).**
+    - The invitation no longer tells the planner what to respect and then plans: that is its two buttons.
+    - "Nothing planned." no longer adds "Add a block, or plan again."
+    - Replace the plan you edited? no longer says the changes are lost (its title); it says why it is asked only when tonight's end moved it. The Mac's dialog too.
+    - Tell the Planner says once that it takes effect the next time you plan, not twice. Its hours keep only the pointer to Tonight Until.
+  - **An item (iOS).** Its page drops "No description yet." and "or write one yourself": Add Description… is under it. Its editor drops "Checked off in Reminders as well." and the Delete Item footer; the confirmation says it.
+  - **The course editor.** The name's footer is "Also shown on each of its reminders." The grade footer no longer explains Count, Drops and Site.
+  - **Recently Deleted.** Its header drops "Tap one to restore it" (as Notes' and Photos' do); its empty page drops "and can be put back until then". The restore dialog no longer counts what comes back: the row it points at counts it. A document's still says that items another document has since updated stay as they are.
+  - **Read on This iPhone's confirmation** (Coverage, Documents, the Mac, and Siri's) drops "Nothing is sent to Anthropic.": on this iPhone says so.
+  - **The Library footer** no longer says what an export is.
+  - **The Mac.**
+    - Review drops "Select several to confirm or discard them together." (a table's own multiple selection) and, for several selected, "Confirm them as they were read, or discard them." (its buttons).
+    - Documents' line drops "Everything Horizon has been given to read.", and its empty page drops "Every document Horizon reads is listed here".
+    - The help tags that repeated their buttons (Confirm, Open Document, Discard, Sync, Add Document, Edit) now say what each does instead.
+- **What stayed, though it explains:**
+  - what each choice sends (the project's rule);
+  - "cannot be undone" on erasing;
+  - the reason in each notice (Reminders off, the list gone, a document waiting);
+  - "Tap a week to look closer" and the Mac chart's pointer line: a novel control, which the HIG says to orient people to;
+  - the Mac's "Double-click one to put it back" (not a Mac table's own) and "press Space to look at it" (also the line that keeps the table off the toolbar);
+  - the Mac's empty Coverage page, the one introduction a Mac gets;
+  - the intents' descriptions, which are Shortcuts' help and what Siri's model reads of each intent.
+- **Siri's words name the device**, as the app's do: "Read it on this iPhone instead of with Claude?", "Documents are read on this iPhone and your iPhone plans your day".
+- **Verified.** iOS and Mac builds. In the simulator: Now's invitation, the item page's description, Recently Deleted's restore dialog, and the choice page. The App Intents suite, 10 of 10. No test held any of the words that went.

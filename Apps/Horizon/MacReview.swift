@@ -45,7 +45,7 @@ struct MacReviewPage: View {
             } else {
                 HStack(alignment: .top, spacing: 0) {
                     VStack(alignment: .leading, spacing: 0) {
-                        PageLine(rows.count == 1 ? "One item the reader was unsure of." : "\(rows.count) items the reader was unsure of. Select several to confirm or discard them together.")
+                        PageLine(rows.count == 1 ? "One item the reader was unsure of." : "\(rows.count) items the reader was unsure of.")
                         table(rows)
                     }
                     .frame(minWidth: 400, maxWidth: .infinity)
@@ -61,13 +61,13 @@ struct MacReviewPage: View {
             ToolbarSpacer(.fixed, placement: .primaryAction)   // the page's own, apart from the window's Add Document and Sync
             ToolbarItemGroup(placement: .primaryAction) {   // each is in the Item menu too
                 Button { confirm(chosenIDs) } label: { Label("Confirm", systemImage: "checkmark") }
-                    .help("Confirm the selection as it was read (⌘↩)").disabled(chosen.isEmpty)
+                    .help("Keep the selection as it was read (⌘↩)").disabled(chosen.isEmpty)
                 Button { editing = chosen.first } label: { Label("Edit", systemImage: "pencil") }
                     .help("Fix the selected item (↩)").disabled(chosen.count != 1)
                 Button { if let chosenDocument { preview = model.previewFile(for: chosenDocument) } } label: { Label("Open Document", systemImage: "doc.text.magnifyingglass") }
-                    .help("Open the document the item was read from").disabled(chosenDocument == nil)
+                    .help("Show the page the item was read from").disabled(chosenDocument == nil)
                 Button { discard(discardable) } label: { Label("Discard", systemImage: "trash") }
-                    .help("Discard the selection: it was never an item (⌘⌫)").disabled(discardable.isEmpty)
+                    .help("Remove the selection: it was never an item (⌘⌫)").disabled(discardable.isEmpty)
             }
         }
         .sheet(item: $editing) { ObligationEditor(mode: .review($0), courses: courses) }
@@ -206,13 +206,14 @@ private struct ReviewDetail: View {
                 } else if items.count > 1 {
                     let moved = items.filter { $0.otherDate != nil }.count
                     Text("\(items.count) items selected").deck()
-                    Text(moved == 0 ? "Confirm them as they were read, or discard them."
-                         : moved == items.count ? "A later document moved each one's date. Confirm them as they are, or choose one at a time."
-                         : "Confirm them as they were read, or discard them. Discard leaves out the \(moved == 1 ? "one" : "\(moved)") a later document moved.")
-                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
+                    if moved > 0 {   // the buttons say what they do; only what they leave out is said
+                        Text(moved == items.count ? "A later document moved each one's date. To use a new date, choose one at a time."
+                             : "Discard leaves out the \(moved == 1 ? "one" : "\(moved)") a later document moved.")
+                            .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
+                    }
                     actions(several: true, other: nil, discards: moved < items.count).padding(.top, 18)
                 } else {
-                    Text("Select an item to see why it waits and the page it was read from.").foregroundStyle(.secondary)
+                    Text("Select an item to see why it waits.").foregroundStyle(.secondary)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

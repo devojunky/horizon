@@ -68,7 +68,7 @@ struct ObligationEditor: View {
                     Section {
                         Toggle("Done", isOn: $done)
                     } footer: {
-                        Text(item?.skippedAt != nil && !done ? "Skipped, so it is checked off in Reminders. Turn on Done if you did it after all." : "Checked off in Reminders as well.")
+                        if item?.skippedAt != nil, !done { Text("Skipped: checked off in Reminders, but not done.") }   // why its reminder is checked while Done is off
                     }
                 }
                 Section {
@@ -96,9 +96,7 @@ struct ObligationEditor: View {
                 }
                 if item != nil {
                     Section {
-                        Button("Delete Item", role: .destructive) { confirmingDelete = true }
-                    } footer: {
-                        Text("Deleting removes it from Reminders as well.")
+                        Button("Delete Item", role: .destructive) { confirmingDelete = true }   // the confirmation says what goes with it
                     }
                 }
             }

@@ -63,7 +63,7 @@ struct NowView: View {
                     Button("Plan Again", role: .destructive) { model.planAgain() }
                     Button("Cancel", role: .cancel) {}
                 } message: {
-                    Text(model.pendingTonightEnd.map { "Planning again to \(PlanHours.label($0)) tonight loses your changes to today's blocks." } ?? "Your changes to today's blocks are lost.")
+                    if let end = model.pendingTonightEnd { Text("To plan until \(PlanHours.label(end)) tonight.") }   // the title says what goes; this, why it is asked
                 }
                 .onChange(of: confirmingReplan) { _, asking in if !asking { model.pendingTonightEnd = nil } }   // not planned again: tonight's end stays as it was
                 .sheet(item: $editing) { PlanBlockEditor(block: $0) }
@@ -237,7 +237,7 @@ private struct PlanList: View {
                             .listRowSeparator(.hidden)
                     }
                     if stage == .invitation {
-                        EditorialEmpty(title: "Today, planned.", deck: "One plan for the rest of today, around your calendar, with a reason on every block. Tell the planner what to respect, then plan.") {
+                        EditorialEmpty(title: "Today, planned.", deck: "One plan for the rest of today, around your calendar, with a reason on every block.") {
                             Button("Plan Today", action: planToday).buttonStyle(.borderedProminent)
                             #if os(iOS)   // a Mac has it in the column beside the page
                             Button("Tell the Planner…", action: tell).buttonStyle(.borderless)   // in a list row: its own tap, in the tint, as on any page
@@ -281,7 +281,7 @@ private struct PlanList: View {
                         .accessibilityHint(streaming ? "" : "Opens the editor")
                     }
                     if stage == .timetable, !streaming, blocks.isEmpty, note == nil {   // a note ("The day ended at 10 PM…") already says why, and what to do
-                        Text("Nothing planned. Add a block, or plan again.").foregroundStyle(.secondary).pageRow(top: 14, bottom: 0).listRowSeparator(.hidden)
+                        Text("Nothing planned.").foregroundStyle(.secondary).pageRow(top: 14, bottom: 0).listRowSeparator(.hidden)
                     }
                     foot
                         .id("foot")

@@ -6,7 +6,7 @@ import FoundationModels
 public enum DeviceModel: String, Sendable, CaseIterable {
     /// Ready to read and plan.
     case ready
-    /// Apple Intelligence is turned off in Settings: a document for the device waits until it is on.
+    /// Apple Intelligence is turned off in Settings: a read on the device fails, saying so, until it is on.
     case off
     /// Turned on, its model still downloading: a document for the device waits until it is ready.
     case downloading
@@ -27,4 +27,6 @@ public enum DeviceModel: String, Sendable, CaseIterable {
 
     /// The device supports Apple Intelligence, on or not: reading here is the user's to choose.
     public var supported: Bool { self != .unsupported }
+    /// A read on the device can work: now, or once the model is in. Off, it fails until the user turns it on.
+    public var canRead: Bool { self == .ready || self == .downloading }
 }
