@@ -81,6 +81,25 @@ final class AppModel {
         let keyed = scratchStore == nil && !(Keychain.read("claude") ?? "").isEmpty
         return !keyed && readingService != nil ? .service : .ownKey
     }
+    /// The first launch's welcome (`OnboardingView`, iOS): once, on a library with nothing in it. A library that already
+    /// holds something (an install from before onboarding, an import, a document shared from Files before the app was
+    /// first opened) is taken as known and never shown it. `--onboarding` (DEBUG) shows it whatever the library holds.
+    var showsOnboarding = false
+    func finishOnboarding() {
+        showsOnboarding = false
+        AppModel.defaults.set(true, forKey: "onboarded")
+    }
+    private func decideOnboarding() {
+        #if os(iOS)
+        #if DEBUG
+        if CommandLine.arguments.contains("--onboarding") { showsOnboarding = true; return }
+        #endif
+        guard storeFailure == nil, !Self.defaults.bool(forKey: "onboarded") else { return }
+        let context = container.mainContext
+        let held = ((try? context.fetchCount(FetchDescriptor<Course>())) ?? 0) + ((try? context.fetchCount(FetchDescriptor<SourceDocument>())) ?? 0)
+        if held > 0 { Self.defaults.set(true, forKey: "onboarded") } else { showsOnboarding = true }
+        #endif
+    }
     /// Whether Claude is the reading service's here: chosen, and offered on this device.
     var usesReadingService: Bool { claudeAccess == .service && Self.readingService != nil }
     /// What a read or plan on Claude uses: the reading service when that is the choice, else the user's key, or nil
@@ -231,6 +250,7 @@ final class AppModel {
                                         progress: { p in Task { @MainActor in box.model?.apply(p) } })
         box.model = self
         loadPlan()
+        decideOnboarding()
         Self.current = self
         if storeFailure == nil {
             // Every save the store makes (a read, a check, an edit, a sync) reaches Spotlight and the widgets a moment later.

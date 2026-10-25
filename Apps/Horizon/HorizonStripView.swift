@@ -24,8 +24,27 @@ struct MainTabs: View {
         .onSubmit(of: .search) { model.rememberSearch() }   // a search submitted is one of the page's recent searches
         .tabViewSearchActivation(.searchTabSelection)
         .modifier(AppRouter(tab: $tab))
+        .overlay {
+            // Over the app from its first frame (a cover is presented after it, and slid up over an empty Coverage), and
+            // modal to VoiceOver; its fade at the end shows the app beneath.
+            if model.showsOnboarding {
+                OnboardingView(startPage: Self.debugValue("--onboarding-page").flatMap(Int.init) ?? 0) { model.finishOnboarding() }
+                    .accessibilityAddTraits(.isModal)
+                    .transition(.identity)
+            }
+        }
         #else
         MacRootView()
+        #endif
+    }
+
+    /// A DEBUG flag's value, the argument after it (`--onboarding-page 2`).
+    static func debugValue(_ flag: String) -> String? {
+        #if DEBUG
+        guard let i = CommandLine.arguments.firstIndex(of: flag), i + 1 < CommandLine.arguments.count else { return nil }
+        return CommandLine.arguments[i + 1]
+        #else
+        return nil
         #endif
     }
 

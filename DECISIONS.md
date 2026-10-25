@@ -765,3 +765,25 @@ The owner: a tap on an item went straight to its editor. It should open a page o
   - In the simulator: Settings' Claude section, both choices, and Test Connection's refusal.
   - On the owner's iPhone 16 Pro Max (iOS 27.2, 2026-10-25), after both Workers were redeployed: a real App Attest key attested with the development service (Apple's certificate chain, nonce, key id and environment all checked by `verifyAttestation`, first try), then a signed read answered 200. A second read 15 seconds later, the owner's own Test Connection, reused the kept key with its counter advanced, and passed too. Production has not seen an attestation; it needs a Release build (TestFlight's production environment).
 - **The owner kept the decisions above** (2026-10-25): the service is the start for a device with no key, the manifest's declarations stand, and Test Connection says the reason alone.
+
+## 2026-10-25 · Onboarding
+
+- **The owner asked** for an onboarding screen for new users: creative, a cool animation, haptics.
+- **One stage, the icon come alive** (`OnboardingStage`, in the icon's own 1024-point coordinates). The horizon draws out from the centre, the sun rises from behind it (clipped at the horizon's lower edge, then breathing a little), and the seven marks stand up one by one into the app's icon. Three more scenes are told on that same horizon, one per page:
+  - **Reading.** A syllabus card is swept by a reading line, and each dated row it passes throws its date down onto its day, where a deadline stands up in the strip's colour for what it is worth. The card sits above the tallest mark, so the term shows in full.
+  - **Reminders.** Three reminders rise from the horizon and the first is checked off, its title quieter, done.
+  - **Coverage.** A weekly rhythm stands up with its fifth week missing; a dashed outline breathes where it should be, under "Quiz 5?".
+  - The term's marks carry from Reading into Reminders unchanged; everything else fades through between scenes (out before in).
+- **Haptics that mean something.** Each mark lands with a tap as strong as its weight: in the first scene by its height, in Reading by its points, so an exam lands harder than a homework. The sun's crest is a soft thump, the check a success, the missing week two knocks, a page turn a selection tick, Begin a success.
+- **The words** are four short pages under the stage: a kicker, the display serif, a deck, on the margin's line. The Reading page says who reads, truthfully (Claude through Horizon's server, Claude with the user's key, or the phone), and that Settings chooses. Swipe or Continue; Skip on every page but the last; a tap on the stage plays its scene again.
+- **Decided for the owner:**
+  - **Shown once, on iOS, to a library with nothing in it.** Your phone, an import, or a document shared before the app was first opened never see it. `--onboarding` (DEBUG) forces it, `--onboarding-page N` opens on a page. The Mac has none yet: its first launch is the owner's.
+  - **It asks for nothing.** The project's rule that Reminders access waits until there is something to write stands, so the Reminders page explains instead of prompting.
+  - **An overlay on the app's root, not a cover.** A full-screen cover is presented after the first frame and slid up over an empty Coverage page, so the overlay is on screen from the first frame, modal to VoiceOver, with its stage hidden from it.
+  - **Begin's exit fades through.** The words go as the sun lifts and brightens; the stage dissolves on its own paper; then the paper goes, and the app comes in on the same paper. The first version faded the whole page over the app, the stage at half strength over Coverage.
+  - **The button's words are dark at night.** The tint is then the bright orange, where white reads at about 1.9:1. The app's other prominent buttons (Mark Done, Plan Today, the Mac's Confirm) have the same problem, which is left for a change of its own.
+  - **Reduce Motion:** every scene arrives whole, by a fade, with one haptic.
+- **Verified.**
+  - In the simulator under Xcode 27.2, each scene recorded and read frame by frame: the term assembling into the icon, the reading sweep with its dates thrown down, the reminders with their check, the missing week. Also the flow through Continue to Begin, the exit, and dark mode.
+  - 191 IngestKit and 140 HorizonCore tests under the new toolchain; iOS, device and Mac builds.
+  - Not verified: the haptics (the simulator has none, and the phone dropped off after the Xcode update), Reduce Motion, and the accessibility text sizes. The simulator's iOS 27.0 runtime will not run under Xcode 27.2, and its 27.2 runtime is not installed yet.
