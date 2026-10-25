@@ -137,7 +137,7 @@ struct LibrarySettingsSection: View {
                         Button("Replace Library", role: .destructive) { model.pendingImport = pending; candidate = nil }
                         Button("Cancel", role: .cancel) { candidate = nil; model.cancelImport() }
                     } message: { pending in
-                        Text("The library exported from \(pending.deviceName) on \(pending.exportedAt.formatted(date: .abbreviated, time: .shortened)) (\(pending.courses) courses, \(pending.items) items, \(pending.documents) documents) replaces everything Horizon has on this device when it next opens. This cannot be undone.")
+                        Text("The library exported from \(pending.deviceName) on \(pending.exportedAt.formatted(date: .abbreviated, time: .shortened)) (\(pending.courses) courses, \(pending.items) items, \(pending.documents) documents) replaces everything Horizon has on this \(AppModel.deviceKind) when it next opens. This can't be undone.")
                     }
             }
             if let imported = model.importedLibrary {
@@ -149,9 +149,9 @@ struct LibrarySettingsSection: View {
             Kicker("Library")
         } footer: {
             #if os(iOS)
-            Text("One file with your courses, items, documents and settings, and what Horizon knows about its reminders, so another install of Horizon picks up where this one is. Save it outside Horizon (iCloud Drive, or On My iPhone): Horizon's own folder goes with the app. The Claude key is not in it; enter it again after importing.")
+            Text("Your courses, items, documents and settings in one file, for another Horizon to import. Save it outside Horizon's own folder, which goes with the app. Your Claude key isn't included.")
             #else
-            Text("One file with your courses, items, documents and settings, and what Horizon knows about its reminders, so another install of Horizon picks up where this one is. The Claude key is not in it; enter it again after importing.")
+            Text("Your courses, items, documents and settings in one file, for another Horizon to import. Your Claude key isn't included.")
             #endif
         }
         .onAppear { model.loadPendingImport() }

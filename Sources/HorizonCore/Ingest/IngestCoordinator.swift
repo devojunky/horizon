@@ -85,7 +85,7 @@ public actor IngestCoordinator {
         case IngestError.unsupportedFile(let ext) where ext.hasPrefix("docx"): "Word documents can only be read on a Mac. Save it as a PDF and add that instead."
         case IngestError.unsupportedFile(let ext): "Horizon cannot read .\(ext) files."
         case IngestError.extractionFailed: "The model found nothing in it to read."
-        case IngestError.modelUnavailable(let why): "The device model is unavailable: \(why)"
+        case IngestError.modelUnavailable(let why): "\(why.prefix(1).uppercased() + why.dropFirst()). Choose Claude in Settings to read it."
         default: error.localizedDescription
         }
     }
@@ -218,8 +218,8 @@ public actor IngestCoordinator {
                 if !Task.isCancelled, (try? await store.document(id: doc.id))?.deletedAt != nil { continue }
                 switch error {
                 case IngestError.modelNotReady(let why):
-                    try? await store.markDocument(id: doc.id, status: .queued, failure: "Waiting for the on-device model: \(why)")
-                    reports.append(Report(document: doc, summary: nil, failure: "Waiting for the on-device model: \(why)"))
+                    try? await store.markDocument(id: doc.id, status: .queued, failure: "Waiting for Apple Intelligence: \(why)")
+                    reports.append(Report(document: doc, summary: nil, failure: "Waiting for Apple Intelligence: \(why)"))
                     break documents   // nothing else will parse until the model is ready
                 case IngestError.claudeUnavailable(let why):
                     // Claude could not read it now: it waits (a processing task with the network, the next drain, or the

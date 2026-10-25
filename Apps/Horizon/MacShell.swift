@@ -460,7 +460,7 @@ struct DocumentsTable: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The Mac's own model is less sure of tables and pictures than Claude, and it takes minutes on a long document. Nothing is sent to Anthropic.")
+            Text("Your Mac is less sure of tables and pictures than Claude, and takes minutes on a long document. Nothing is sent to Anthropic.")
         }
         .quickLookPreview($preview)
         .navigationTitle("Documents")
@@ -522,7 +522,7 @@ struct DocumentsTable: View {
             if docs.contains(where: Self.canRetry) {
                 Button("Retry") { retry(docs) }
             }
-            if docs.contains(where: Self.waitsForClaude) {
+            if model.deviceModel.supported, docs.contains(where: Self.waitsForClaude) {   // a Mac without Apple Intelligence reads nothing itself
                 Button("Read on This Mac Instead…") { confirmDevice = docs.filter(Self.waitsForClaude) }
             }
             if docs.count == 1, let doc = docs.first, doc.course == nil, doc.status == .parsed, !courses.isEmpty {
@@ -553,7 +553,7 @@ struct DocumentsTable: View {
             ids: Set(docs.map(\.id)),
             look: one.flatMap { doc in model.hasFile(doc) ? { look(at: doc) } : nil },
             retry: docs.contains(where: Self.canRetry) ? { retry(docs) } : nil,
-            readOnDevice: docs.contains(where: Self.waitsForClaude) ? { confirmDevice = docs.filter(Self.waitsForClaude) } : nil,
+            readOnDevice: model.deviceModel.supported && docs.contains(where: Self.waitsForClaude) ? { confirmDevice = docs.filter(Self.waitsForClaude) } : nil,
             fileUnder: loose.map { doc in courses.map { course in (name: course.displayName, file: { file(doc.id, under: course.id) }) } } ?? [])
     }
 

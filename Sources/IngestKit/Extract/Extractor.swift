@@ -70,7 +70,9 @@ actor Extractor {
             let model = SystemLanguageModel.default
             switch model.availability {
             case .available: break
-            case .unavailable(.modelNotReady): throw IngestError.modelNotReady("assets are still loading")
+            case .unavailable(.modelNotReady): throw IngestError.modelNotReady("its model is still downloading")
+            case .unavailable(.appleIntelligenceNotEnabled): throw IngestError.modelNotReady("it is turned off")   // waits until the user turns it on, as for a model still downloading
+            case .unavailable(.deviceNotEligible): throw IngestError.modelUnavailable("Apple Intelligence isn't available here")
             case .unavailable(let reason): throw IngestError.modelUnavailable(String(describing: reason))
             }
             let instructions = try await model.tokenCount(for: Instructions(IngestInstructions.text))

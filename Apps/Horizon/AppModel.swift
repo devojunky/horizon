@@ -50,7 +50,7 @@ final class AppModel {
     /// What the parser is reading right now, item by item as the model streams. Nil when idle.
     var reading: Reading?
     /// Where documents are read: Claude (the target model, with the user's own key) or the device's own model (nothing
-    /// leaves the phone; no eye for tables or pictures). Persisted. A key entered turns Claude on; a key removed turns
+    /// leaves the device; no eye for tables or pictures). Persisted. A key entered turns Claude on; a key removed turns
     /// it off.
     enum ReadingRoute: String, CaseIterable { case claude, onDevice }
     var readingRoute: ReadingRoute = ReadingRoute(rawValue: AppModel.defaults.string(forKey: "readingRoute") ?? "") ?? .claude {
@@ -108,8 +108,14 @@ final class AppModel {
         if usesReadingService, let service = Self.readingService { return ClaudeConfiguration(service: service) }
         return claudeKey.isEmpty ? nil : ClaudeConfiguration(apiKey: claudeKey, model: claudeModel)
     }
-    /// Where the next read goes: Claude when chosen and keyed, else the device.
-    var readRoute: IngestOptions.RoutePolicy { readingRoute == .claude && claudeConfiguration != nil ? .claude : .onDevice }
+    /// Where the next read goes: Claude when chosen and keyed, else the device. A device without Apple Intelligence and
+    /// with no Claude to read with goes to Claude all the same, which sends nothing: the document waits for a key (Check
+    /// Key… on Coverage) rather than failing on a model that is not there. A route the user chose for the device stays
+    /// there, Claude or no.
+    var readRoute: IngestOptions.RoutePolicy {
+        if claudeConfiguration == nil, !deviceModel.supported { return .claude }
+        return readingRoute == .claude && claudeConfiguration != nil ? .claude : .onDevice
+    }
 
     struct Reading: Equatable {
         var documentID: UUID
@@ -192,6 +198,33 @@ final class AppModel {
         Host.current().localizedName ?? "Mac"
         #endif
     }()
+
+    /// What the app's words call this device: "iPhone", "iPad" or "Mac", never "the phone" or "this device".
+    static let deviceKind: String = {
+        #if os(macOS)
+        "Mac"
+        #else
+        if ProcessInfo.processInfo.isiOSAppOnMac { return "Mac" }
+        return UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
+        #endif
+    }()
+
+    /// Apple Intelligence on this device (`DeviceModel`): ready, turned off, still downloading, or not supported here.
+    /// Read in a view, it redraws as it changes. `--apple-intelligence off|downloading|unsupported` (DEBUG) has
+    /// Settings, onboarding and the route act as such a device would; the model itself, asked to read, answers as it is.
+    var deviceModel: DeviceModel { Self.deviceModel }
+    static var deviceModel: DeviceModel {
+        #if DEBUG
+        if let forcedDeviceModel { return forcedDeviceModel }
+        #endif
+        return DeviceModel.current
+    }
+    #if DEBUG
+    private static let forcedDeviceModel: DeviceModel? = {
+        guard let i = CommandLine.arguments.firstIndex(of: "--apple-intelligence"), i + 1 < CommandLine.arguments.count else { return nil }
+        return DeviceModel(rawValue: CommandLine.arguments[i + 1])
+    }()
+    #endif
 
     /// Where the app's settings and the day's plan are kept: the user's own defaults, or for a scratch run a domain of
     /// its own, so testing on a copy never reads or rewrites the user's plan, hours or route (`.defaultAppStorage` puts
@@ -486,7 +519,7 @@ final class AppModel {
         let claude = usesReadingService ? "claude (\(ClaudeModelChoice.sonnet.rawValue), through the reading service)" : "claude (\(claudeModel.rawValue), key of \(claudeKey.count) chars)"
         Self.log("drain: reminders \(remindersAuthorized.map { "\($0)" } ?? "unknown"), route \(route == .claude ? claude : "onDevice")")
         if let queued = try? await store.queuedDocuments(), !queued.isEmpty {   // nothing to read: no line saying so
-            withAnimation { statusLine = route == .claude ? "Reading documents with Claude…" : "Reading documents on this device…" }
+            withAnimation { statusLine = route == .claude ? "Reading documents with Claude…" : "Reading documents on this \(Self.deviceKind)…" }
         }
         await coordinator.setClaude(claudeConfiguration)
         await coordinator.setRoute(route)

@@ -31,6 +31,9 @@ struct ReadDocumentIntent: LongRunningIntent {
     @Parameter(title: "Choose From", description: "Given no file or document, where Horizon opens to choose one.", default: .screenshots) var source: ImportChoice
     @Dependency var model: AppModel
 
+    /// What a read on the device asked for where Apple Intelligence is not supported is told (Change Settings too).
+    @MainActor static var noDeviceModel: String { "This \(AppModel.deviceKind) doesn't support Apple Intelligence, so only Claude can read documents here." }
+
     static var parameterSummary: some ParameterSummary {
         When(\.$document, .hasAnyValue) {
             Summary("Read \(\.$document) into \(\.$course)") { \.$onThisDevice }
@@ -53,6 +56,7 @@ struct ReadDocumentIntent: LongRunningIntent {
         if courseID != nil, try await model.intentCourse(courseID) == nil { throw IntentFailure.message("That course is no longer in Horizon.") }
         // On This Device is the user's word for these documents; with Settings reading by Claude, it's asked once more,
         // as Read on This Device… asks in the app. Read on the device already, there's nothing to ask.
+        if onThisDevice, !model.deviceModel.supported { throw IntentFailure.message(Self.noDeviceModel) }   // as Settings greys the route
         let askFirst = onThisDevice && model.readingRoute == .claude
         let outcome: [ReadOutcome]
 
@@ -358,6 +362,7 @@ struct ChangeSettingsIntent: AppIntent {
     }
 
     @MainActor func perform() async throws -> some ProvidesDialog {
+        if reading == .thisDevice, !model.deviceModel.supported { throw IntentFailure.message(ReadDocumentIntent.noDeviceModel) }   // as Settings greys the route
         let toClaude = (reading == .claude && model.readingRoute != .claude) || (planning == .claude && !model.planWithClaude)
         if toClaude, model.claudeConfiguration == nil {
             throw IntentFailure.message("Claude needs your Anthropic API key first. Add it in Horizon's Settings.")

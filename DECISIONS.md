@@ -787,3 +787,40 @@ The owner: a tap on an item went straight to its editor. It should open a page o
   - In the simulator under Xcode 27.2, each scene recorded and read frame by frame: the term assembling into the icon, the reading sweep with its dates thrown down, the reminders with their check, the missing week. Also the flow through Continue to Begin, the exit, and dark mode.
   - 191 IngestKit and 140 HorizonCore tests under the new toolchain; iOS, device and Mac builds.
   - Not verified: the haptics (the simulator has none, and the phone dropped off after the Xcode update), Reduce Motion, and the accessibility text sizes. The simulator's iOS 27.0 runtime will not run under Xcode 27.2, and its 27.2 runtime is not installed yet.
+
+## 2026-10-25 · Your iPhone supports Apple Intelligence
+
+- **The owner asked** for three things:
+  - an onboarding page, on a device that supports Apple Intelligence, about the choice between reading fully on the device and in the cloud, opening with "your device supports" and exciting;
+  - Settings with less copy, naming the device as "iPhone", "iPad" or "Mac", never "the phone";
+  - the reading choice greyed out where Apple Intelligence is not supported.
+- **The page** is the fifth and last, before Begin.
+  - Kicker "Your choice"; title "Your iPhone supports Apple Intelligence." (iPad on an iPad); deck "So it can read every syllabus itself, and not a word leaves your iPhone. Or Claude can read it in the cloud. Switch any time in Settings." The owner cut "Choose here" from the first draft: the two cards under it already say so.
+  - Its scene: the device rises in front of the sun, the sun a halo around it, as the sun rose from behind the horizon (a soft crest). Its screen comes on and a line reads the page on it, each date lighting with a tap. Then a cloud floats in beside it, with a dotted way up to it.
+  - The reader chosen is lit: the screen and the sun behind it, or the cloud, with a dot going up to it and back (a tap there, a lighter one back).
+  - Reduce Motion: the scene arrives whole by a fade, and a choice changes the light by a fade.
+- **Decided for the owner:**
+  - **The page offers the choice, not only describes it.** The reader on file is already ticked, so Continue and Begin leave it as it is, and onboarding still asks for nothing. A student who wants nothing to leave the iPhone would otherwise have their first syllabus read by Claude before they found Settings. Two cards, "On This iPhone" and "Claude", each with what it trades and what it sends.
+  - **Last, not straight after Reading.** The term's marks still carry from Reading into Reminders, and the choice is the reveal before Begin. Skip passes it like any page, so the default stands. The Reading page still says who reads; it drops its "yours to choose in Settings" aside when this page follows.
+  - **"Supports" includes Apple Intelligence turned off or still downloading.** The page shows and the choice stays open; a document for the device then waits ("Waiting for Apple Intelligence: it is turned off", read the moment it is on) rather than failing. Settings' row says how to turn it on, or that it is downloading.
+  - **Greyed only where it cannot run:** `SystemLanguageModel`'s `deviceNotEligible`, IngestKit's `DeviceModel.unsupported`. There the device's row is greyed with "This iPhone doesn't support Apple Intelligence.", there is no fifth page, and Read on This iPhone… goes from Coverage, Documents, and the Mac's table and File menu. Siri's Read Document (On This Device) and Change Settings say why rather than set a route that cannot read.
+  - **Such a device with no Claude to read with** (no key, no server) sends its documents to wait for Claude ("no API key", with Check Key…), where before they failed on a model that is not there. Nothing is sent, since there is nothing to send with. A route the user chose for the device is never moved to Claude; read where it cannot run, it fails with "Apple Intelligence isn't available here. Choose Claude in Settings to read it."
+  - **Settings, cut.** Kept: what each choice sends (the project's rule). Gone:
+    - the Read Documents footer (Coverage says it when it happens);
+    - App Attest by name;
+    - "Removing the key turns Claude off";
+    - the device's name on iOS (an app is told only "iPhone");
+    - the Reminders footer, except while access has not been asked for.
+  - **Settings, renamed and fixed.** "Small tasks" is "Day plan". The route rows show the route a read would take (`readRoute`), so a route with no key behind it no longer wears a check. A greyed row's check is grey.
+  - **The words.** The device is `AppModel.deviceKind` ("iPhone", "iPad", "Mac") in Settings, onboarding, the Library's dialog, Coverage's and Documents' Read on This iPhone… and its confirmation, and the reading line. Documents names the reader "Apple Intelligence" beside "Claude". Left as they were: the App Intents' "This Device" (static titles and synonyms, one build for every device) and the stored failure reasons ("here").
+  - **Apple Intelligence is named, never drawn.** The name stands only as a fact about the device. The scene draws a generic device and a cloud: no Apple logo, no Apple Intelligence glow.
+- **DEBUG:** `--apple-intelligence off|downloading|unsupported` has Settings, onboarding and the route act as such a device would. The model itself, asked to read, still answers as it is.
+- **Verified.**
+  - 191 IngestKit and 140 HorizonCore tests; the iOS and Mac builds (the Mac's unsigned, a compile check).
+  - On a fresh iPhone 18 Pro Max simulator (iOS 27.2), whose Apple Intelligence reports still downloading:
+    - the page with the device's card ticked (no key, no server), and with Claude ticked through `--show-reading-service`;
+    - the scene recorded and read frame by frame: the device rising dark in front of the sun, its screen coming on, the reading line lighting both dates, the cloud and its way arriving;
+    - both cards tapped, the stage turning each way, and a dot going up to the cloud on choosing Claude;
+    - the exit through Begin, dark mode, and an iPad Air (its own outline, "On This iPad").
+  - With `--apple-intelligence unsupported`: four pages, the Reading page keeping its aside, an out-of-range page landing on the last. Settings with the device's row greyed beside Through Horizon. With `off`: the row open, saying how to turn it on.
+  - Not verified: the haptics (the simulator has none), Reduce Motion, the accessibility text sizes, a real device without Apple Intelligence, and Siri's two refusals. The App Intents suite was not run; only the intents' `perform` changed, not their shape.
