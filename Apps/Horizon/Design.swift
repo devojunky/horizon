@@ -148,9 +148,14 @@ extension View {
     }
 
     /// A page's other actions (Edit, Try Again, Cancel; DECISIONS 2026-10-25 · The accent under words and glyphs): the
-    /// orange's tint for a bezel, a step quieter than `prominent()`, its words in `Design.onAccentTint`, ink by day.
+    /// orange's tint for a bezel, a step quieter than `prominent()`, its words in `Design.onAccentTint`, ink by day. A
+    /// Mac draws them as `macInk()` says.
     func bordered() -> some View {
+        #if os(macOS)
+        buttonStyle(.bordered).macInk()
+        #else
         buttonStyle(.bordered).tint(Design.accent).modifier(OnAccent(ink: Design.onAccentTint))
+        #endif
     }
 
     /// A button a Mac draws bordered whatever its style (in a form, a sheet's foot, a page): `bordered()` there. iOS
@@ -158,6 +163,18 @@ extension View {
     func macBordered() -> some View {
         #if os(macOS)
         bordered()
+        #else
+        self
+        #endif
+    }
+
+    /// A control a Mac draws with its words in its tint, whatever the words are given: a bordered button, a form's
+    /// pop-up picker. The amber's words read 4.4:1 on a form's card by day (the orange's, 1.7:1), so there the tint is
+    /// the words' own colour, `Design.onAccentTint`; the bezel the Mac lays under them is a twentieth of it, near the
+    /// paper. iOS keeps the app's tint.
+    func macInk() -> some View {
+        #if os(macOS)
+        tint(Design.onAccentTint)
         #else
         self
         #endif

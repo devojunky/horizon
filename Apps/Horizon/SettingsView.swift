@@ -113,6 +113,7 @@ struct ReadingSettingsSections: View {
                 Picker("Model", selection: $model.claudeModel) {
                     ForEach(ClaudeModelChoice.allCases) { Text($0.displayName).tag($0) }
                 }
+                .macInk()
                 Text(model.claudeModel.detail).font(.footnote).foregroundStyle(.secondary)
                 testRows
                 if hasKey {

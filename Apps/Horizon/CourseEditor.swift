@@ -66,6 +66,7 @@ struct CourseEditor: View {
                                 ForEach(1...7, id: \.self) { Text(ClockText.weekdayName($0)).tag($0) }
                             }
                             .labelsHidden()
+                            .macInk()
                             Spacer(minLength: 0)
                             DatePicker("Starts", selection: $meeting.start, displayedComponents: .hourAndMinute).labelsHidden()
                             Text("to").foregroundStyle(.secondary)
@@ -92,6 +93,7 @@ struct CourseEditor: View {
                                     Text("Once").tag(Cadence?.some(.once))
                                 }
                                 .labelsHidden()
+                                .macInk()
                                 Spacer(minLength: 0)
                                 LabeledContent("Count") { TextField("–", value: $component.count, format: .number).multilineTextAlignment(.trailing).promptOnly().frame(width: 36).numberKeyboard() }
                                 LabeledContent("Drops") { TextField("–", value: $component.dropLowest, format: .number).multilineTextAlignment(.trailing).promptOnly().frame(width: 36).numberKeyboard() }
@@ -103,6 +105,7 @@ struct CourseEditor: View {
                                 Text("Gradescope").tag(Platform?.some(.gradescope)); Text("MyLab").tag(Platform?.some(.myLab))
                             }
                             .labelsHidden()
+                            .macInk()
                             .font(.subheadline)
                         }
                         .padding(.vertical, 2)

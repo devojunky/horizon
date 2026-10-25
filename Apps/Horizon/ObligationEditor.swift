@@ -51,11 +51,13 @@ struct ObligationEditor: View {
                         ForEach(courses) { Text($0.displayName).tag(UUID?.some($0.id)) }
                     }
                     .choosesInList(typeSize.isAccessibilitySize)
+                    .macInk()
                     if let course, !course.gradeComponents.isEmpty {
                         Picker("Counts toward", selection: $componentName) {
                             Text("Not stated").tag("")
                             ForEach(course.gradeComponents, id: \.name) { Text($0.name).tag($0.name) }
                         }
+                        .macInk()
                     }
                 }
                 // Under the name, as Reminders keeps a reminder's notes: room for a few lines from the start (Siri's run
@@ -84,6 +86,7 @@ struct ObligationEditor: View {
                         Text("LMS").tag(Platform.lms); Text("WebAssign").tag(Platform.webAssign)
                         Text("Gradescope").tag(Platform.gradescope); Text("MyLab").tag(Platform.myLab)
                     }
+                    .macInk()
                 }
                 if let item, item.origin == .document {
                     Section {

@@ -279,9 +279,9 @@ private struct ReviewDetail: View {
 }
 
 /// A button's title with its keyboard shortcut after it, set as the menu bar sets it and a step quieter than the
-/// title: three quarters of its colour, which still reads at 4.5:1 or better at night (the secondary style's half read
-/// at about 3.4:1, on Confirm's orange and on Edit's grey alike). VoiceOver hears the title alone: the menu bar
-/// already tells it the shortcut.
+/// title: three quarters of its colour, which still reads at 4.5:1 or better (7.2:1 on Confirm's orange, 7.4:1 on
+/// Edit's bezel by day and 5.6:1 at night; the secondary style's half read at about 3.4:1). VoiceOver hears the title
+/// alone: the menu bar already tells it the shortcut.
 private struct ShortcutLabel: View {
     let title: String
     let keys: String

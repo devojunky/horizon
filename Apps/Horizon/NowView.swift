@@ -529,6 +529,7 @@ struct TonightUntil: View {
             .pickerStyle(.menu)
             .labelsHidden()
             .fixedSize()
+            .macInk()
         }
         .font(.subheadline)
     }

@@ -45,6 +45,7 @@ struct PlanBlockEditor: View {
                             Text("Something else").tag("")
                             ForEach(candidates, id: \.title) { candidate in Text(Self.label(candidate)).tag(candidate.title) }
                         }
+                        .macInk()
                     }
                     Picker("Kind", selection: $kind) {
                         Text("Work").tag(PlanBlock.Kind.work)
@@ -53,6 +54,7 @@ struct PlanBlockEditor: View {
                         Text("Rest").tag(PlanBlock.Kind.rest)
                         if block?.kind == .fixed { Text("Calendar").tag(PlanBlock.Kind.fixed) }
                     }
+                    .macInk()
                 }
                 Section {
                     DatePicker("Starts", selection: $start, displayedComponents: .hourAndMinute)
@@ -153,8 +155,8 @@ struct PlannerNotesEditor: View {
                     }
                 }
                 Section {
-                    Picker("Starts", selection: $hours.start) { ForEach(PlanHours.starts, id: \.self) { Text(PlanHours.label($0)).tag($0) } }
-                    Picker("Ends", selection: $hours.end) { ForEach(PlanHours.ends, id: \.self) { Text(PlanHours.label($0)).tag($0) } }
+                    Picker("Starts", selection: $hours.start) { ForEach(PlanHours.starts, id: \.self) { Text(PlanHours.label($0)).tag($0) } }.macInk()
+                    Picker("Ends", selection: $hours.end) { ForEach(PlanHours.ends, id: \.self) { Text(PlanHours.label($0)).tag($0) } }.macInk()
                 } header: {
                     Text("Your day")
                 } footer: {
