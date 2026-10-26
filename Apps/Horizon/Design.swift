@@ -16,7 +16,15 @@ enum Design {
     /// amber (4.7:1, HIG's 4.5:1 for text); at night the orange already reads at about 10:1 and stays. It is also the
     /// tint (and the asset's AccentColor); marks, rings and fills keep `accent`.
     static let accentInk = dynamic(light: (0.659, 0.353, 0.0), dark: (1.0, 0.68, 0.26), increased: (light: (0.55, 0.27, 0.0), dark: (1.0, 0.76, 0.42)))
-    static let quiet = Color.secondary
+    /// Words on a fill of the accent (a prominent button's, `prominent()`): the paper's dark face, about 10:1 on the
+    /// orange by day and at night. White there reads at about 1.9:1.
+    static let onAccent = Color(red: 0.082, green: 0.078, blue: 0.071)
+    /// Words on a tint of the accent (a bordered button's bezel, `bordered()`): the same ink by day, 15:1 on the orange's
+    /// tint where the amber read 3.7:1 on its own; at night the accent's words (`accentInk`'s faces), on a tint gone dark.
+    static let onAccentTint = dynamic(light: (0.082, 0.078, 0.071), dark: (1.0, 0.68, 0.26), increased: (light: (0.082, 0.078, 0.071), dark: (1.0, 0.76, 0.42)))
+    /// The accent where the system sets white words on it and nothing else can be set there: the amber by day and at
+    /// night (white on it 5.1:1; 7.1:1 in the deeper amber Increase Contrast asks for). A Mac's swipe action is one.
+    static let accentDeep = dynamic(light: (0.659, 0.353, 0.0), dark: (0.659, 0.353, 0.0), increased: (light: (0.55, 0.27, 0.0), dark: (0.55, 0.27, 0.0)))
     /// The page behind everything.
     static let paper = dynamic(light: (0.976, 0.965, 0.941), dark: (0.082, 0.078, 0.071))
     /// A sheet laid on the page: form cells, chips.
@@ -37,7 +45,7 @@ enum Design {
     static func points(_ value: Double?) -> Text {
         guard let value else { return Text("") }
         let figure = Text(value, format: .number.precision(.fractionLength(0...1))).monospacedDigit()
-        let sign = Text("%").foregroundStyle(quiet)
+        let sign = Text("%").foregroundStyle(.rowSecondary)
         return Text("\(figure)\(sign)")
     }
 
@@ -133,6 +141,45 @@ extension View {
         #endif
     }
 
+    /// A page's prominent action (DECISIONS 2026-10-25 · Prominent buttons): the orange filled, by day and at night (a
+    /// fill is the accent's; the amber tint is for words), its words in `Design.onAccent`.
+    func prominent() -> some View {
+        buttonStyle(.borderedProminent).tint(Design.accent).modifier(OnAccent(ink: Design.onAccent))
+    }
+
+    /// A page's other actions (Edit, Try Again, Cancel; DECISIONS 2026-10-25 · The accent under words and glyphs): the
+    /// orange's tint for a bezel, a step quieter than `prominent()`, its words in `Design.onAccentTint`, ink by day. A
+    /// Mac draws them as `macInk()` says.
+    func bordered() -> some View {
+        #if os(macOS)
+        buttonStyle(.bordered).macInk()
+        #else
+        buttonStyle(.bordered).tint(Design.accent).modifier(OnAccent(ink: Design.onAccentTint))
+        #endif
+    }
+
+    /// A button a Mac draws bordered whatever its style (in a form, a sheet's foot, a page): `bordered()` there. iOS
+    /// keeps its own, a form's row of the tint's words.
+    func macBordered() -> some View {
+        #if os(macOS)
+        bordered()
+        #else
+        self
+        #endif
+    }
+
+    /// A control a Mac draws with its words in its tint, whatever the words are given: a bordered button, a form's
+    /// pop-up picker. The amber's words read 4.4:1 on a form's card by day (the orange's, 1.7:1), so there the tint is
+    /// the words' own colour, `Design.onAccentTint`; the bezel the Mac lays under them is a twentieth of it, near the
+    /// paper. iOS keeps the app's tint.
+    func macInk() -> some View {
+        #if os(macOS)
+        tint(Design.onAccentTint)
+        #else
+        self
+        #endif
+    }
+
     /// Headline set like a magazine deck: serif, large, tight.
     func deck() -> some View { font(.system(.title2, design: .serif, weight: .semibold)) }
     /// The biggest line on a page.
@@ -191,6 +238,73 @@ extension View {
     /// keeps its own margins inside).
     func bleedRow() -> some View {
         listRowInsets(EdgeInsets(top: 0, leading: -Design.listPadding, bottom: 0, trailing: -Design.listPadding))
+    }
+}
+
+/// A button's words in `ink` while it shows the accent: a prominent button's fill, whose words iOS and a Mac's toolbar
+/// set white whatever the fill (a Mac's page sets dark words on a light fill by itself), or a bordered button's tint,
+/// whose words the system sets in the tint itself. A disabled button, and on a Mac a button in a window that is not
+/// key, is drawn grey by the system with words of its own, and keeps them: ink set there all but vanished on the grey
+/// at night.
+private struct OnAccent: ViewModifier {
+    let ink: Color
+    @Environment(\.isEnabled) private var isEnabled
+    #if os(macOS)
+    @Environment(\.controlActiveState) private var window
+    private var filled: Bool { isEnabled && window == .key }
+    #else
+    private var filled: Bool { isEnabled }
+    #endif
+
+    func body(content: Content) -> some View {
+        if filled { content.foregroundStyle(ink) } else { content }
+    }
+}
+
+/// Quiet or accent words in a row that can be selected: their own style, and the selection's on a row the system
+/// highlights (`backgroundProminence` increased), as Finder's and Mail's columns turn white there. The secondary style
+/// is white at about 70% on a selected row, 4.3:1 on a Mac table's selection by day and 2.2:1 on the orange at night;
+/// the amber's words all but vanished on it.
+struct OnSelection<Base: ShapeStyle>: ShapeStyle {
+    let base: Base
+    func resolve(in environment: EnvironmentValues) -> some ShapeStyle {
+        environment.backgroundProminence == .increased ? AnyShapeStyle(.primary) : AnyShapeStyle(base)
+    }
+}
+
+extension ShapeStyle where Self == OnSelection<HierarchicalShapeStyle> {
+    static var rowSecondary: Self { OnSelection(base: .secondary) }
+    static var rowTertiary: Self { OnSelection(base: .tertiary) }
+}
+
+extension ShapeStyle where Self == OnSelection<Color> {
+    /// `Design.accentInk`'s words in a row (a document that failed).
+    static var rowAccent: Self { OnSelection(base: Design.accentInk) }
+}
+
+/// A row's own swipe action on the accent (Done, Confirm), as a prominent button is: on iOS the orange with its glyph in
+/// `Design.onAccent`, by day and at night. iOS draws a swipe action as a circle of its tint with the glyph on it, white
+/// whatever the tint, and takes no foreground style from the button (white on the orange read at 1.9:1 at night); a
+/// symbol in palette mode keeps the colour it is given. A Mac sets the action's words in white itself, so there the
+/// fill is `Design.accentDeep`.
+struct AccentSwipe: View {
+    let title: String
+    let systemImage: String
+    let action: () -> Void
+
+    init(_ title: String, systemImage: String, action: @escaping () -> Void) {
+        self.title = title; self.systemImage = systemImage; self.action = action
+    }
+
+    var body: some View {
+        #if os(iOS)
+        Button(action: action) {
+            Label { Text(title) } icon: { Image(systemName: systemImage).symbolRenderingMode(.palette).foregroundStyle(Design.onAccent) }
+        }
+        .tint(Design.accent)
+        #else
+        Button(title, systemImage: systemImage, action: action).tint(Design.accentDeep)
+        #endif
     }
 }
 

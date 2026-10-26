@@ -385,8 +385,8 @@ struct HorizonStripView: View {
             .overlay {
                 if data.items.isEmpty {
                     ScrollView {
-                        EditorialEmpty(title: "Nothing on the horizon.", deck: "Add a syllabus or a schedule and the term appears here as one strip: its weeks, and its days when you look closer.") {
-                            ImportMenu().buttonStyle(.borderedProminent)
+                        EditorialEmpty(title: "Nothing on the horizon.", deck: "Add a syllabus or a schedule, and its term appears here.") {
+                            ImportMenu().prominent()
                         }
                         .padding(.horizontal, 20)
                     }
@@ -892,18 +892,13 @@ private struct Stretch<Content: View>: View {
 }
 
 /// The ink for a count on a cell of the accent at `heat`: black or white, whichever stands out more from the cell as
-/// the screen shows it (the accent laid over the paper, mixed as the screen mixes, in its gamma). The two meet at a
-/// luminance of 0.18, so either way it is at least 4.6:1 (WCAG AA for small text); a heat threshold missed that on
-/// the dark paper, where the same heat is darker.
+/// the screen shows it, the accent laid over the paper (`Strip.countInk`, which the Week Ahead widget takes too).
 @MainActor private func countInk(heat: Double, in environment: EnvironmentValues) -> Color {
     let accent = Design.accent.resolve(in: environment), paper = Design.paper.resolve(in: environment)
-    let a = Float(heat) * accent.opacity
-    func linear(_ over: Float, _ under: Float) -> Float {
-        let c = min(max(a * over + (1 - a) * under, 0), 1)
-        return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
-    }
-    let luminance = 0.2126 * linear(accent.red, paper.red) + 0.7152 * linear(accent.green, paper.green) + 0.0722 * linear(accent.blue, paper.blue)
-    return luminance > 0.18 ? .black.opacity(luminance > 0.4 ? 0.8 : 1) : .white
+    let cell = Strip.mix((Double(accent.red), Double(accent.green), Double(accent.blue)), at: heat * Double(accent.opacity),
+                         over: (Double(paper.red), Double(paper.green), Double(paper.blue)))
+    let ink = Strip.countInk(cell: Strip.luminance(cell))
+    return ink.dark ? .black.opacity(ink.opacity) : .white
 }
 
 /// The semester in one canvas the width of the screen: a cell per week per band, as deep as its load, its count
@@ -1342,7 +1337,7 @@ private struct StripHeader: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(kicker("Term")).font(.caption).textCase(.uppercase).kerning(1).foregroundStyle(.secondary).lineLimit(1)   // the subject, at either level: not the range's name under the other range's tab
                     Text(summary).deck().lineLimit(deckLines)
-                    Text(level == .weeks ? "Tap a week to look closer." : "Tap a day to read it. Pinch for the semester.").font(.subheadline).foregroundStyle(.secondary).lineLimit(noteLines)
+                    Text(level == .weeks ? "Tap a week to look closer." : "Pinch for the semester.").font(.subheadline).foregroundStyle(.secondary).lineLimit(noteLines)   // a day's bar is a button, as the week's tap taught
                         .contentTransition(.opacity)
                 }
                 .transition(.fadeThrough)

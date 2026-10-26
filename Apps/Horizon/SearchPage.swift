@@ -191,7 +191,7 @@ struct SearchPage: View {
             HStack(spacing: 8) {
                 ForEach(ordered) { course in
                     Button { open(.course(course.id)) } label: { Text(course.displayName).lineLimit(1) }
-                        .buttonStyle(.bordered).buttonBorderShape(.capsule).tint(Design.accentInk)
+                        .bordered().buttonBorderShape(.capsule)
                         .appEntityIdentifier(EntityIdentifier(for: CourseEntity.self, identifier: course.id))
                 }
             }

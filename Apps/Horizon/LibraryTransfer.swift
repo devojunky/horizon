@@ -103,9 +103,9 @@ struct LibrarySettingsSection: View {
                     #endif
                 }
                 #if os(macOS)
-                Button("Quit Horizon") { NSApp.terminate(nil) }
+                Button("Quit Horizon") { NSApp.terminate(nil) }.bordered()
                 #endif
-                Button("Cancel Import", role: .cancel) { model.cancelImport() }
+                Button("Cancel Import", role: .cancel) { model.cancelImport() }.macBordered()
             } else {
                 Button {
                     exporting = true
@@ -116,6 +116,7 @@ struct LibrarySettingsSection: View {
                 } label: {
                     if exporting { Label("Exporting…", systemImage: "square.and.arrow.up") } else { Label("Export Library…", systemImage: "square.and.arrow.up") }
                 }
+                .macBordered()
                 .disabled(exporting)
                 // Each presentation hangs on its own row: on a Form's section they never present.
                 .fileMover(isPresented: Binding(get: { exported != nil }, set: { if !$0 { exported = nil } }), file: exported) { result in
@@ -124,6 +125,7 @@ struct LibrarySettingsSection: View {
                     exported = nil
                 }
                 Button("Import Library…", systemImage: "square.and.arrow.down") { choosingImport = true }
+                    .macBordered()
                     .fileImporter(isPresented: $choosingImport, allowedContentTypes: [.horizonLibrary]) { result in
                         switch result {
                         case .success(let file):
@@ -137,7 +139,7 @@ struct LibrarySettingsSection: View {
                         Button("Replace Library", role: .destructive) { model.pendingImport = pending; candidate = nil }
                         Button("Cancel", role: .cancel) { candidate = nil; model.cancelImport() }
                     } message: { pending in
-                        Text("The library exported from \(pending.deviceName) on \(pending.exportedAt.formatted(date: .abbreviated, time: .shortened)) (\(pending.courses) courses, \(pending.items) items, \(pending.documents) documents) replaces everything Horizon has on this device when it next opens. This cannot be undone.")
+                        Text("The library exported from \(pending.deviceName) on \(pending.exportedAt.formatted(date: .abbreviated, time: .shortened)) (\(pending.courses) courses, \(pending.items) items, \(pending.documents) documents) replaces everything Horizon has on this \(AppModel.deviceKind) when it next opens. This can't be undone.")
                     }
             }
             if let imported = model.importedLibrary {
@@ -149,9 +151,9 @@ struct LibrarySettingsSection: View {
             Kicker("Library")
         } footer: {
             #if os(iOS)
-            Text("One file with your courses, items, documents and settings, and what Horizon knows about its reminders, so another install of Horizon picks up where this one is. Save it outside Horizon (iCloud Drive, or On My iPhone): Horizon's own folder goes with the app. The Claude key is not in it; enter it again after importing.")
+            Text("Includes your documents and settings, not your Claude key. Save it outside Horizon's own folder, which goes with the app.")
             #else
-            Text("One file with your courses, items, documents and settings, and what Horizon knows about its reminders, so another install of Horizon picks up where this one is. The Claude key is not in it; enter it again after importing.")
+            Text("Includes your documents and settings, not your Claude key.")
             #endif
         }
         .onAppear { model.loadPendingImport() }

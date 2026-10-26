@@ -47,8 +47,8 @@ struct IntakeStatus: View {
     var readFailure: String? {
         let failed = documents.filter { $0.status == .failed }
         guard let first = failed.first else { return nil }
-        guard failed.count == 1 else { return "\(failed.count) documents could not be read. See them in Documents." }
-        return "Could not read \(first.displayName): \(first.failure ?? "")" + (first.retryHelps ? " Retry it from Documents." : "")
+        guard failed.count == 1 else { return "\(failed.count) documents could not be read." }   // the row opens Documents, chevron and all
+        return "Could not read \(first.displayName): \(first.failure ?? "")"
     }
 
     /// Documents Claude could not read yet, in one line, with the way out: try again, or let the device read one.
@@ -60,13 +60,7 @@ struct IntakeStatus: View {
         document.failure.map(IngestCoordinator.isKeyOrModelProblem) ?? false   // the drain's own test: a retired model is the key's page's too
     }
 
-    #if os(macOS)
-    private static let device = "Mac"   // what the Mac's own pages call it (Documents: "Read on This Mac")
-    private static let deviceInText = "Mac"   // a proper noun mid-sentence keeps its capital
-    #else
-    private static let device = "Device"
-    private static let deviceInText = "device"
-    #endif
+    private static let device = AppModel.deviceKind   // "Read on This iPhone", as the Mac's own pages say "Read on This Mac"; a proper noun keeps its capital mid-sentence
 
     /// What stands on the page until it is dealt with, one at a time, in this order.
     private enum Notice: Hashable { case waiting, remindersOff, listGone, failed }
@@ -103,14 +97,14 @@ struct IntakeStatus: View {
             }
             .listRowSeparator(.hidden)
             .onPaper()
-            .confirmationDialog("Read on this \(Self.deviceInText) instead?", isPresented: Binding(get: { confirmDevice != nil }, set: { if !$0 { confirmDevice = nil } }), titleVisibility: .visible) {
+            .confirmationDialog("Read on this \(Self.device) instead?", isPresented: Binding(get: { confirmDevice != nil }, set: { if !$0 { confirmDevice = nil } }), titleVisibility: .visible) {
                 Button(waitingForClaude.count == 1 ? "Read on This \(Self.device)" : "Read All on This \(Self.device)") {
                     let ids = waitingForClaude.map(\.id)
                     Task { for id in ids { await model.readOnDevice(documentID: id) } }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("The device model is less sure of tables and pictures than Claude, and it takes minutes on a long document. Nothing is sent to Anthropic.")
+                Text("Your \(Self.device) is less sure of tables and pictures than Claude, and takes minutes on a long document.")
             }
         }
     }
@@ -125,11 +119,13 @@ struct IntakeStatus: View {
                           systemImage: "cloud").foregroundStyle(.secondary)
                     HStack(spacing: 10) {
                         if keyProblem(first) {
-                            Button("Check Key…", action: openSettings).buttonStyle(.bordered).controlSize(.small).reachable()
+                            Button("Check Key…", action: openSettings).bordered().controlSize(.small).reachable()
                         } else {
-                            Button("Try Again") { Task { await model.drainAndSync() } }.buttonStyle(.bordered).controlSize(.small).reachable()
+                            Button("Try Again") { Task { await model.drainAndSync() } }.bordered().controlSize(.small).reachable()
                         }
-                        Button(count == 1 ? "Read on This \(Self.device)…" : "Read Them on This \(Self.device)…") { confirmDevice = first }.buttonStyle(.bordered).controlSize(.small).reachable()
+                        if model.deviceModel.canRead {   // no offer that cannot work: Apple Intelligence not supported here, or turned off
+                            Button(count == 1 ? "Read on This \(Self.device)…" : "Read Them on This \(Self.device)…") { confirmDevice = first }.bordered().controlSize(.small).reachable()
+                        }
                     }
                 }
             }
@@ -137,7 +133,7 @@ struct IntakeStatus: View {
             VStack(alignment: .leading, spacing: 8) {
                 Label("Reminders access is off, so deadlines stay in Horizon and never reach your lists.", systemImage: "exclamationmark.triangle").foregroundStyle(Design.accentInk)
                 #if os(iOS)
-                Button("Open Settings") { if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) } }.buttonStyle(.bordered).controlSize(.small).reachable()
+                Button("Open Settings") { if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) } }.bordered().controlSize(.small).reachable()
                 #else
                 Button("Open System Settings") { if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders") { openURL(url) } }.controlSize(.small)
                 #endif
@@ -145,7 +141,7 @@ struct IntakeStatus: View {
         case .listGone:
             VStack(alignment: .leading, spacing: 8) {
                 Label("The Horizon list is gone from Reminders, so deadlines stay in Horizon until it is back.", systemImage: "exclamationmark.triangle").foregroundStyle(Design.accentInk)
-                Button("Recreate List") { Task { await model.recreateRemindersList() } }.buttonStyle(.bordered).controlSize(.small).reachable()
+                Button("Recreate List") { Task { await model.recreateRemindersList() } }.bordered().controlSize(.small).reachable()
             }
         case .failed:
             if let failure = readFailure {
@@ -650,8 +646,11 @@ struct DoneMark: View {
         let line: CGFloat = size > 16 ? 1.5 : 1.25
         ZStack {
             if done {
+                // The check is cut out of the disc, so it is whatever the disc lies on: the paper, or a selected row's
+                // highlight. In the paper's colour it vanished on a Mac's selected row by day, where the disc is white.
                 Circle().fill(.primary).frame(width: size, height: size)
-                Image(systemName: "checkmark").font(.system(size: size / 2, weight: .bold)).foregroundStyle(Design.paper)
+                    .overlay { Image(systemName: "checkmark").font(.system(size: size / 2, weight: .bold)).blendMode(.destinationOut) }
+                    .compositingGroup()
             } else if skipped {
                 Circle().strokeBorder(.secondary, style: StrokeStyle(lineWidth: line, dash: [size / 8, size / 8])).frame(width: size, height: size)
             } else {
@@ -679,7 +678,7 @@ extension View {
                            delete: @escaping () -> Void) -> some View {
         self
             .swipeActions(edge: .leading) {
-                Button(done ? "Not Done" : "Done", systemImage: ItemActions.markImage(done: done)) { mark(!done) }.tint(Design.accentInk)
+                AccentSwipe(done ? "Not Done" : "Done", systemImage: ItemActions.markImage(done: done)) { mark(!done) }
                 Button(ItemActions.skipTitle(skipped: skipped), systemImage: ItemActions.skipImage(skipped: skipped)) { skip(!skipped) }.tint(.gray)
             }
             .swipeActions(edge: .trailing) {

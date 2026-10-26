@@ -26,7 +26,7 @@ struct MacCoveragePage: View {
                     .padding(.bottom, 8)
                 if stories.isEmpty, model.reading == nil {
                     EditorialEmpty(title: "Nothing on file.", deck: "Add a syllabus, a schedule, or a screenshot of an assignment list, or drop one on this window. Horizon reads it, writes the deadlines to Reminders, and tells you where it is still blind.") {
-                        ImportMenu().buttonStyle(.borderedProminent)
+                        ImportMenu().prominent()
                     }
                     .frame(maxWidth: 640, alignment: .leading)
                 }

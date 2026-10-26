@@ -46,8 +46,8 @@ struct MacHorizonPage: View {
         Group {
             if data.items.isEmpty {
                 ScrollView {
-                    EditorialEmpty(title: "Nothing on the horizon.", deck: "Add a syllabus or a schedule, or drop one on this window, and the term appears here: every course, every day, how much each one carries.") {
-                        ImportMenu().buttonStyle(.borderedProminent)
+                    EditorialEmpty(title: "Nothing on the horizon.", deck: "Add a syllabus or a schedule, or drop one on this window, and its term appears here.") {
+                        ImportMenu().prominent()
                     }
                     .padding(.horizontal, Design.margin)
                 }
@@ -110,6 +110,7 @@ struct MacHorizonPage: View {
                 Kicker(ChartHeader.name(of: chosen, calendar: calendar, style: .short))
                 Spacer()
                 Button("Show Coming Up") { self.chosen = nil }
+                    .bordered()
                     .controlSize(.small)
                     .keyboardShortcut(.cancelAction)
                     .help("List what is coming up instead (Escape)")
@@ -214,25 +215,25 @@ struct ItemTable: View {
                 .width(24)
                 TableColumn("Item", value: \.title) { row in
                     Text(row.title).fontWeight(.medium).strikethrough(row.done, color: .secondary).lineLimit(1).truncationMode(.tail)
-                        .foregroundStyle(row.skipped ? .secondary : .primary)   // set aside: quieter, not crossed off
+                        .foregroundStyle(row.skipped ? AnyShapeStyle(.rowSecondary) : AnyShapeStyle(.primary))   // set aside: quieter, not crossed off
                         .help(row.skipped ? "\(row.title) (skipped)" : row.title)
                 }
                 .width(min: compact ? 90 : 120, ideal: compact ? 110 : 160)
                 if showsCourse {
-                    TableColumn("Course", value: \.course) { row in Text(row.course).foregroundStyle(.secondary).lineLimit(1).help(row.course) }
+                    TableColumn("Course", value: \.course) { row in Text(row.course).foregroundStyle(.rowSecondary).lineLimit(1).help(row.course) }
                         .width(min: 80, ideal: 110)
                 }
                 TableColumn("Due", value: \.due) { row in
                     let due = Design.due(row.hasDue ? row.due : nil, hasTime: row.dueHasTime)
-                    Text(due).monospacedDigit().lineLimit(1).foregroundStyle(row.hasDue ? .primary : .secondary).help(due)
+                    Text(due).monospacedDigit().lineLimit(1).foregroundStyle(row.hasDue ? AnyShapeStyle(.primary) : AnyShapeStyle(.rowSecondary)).help(due)
                 }
                 .width(min: 80, ideal: compact ? 100 : 130)
                 TableColumn("Counts Toward", value: \.component) { row in
-                    Text(row.component.isEmpty ? "—" : row.component).foregroundStyle(row.component.isEmpty ? .tertiary : .secondary).lineLimit(1).help(row.component)
+                    Text(row.component.isEmpty ? "—" : row.component).foregroundStyle(row.component.isEmpty ? .rowTertiary : .rowSecondary).lineLimit(1).help(row.component)
                 }
                 .width(min: 50, ideal: compact ? 70 : 90)
                 TableColumn("Weight", value: \.weight) { row in
-                    Group { if row.weight >= 0 { Design.points(row.weight).fontWeight(.semibold) } else { Text("—").foregroundStyle(.tertiary) } }
+                    Group { if row.weight >= 0 { Design.points(row.weight).fontWeight(.semibold) } else { Text("—").foregroundStyle(.rowTertiary) } }
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
                 .width(min: 46, ideal: 50, max: 80)

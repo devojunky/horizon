@@ -45,6 +45,7 @@ struct PlanBlockEditor: View {
                             Text("Something else").tag("")
                             ForEach(candidates, id: \.title) { candidate in Text(Self.label(candidate)).tag(candidate.title) }
                         }
+                        .macInk()
                     }
                     Picker("Kind", selection: $kind) {
                         Text("Work").tag(PlanBlock.Kind.work)
@@ -53,6 +54,7 @@ struct PlanBlockEditor: View {
                         Text("Rest").tag(PlanBlock.Kind.rest)
                         if block?.kind == .fixed { Text("Calendar").tag(PlanBlock.Kind.fixed) }
                     }
+                    .macInk()
                 }
                 Section {
                     DatePicker("Starts", selection: $start, displayedComponents: .hourAndMinute)
@@ -68,12 +70,12 @@ struct PlanBlockEditor: View {
                 }
                 if let block {
                     Section {
-                        Button(block.isDone ? "Mark Not Done" : "Mark Done", systemImage: block.isDone ? "arrow.uturn.backward" : "checkmark") { model.markBlock(block.id, done: !block.isDone); dismiss() }
+                        Button(block.isDone ? "Mark Not Done" : "Mark Done", systemImage: block.isDone ? "arrow.uturn.backward" : "checkmark") { model.markBlock(block.id, done: !block.isDone); dismiss() }.macBordered()
                         if block.isSkipped || Date() < block.end || block.asksWhenOver {   // a meal or an event that is over was not "not finished"
                             Button(block.isSkipped ? (block.wasLeftUnfinished ? "Undo Not Finished" : "Undo Skip") : Date() >= block.end ? "Not Finished" : "Skip Block",
-                                   systemImage: block.isSkipped ? "arrow.uturn.backward" : "forward.end") { model.skipBlock(block.id, skipped: !block.isSkipped); dismiss() }
+                                   systemImage: block.isSkipped ? "arrow.uturn.backward" : "forward.end") { model.skipBlock(block.id, skipped: !block.isSkipped); dismiss() }.macBordered()
                         }
-                        Button("Delete Block", role: .destructive) { model.deleteBlock(block.id); dismiss() }
+                        Button("Delete Block", role: .destructive) { model.deleteBlock(block.id); dismiss() }.macBordered()
                     }
                 }
             }
@@ -148,17 +150,17 @@ struct PlannerNotesEditor: View {
                     Text("What the planner should respect")
                 } footer: {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Standing rules or today's, in your words. The planner reads this every time you plan; calendar events stay fixed either way. Takes effect the next time you plan.")
+                        Text("Standing rules or today's, in your words. It takes effect the next time you plan; calendar events stay fixed either way.")
                         if text.count > limit - 300 { Text("\(text.count) of \(limit) characters").monospacedDigit() }
                     }
                 }
                 Section {
-                    Picker("Starts", selection: $hours.start) { ForEach(PlanHours.starts, id: \.self) { Text(PlanHours.label($0)).tag($0) } }
-                    Picker("Ends", selection: $hours.end) { ForEach(PlanHours.ends, id: \.self) { Text(PlanHours.label($0)).tag($0) } }
+                    Picker("Starts", selection: $hours.start) { ForEach(PlanHours.starts, id: \.self) { Text(PlanHours.label($0)).tag($0) } }.macInk()
+                    Picker("Ends", selection: $hours.end) { ForEach(PlanHours.ends, id: \.self) { Text(PlanHours.label($0)).tag($0) } }.macInk()
                 } header: {
                     Text("Your day")
                 } footer: {
-                    Text("The hours the planner fills on a usual day, from the moment you plan. An end after midnight is that night. For one late night, change Tonight Until on Now instead.")
+                    Text("For one late night, change Tonight Until on Now instead.")
                 }
             }
             .paper()

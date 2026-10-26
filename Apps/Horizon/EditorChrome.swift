@@ -49,8 +49,8 @@ struct EditorChrome: ViewModifier {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 HStack(spacing: 12) {
                     Spacer()
-                    cancelButton().keyboardShortcut(.cancelAction)
-                    Button(confirmTitle, action: confirm).keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent).disabled(confirmDisabled)
+                    cancelButton().keyboardShortcut(.cancelAction).bordered()
+                    Button(confirmTitle, action: confirm).keyboardShortcut(.defaultAction).prominent().disabled(confirmDisabled)
                 }
                 .padding(.horizontal, 20).padding(.vertical, 14)
                 .background(.bar)

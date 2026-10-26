@@ -34,7 +34,7 @@ struct ReviewView: View {
                 }
                 .padding(.vertical, 4)
                 .onPaper()
-                .swipeActions(edge: .leading) { Button("Confirm", systemImage: "checkmark") { Task { await model.confirm(item.id) } }.tint(Design.accentInk) }
+                .swipeActions(edge: .leading) { AccentSwipe("Confirm", systemImage: "checkmark") { Task { await model.confirm(item.id) } } }
                 .swipeActions(edge: .trailing) {
                     if item.otherDate == nil { Button("Discard", systemImage: "trash", role: .destructive) { Task { await model.discard(item.id) } } }
                 }
@@ -50,11 +50,11 @@ struct ReviewView: View {
     /// Confirm, the other date when a document changed it, Edit, and Discard (for an item that is not a change: there,
     /// discarding would delete the item itself).
     @ViewBuilder private func actions(_ item: Obligation, inRow: Bool) -> some View {
-        Button("Confirm", systemImage: "checkmark") { Task { await model.confirm(item.id) } }.buttonStyle(.bordered).tint(Design.accentInk).reachable()
+        Button("Confirm", systemImage: "checkmark") { Task { await model.confirm(item.id) } }.bordered().reachable()
         if let earlier = item.otherDate {
-            Button("Use \(earlier.formatted(.dateTime.month(.abbreviated).day()))") { Task { await model.confirm(item.id, edits: ObligationEdits(due: .some(earlier))) } }.buttonStyle(.bordered).reachable()
+            Button("Use \(earlier.formatted(.dateTime.month(.abbreviated).day()))") { Task { await model.confirm(item.id, edits: ObligationEdits(due: .some(earlier))) } }.bordered().reachable()
         }
-        Button("Edit") { editing = item }.buttonStyle(.bordered).reachable()
+        Button("Edit") { editing = item }.bordered().reachable()
         if inRow { Spacer() }
         if item.otherDate == nil {
             Button("Discard", role: .destructive) { Task { await model.discard(item.id) } }.buttonStyle(.borderless).reachable()

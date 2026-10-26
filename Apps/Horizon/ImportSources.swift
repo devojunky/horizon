@@ -24,6 +24,7 @@ struct ImportMenu: View {
     var body: some View {
         Menu {
             ImportSourceButtons(files: $files, photos: $photos, scanning: $scanning)
+                .tint(Design.accentInk)   // the items keep the app's tint: a prominent() menu's orange is its button's, and its icons on the menu read at 1.7:1
         } label: {
             Label("Add Document", systemImage: "doc.badge.plus")
         }

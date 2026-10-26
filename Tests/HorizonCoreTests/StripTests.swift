@@ -90,6 +90,26 @@ struct StripTests {
         #expect(Strip.rowHeight(rows: 0, available: 246) == 96)
         #expect(!Strip.showsTotal(bands: 1) && Strip.showsTotal(bands: 2))   // one course is its own total
     }
+
+    @Test func aCountOnTheAccentReadsAtEveryHeatOnEitherPaper() {
+        // Design.swift's accent and paper, and the Week Ahead widget's ground under a day: the paper veiled 6% in the
+        // primary colour.
+        let accent: Strip.RGB = (1.0, 0.68, 0.26), light: Strip.RGB = (0.976, 0.965, 0.941), dark: Strip.RGB = (0.082, 0.078, 0.071)
+        func contrast(_ a: Strip.RGB, _ b: Strip.RGB) -> Double {
+            let (x, y) = (Strip.luminance(a), Strip.luminance(b))
+            return (max(x, y) + 0.05) / (min(x, y) + 0.05)
+        }
+        for ground in [light, dark, Strip.mix((0, 0, 0), at: 0.06, over: light), Strip.mix((1, 1, 1), at: 0.06, over: dark)] {
+            for step in 0...80 {
+                let heat = 0.2 + Double(step) / 100
+                let cell = Strip.mix(accent, at: heat, over: ground)
+                let ink = Strip.countInk(cell: Strip.luminance(cell))
+                #expect(contrast(Strip.mix(ink.dark ? (0, 0, 0) : (1, 1, 1), at: ink.opacity, over: cell), cell) >= 4.5, "heat \(heat)")
+            }
+        }
+        #expect(Strip.countInk(cell: Strip.luminance(Strip.mix(accent, at: 1, over: dark))).dark)       // a heavy day at night: black on the orange, never white (1.9:1)
+        #expect(!Strip.countInk(cell: Strip.luminance(Strip.mix(accent, at: 0.2, over: dark))).dark)    // a light one: white
+    }
 }
 
 extension StripTests {

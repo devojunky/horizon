@@ -132,6 +132,35 @@ public enum Strip {
     /// Colour intensity in 0.2...1 for a cell or a mark: the accent at this opacity. Load is colour, not size.
     public static func heat(points: Double?) -> Double { 0.2 + 0.8 * mass(points: points) }
 
+    /// An sRGB colour, each component in 0...1.
+    public typealias RGB = (red: Double, green: Double, blue: Double)
+
+    /// `color` laid at `opacity` over `ground`, mixed as the screen mixes them: in its gamma, not in linear light.
+    public static func mix(_ color: RGB, at opacity: Double, over ground: RGB) -> RGB {
+        func channel(_ over: Double, _ under: Double) -> Double { min(max(opacity * over + (1 - opacity) * under, 0), 1) }
+        return (channel(color.red, ground.red), channel(color.green, ground.green), channel(color.blue, ground.blue))
+    }
+
+    /// A colour's relative luminance, as WCAG reckons contrast from it.
+    public static func luminance(_ color: RGB) -> Double {
+        func linear(_ c: Double) -> Double { c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4) }
+        return 0.2126 * linear(color.red) + 0.7152 * linear(color.green) + 0.0722 * linear(color.blue)
+    }
+
+    /// What a count on a cell of the accent is set in: black (`dark`, at `opacity`) or white, whichever stands out
+    /// more from the cell, given the cell's luminance as the screen shows it (`luminance(mix(…))`). The two meet at
+    /// 0.18, so either way the count reads at 4.6:1 or better (WCAG AA for small text); on a pale cell black is
+    /// softened to 80%. A threshold on the heat alone missed that on the dark paper, where the same heat is darker.
+    /// The strip's cells and the Week Ahead widget's days both take it.
+    public struct CountInk: Sendable, Equatable {
+        public var dark: Bool
+        public var opacity: Double
+    }
+
+    public static func countInk(cell luminance: Double) -> CountInk {
+        luminance > 0.18 ? CountInk(dark: true, opacity: luminance > 0.4 ? 0.8 : 1) : CountInk(dark: false, opacity: 1)
+    }
+
     /// One week or one day of one band: its items (heaviest first) and the points at stake that are not done yet.
     public struct Cell: Identifiable, Sendable, Equatable {
         public var id: Date { period.start }

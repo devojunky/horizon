@@ -24,6 +24,8 @@ final class ShareViewController: UIViewController {
 struct ShareView: View {
     /// Same accent as the app (Design.accent); the extension has no access to the app target.
     static let accent = Color(red: 1.0, green: 0.68, blue: 0.26)
+    /// Words on it (the app's `Design.onAccent`): the paper's dark face, about 10:1 on the orange; white read at 1.9:1.
+    static let onAccent = Color(red: 0.082, green: 0.078, blue: 0.071)
     let context: NSExtensionContext?
     @State private var message = "Adding to Horizon…"
     @State private var done = false
@@ -32,7 +34,7 @@ struct ShareView: View {
         VStack(spacing: 16) {
             Image(systemName: done ? "checkmark.circle" : "doc.text.magnifyingglass").font(.system(size: 40)).foregroundStyle(.tint)
             Text(message).multilineTextAlignment(.center)
-            if done { Button("Done") { context?.completeRequest(returningItems: nil) }.buttonStyle(.borderedProminent) }
+            if done { Button("Done") { context?.completeRequest(returningItems: nil) }.buttonStyle(.borderedProminent).foregroundStyle(Self.onAccent) }   // as the app's prominent(): the orange (this sheet's tint) with dark words
         }
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

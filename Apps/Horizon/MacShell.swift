@@ -196,9 +196,9 @@ struct MacRootView: View {
                 .toolbar {
                     if shownCourse != nil { ToolbarSpacer(.flexible, placement: .primaryAction) }   // a course's page keeps its title off the toolbar: this holds the buttons at the trailing edge, where every other page has them
                     ToolbarItemGroup(placement: .primaryAction) {   // both are File menu commands as well
-                        ImportMenu(courseID: shownCourse?.id).help(shownCourse.map { "Add a document to \($0.displayName) (⌘O)" } ?? "Add a document to read (⌘O)")
+                        ImportMenu(courseID: shownCourse?.id).help(shownCourse.map { "Read a document into \($0.displayName) (⌘O)" } ?? "Read a syllabus, a schedule or a screenshot (⌘O)")
                         Button { Task { await model.drainAndSync() } } label: { Label("Sync with Reminders", systemImage: "arrow.triangle.2.circlepath") }
-                            .help("Read what is queued and sync with Reminders (⌘R)")
+                            .help("Read anything waiting, then update Reminders (⌘R)")
                     }
                 }
         }
@@ -228,7 +228,7 @@ struct MacRootView: View {
         .confirmationDialog("Replace the plan you edited?", isPresented: $nav.confirmingReplan, titleVisibility: .visible) {
             Button("Plan Again", role: .destructive) { model.planAgain() }
         } message: {
-            Text("Your changes to today's blocks are lost.")
+            if let end = model.pendingTonightEnd { Text("To plan until \(PlanHours.label(end)) tonight.") }
         }
         .onChange(of: nav.confirmingReplan) { _, asking in if !asking { model.pendingTonightEnd = nil } }   // not planned again: tonight's end stays as it was
         .onChange(of: courses.map(\.id)) { _, ids in   // the course on show was deleted (here, or on another device): back to Coverage
@@ -439,15 +439,15 @@ struct DocumentsTable: View {
         Group {
             if documents.isEmpty {
                 ScrollView {
-                    EditorialEmpty(title: "No documents yet.", deck: "Add a syllabus, a schedule or a screenshot, or drop one on this window. Every document Horizon reads is listed here, with what became of it.") {
-                        ImportMenu().buttonStyle(.borderedProminent)
+                    EditorialEmpty(title: "No documents yet.", deck: "Add a syllabus, a schedule or a screenshot, or drop one on this window.") {
+                        ImportMenu().prominent()
                     }
                     .padding(.horizontal, Design.margin)
                 }
                 .keyboardStaysInSidebar()
             } else {
                 VStack(alignment: .leading, spacing: 0) {
-                    PageLine("Everything Horizon has been given to read. Select a document and press Space to look at it.")
+                    PageLine("Select a document and press Space to look at it.")
                     table
                 }
             }
@@ -460,7 +460,7 @@ struct DocumentsTable: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The Mac's own model is less sure of tables and pictures than Claude, and it takes minutes on a long document. Nothing is sent to Anthropic.")
+            Text("Your Mac is less sure of tables and pictures than Claude, and takes minutes on a long document. Nothing is sent to Anthropic.")
         }
         .quickLookPreview($preview)
         .navigationTitle("Documents")
@@ -473,7 +473,7 @@ struct DocumentsTable: View {
             TableColumn("Document", value: \.displayName) { doc in   // two lines on every row, so the rows keep one height
                 VStack(alignment: .leading, spacing: 2) {
                     Text(doc.displayName).fontWeight(.medium).lineLimit(1)
-                    Text(doc.displayName != doc.filename ? doc.filename : Self.kind(doc)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)   // the file it came as
+                    Text(doc.displayName != doc.filename ? doc.filename : Self.kind(doc)).font(.caption).foregroundStyle(.rowSecondary).lineLimit(1).truncationMode(.middle)   // the file it came as
                 }
                 .padding(.vertical, 3)
                 .help(doc.displayName)
@@ -481,10 +481,10 @@ struct DocumentsTable: View {
             .width(min: 140, ideal: 190)
             TableColumn("Status", value: \.statusLabel) { doc in
                 HStack(spacing: 4) {
-                    Text(doc.statusLabel).foregroundStyle(doc.status == .failed ? Design.accentInk : .primary)
+                    Text(doc.statusLabel).foregroundStyle(doc.status == .failed ? AnyShapeStyle(.rowAccent) : AnyShapeStyle(.primary))
                         .help(doc.failure ?? "")   // why it could not be read, on hover
                     if !doc.warnings.isEmpty {   // what the read had to say, on hover
-                        Text(doc.warnings.count == 1 ? "· 1 note" : "· \(doc.warnings.count) notes").foregroundStyle(.secondary)
+                        Text(doc.warnings.count == 1 ? "· 1 note" : "· \(doc.warnings.count) notes").foregroundStyle(.rowSecondary)
                             .help(doc.warnings.joined(separator: "\n"))
                     }
                 }
@@ -498,15 +498,15 @@ struct DocumentsTable: View {
                         ForEach(courses) { course in Button(course.displayName) { Task { await model.assignDocument(doc.id, to: course.id) } } }
                     }
                     .fixedSize()
-                } else { Text("—").foregroundStyle(.tertiary) }
+                } else { Text("—").foregroundStyle(.rowTertiary) }
             }
             .width(min: 90, ideal: 110)
             TableColumn("Added", value: \.queuedAt) { doc in Text(Self.added(doc.queuedAt)).monospacedDigit().lineLimit(1) }.width(min: 90, ideal: 110)
             TableColumn("Read") { doc in
                 if doc.status == .parsed {
-                    Text("\(doc.inputTokens) in · \(doc.outputTokens) out · \(doc.durationMs / 1000) s · \(Self.routeName(doc.route))").monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+                    Text("\(doc.inputTokens) in · \(doc.outputTokens) out · \(doc.durationMs / 1000) s · \(Self.routeName(doc.route))").monospacedDigit().foregroundStyle(.rowSecondary).lineLimit(1)
                         .help("\(doc.inputTokens) tokens in, \(doc.outputTokens) out, \(doc.durationMs / 1000) seconds, read \(Self.routeName(doc.route) == "Claude" ? "by Claude" : Self.routeName(doc.route))")
-                } else { Text("—").foregroundStyle(.tertiary) }
+                } else { Text("—").foregroundStyle(.rowTertiary) }
             }
             .width(min: 80, ideal: 100)
         }
@@ -522,7 +522,7 @@ struct DocumentsTable: View {
             if docs.contains(where: Self.canRetry) {
                 Button("Retry") { retry(docs) }
             }
-            if docs.contains(where: Self.waitsForClaude) {
+            if model.deviceModel.canRead, docs.contains(where: Self.waitsForClaude) {   // no offer that cannot work: Apple Intelligence not supported here, or turned off
                 Button("Read on This Mac Instead…") { confirmDevice = docs.filter(Self.waitsForClaude) }
             }
             if docs.count == 1, let doc = docs.first, doc.course == nil, doc.status == .parsed, !courses.isEmpty {
@@ -553,7 +553,7 @@ struct DocumentsTable: View {
             ids: Set(docs.map(\.id)),
             look: one.flatMap { doc in model.hasFile(doc) ? { look(at: doc) } : nil },
             retry: docs.contains(where: Self.canRetry) ? { retry(docs) } : nil,
-            readOnDevice: docs.contains(where: Self.waitsForClaude) ? { confirmDevice = docs.filter(Self.waitsForClaude) } : nil,
+            readOnDevice: model.deviceModel.canRead && docs.contains(where: Self.waitsForClaude) ? { confirmDevice = docs.filter(Self.waitsForClaude) } : nil,
             fileUnder: loose.map { doc in courses.map { course in (name: course.displayName, file: { file(doc.id, under: course.id) }) } } ?? [])
     }
 
@@ -628,13 +628,13 @@ struct RecentlyDeletedTable: View {
         Group {
             if entries.isEmpty {
                 ScrollView {
-                    EditorialEmpty(title: "Nothing deleted lately.", deck: "A course or document you delete waits here for 30 days, and can be put back until then.") { EmptyView() }
+                    EditorialEmpty(title: "Nothing deleted lately.", deck: "A course or document you delete waits here for 30 days.") { EmptyView() }
                         .padding(.horizontal, Design.margin)
                 }
                 .keyboardStaysInSidebar()
             } else {
                 VStack(alignment: .leading, spacing: 0) {
-                    PageLine("Deleted courses and documents wait here for 30 days. Double-click one to put it back.")
+                    PageLine("Kept for 30 days, then removed for good. Double-click one to put it back.")
                     table(entries)
                 }
             }
@@ -663,7 +663,7 @@ struct RecentlyDeletedTable: View {
         Table(entries, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("Name", value: \.name) { entry in Text(entry.name).fontWeight(.medium).lineLimit(1).help(entry.name) }.width(min: 140, ideal: 220)
             TableColumn("Kind", value: \.kindName) { entry in Text(entry.kindName) }.width(min: 70, ideal: 80)
-            TableColumn("Holds", value: \.held) { entry in Text(holds(entry)).foregroundStyle(.secondary).lineLimit(1) }.width(min: 90, ideal: 130)
+            TableColumn("Holds", value: \.held) { entry in Text(holds(entry)).foregroundStyle(.rowSecondary).lineLimit(1) }.width(min: 90, ideal: 130)
             TableColumn("Deleted", value: \.deletedAt) { entry in Text(entry.deletedAt.formatted(.relative(presentation: .named))).lineLimit(1) }.width(min: 90, ideal: 110)
             TableColumn("Gone in", value: \.expiry) { entry in Text(remaining(entry)).monospacedDigit() }.width(min: 60, ideal: 70)
         }
@@ -880,7 +880,7 @@ struct MacSettingsView: View {
                 DeviceSettingsSections()
                 Section {
                     LabeledContent("Folder") { Text(WatchedFolder.url.path(percentEncoded: false)).foregroundStyle(.secondary).textSelection(.enabled) }
-                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([WatchedFolder.url]) }
+                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([WatchedFolder.url]) }.bordered()
                 } header: {
                     Kicker("Inbox")
                 } footer: {

@@ -55,7 +55,7 @@ struct NowView: View {
                             Button { if model.planEdited, model.plan != nil { confirmingReplan = true } else { Task { await model.planToday() } } } label: {
                                 Label(model.plan == nil ? "Plan Today" : "Plan Again", systemImage: "sun.horizon").labelStyle(.titleAndIcon)
                             }
-                            .buttonStyle(.borderedProminent)   // the page's one prominent action, in words
+                            .prominent()   // the page's one prominent action, in words
                             .disabled(model.planning)
                             .help("Plan the rest of today (⇧⌘P)")
                         }
@@ -68,7 +68,7 @@ struct NowView: View {
                     Button("Plan Again", role: .destructive) { model.planAgain() }
                     Button("Cancel", role: .cancel) {}
                 } message: {
-                    Text(model.pendingTonightEnd.map { "Planning again to \(PlanHours.label($0)) tonight loses your changes to today's blocks." } ?? "Your changes to today's blocks are lost.")
+                    if let end = model.pendingTonightEnd { Text("To plan until \(PlanHours.label(end)) tonight.") }   // the title says what goes; this, why it is asked
                 }
                 .onChange(of: confirmingReplan) { _, asking in if !asking { model.pendingTonightEnd = nil } }   // not planned again: tonight's end stays as it was
                 .sheet(item: $editing) { PlanBlockEditor(block: $0) }
@@ -268,8 +268,8 @@ private struct PlanList: View {
                             .listRowSeparator(.hidden)
                     }
                     if stage == .invitation {
-                        EditorialEmpty(title: "Today, planned.", deck: "One plan for the rest of today, around your calendar, with a reason on every block. Tell the planner what to respect, then plan.") {
-                            Button("Plan Today", action: planToday).buttonStyle(.borderedProminent)
+                        EditorialEmpty(title: "Today, planned.", deck: "One plan for the rest of today, around your calendar, with a reason on every block.") {
+                            Button("Plan Today", action: planToday).prominent()
                             if !beside {   // with the column beside the page, it is there
                                 Button("Tell the Planner…", action: tell).buttonStyle(.borderless)   // in a list row: its own tap, in the tint, as on any page
                             }
@@ -294,7 +294,7 @@ private struct PlanList: View {
                         .animation(.spring(duration: 0.5).delay(reduceMotion ? 0 : Double(index) * 0.05), value: revealed)
                         .swipeActions(edge: .leading, allowsFullSwipe: !streaming) {
                             if !streaming {
-                                Button(block.isDone ? "Not Done" : "Done", systemImage: block.isDone ? "arrow.uturn.backward" : "checkmark") { mark(block.id, !block.isDone) }.tint(Design.accentInk)
+                                AccentSwipe(block.isDone ? "Not Done" : "Done", systemImage: block.isDone ? "arrow.uturn.backward" : "checkmark") { mark(block.id, !block.isDone) }
                                 if canSkip(block) { Button(skipTitle(block), systemImage: block.isSkipped ? "arrow.uturn.backward" : "forward.end") { skip(block.id, !block.isSkipped) }.tint(.gray) }
                             }
                         }
@@ -312,7 +312,7 @@ private struct PlanList: View {
                         .accessibilityHint(streaming ? "" : "Opens the editor")
                     }
                     if stage == .timetable, !streaming, blocks.isEmpty, note == nil {   // a note ("The day ended at 10 PM…") already says why, and what to do
-                        Text("Nothing planned. Add a block, or plan again.").foregroundStyle(.secondary).pageRow(top: 14, bottom: 0).listRowSeparator(.hidden)
+                        Text("Nothing planned.").foregroundStyle(.secondary).pageRow(top: 14, bottom: 0).listRowSeparator(.hidden)
                     }
                     foot
                         .id("foot")
@@ -556,6 +556,7 @@ struct TonightUntil: View {
             .pickerStyle(.menu)
             .labelsHidden()
             .fixedSize()
+            .macInk()
         }
         .font(.subheadline)
     }
@@ -624,11 +625,7 @@ struct NowRail: View {
                     Text(model.planInstructions.isEmpty ? "Nothing yet. A shift, practice, a night off: the planner works around what you tell it." : model.planInstructions)
                         .font(.subheadline).foregroundStyle(model.planInstructions.isEmpty ? .secondary : .primary)
                         .lineLimit(10).fixedSize(horizontal: false, vertical: true)
-                    #if os(macOS)
-                    Button("Tell the Planner…", action: tell).controlSize(.small).padding(.top, 2)
-                    #else
-                    Button("Tell the Planner…", action: tell).buttonStyle(.bordered).controlSize(.small).reachable().padding(.top, 2)
-                    #endif
+                    Button("Tell the Planner…", action: tell).bordered().controlSize(.small).reachable().padding(.top, 2)   // a page's other action; 44 points to hit on iOS
                 }
                 RailSection("Due this week") {
                     let due = dueSoon

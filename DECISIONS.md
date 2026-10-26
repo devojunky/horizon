@@ -788,6 +788,142 @@ The owner: a tap on an item went straight to its editor. It should open a page o
   - 191 IngestKit and 140 HorizonCore tests under the new toolchain; iOS, device and Mac builds.
   - Not verified: the haptics (the simulator has none, and the phone dropped off after the Xcode update), Reduce Motion, and the accessibility text sizes. The simulator's iOS 27.0 runtime will not run under Xcode 27.2, and its 27.2 runtime is not installed yet.
 
+## 2026-10-25 · Your iPhone supports Apple Intelligence
+
+- **The owner asked** for three things:
+  - an onboarding page, on a device that supports Apple Intelligence, about the choice between reading fully on the device and in the cloud, opening with "your device supports" and exciting;
+  - Settings with less copy, naming the device as "iPhone", "iPad" or "Mac", never "the phone";
+  - the reading choice greyed out where Apple Intelligence is not supported.
+- **The page** is the fifth and last, before Begin.
+  - Kicker "Your choice"; title "Your iPhone supports Apple Intelligence." (iPad on an iPad); deck "So it can read every syllabus itself, and not a word leaves your iPhone. Or Claude can read it in the cloud. Switch any time in Settings." The owner cut "Choose here" from the first draft: the two cards under it already say so.
+  - Its scene: the device rises in front of the sun, the sun a halo around it, as the sun rose from behind the horizon (a soft crest). Its screen comes on and a line reads the page on it, each date lighting with a tap. Then a cloud floats in beside it, with a dotted way up to it.
+  - The reader chosen is lit: the screen and the sun behind it, or the cloud, with a dot going up to it and back (a tap there, a lighter one back).
+  - Reduce Motion: the scene arrives whole by a fade, and a choice changes the light by a fade.
+- **Decided for the owner:**
+  - **The page offers the choice, not only describes it.** The reader on file is already ticked, so Continue and Begin leave it as it is, and onboarding still asks for nothing. A student who wants nothing to leave the iPhone would otherwise have their first syllabus read by Claude before they found Settings. Two cards, "On This iPhone" and "Claude", each with what it trades and what it sends.
+  - **Last, not straight after Reading.** The term's marks still carry from Reading into Reminders, and the choice is the reveal before Begin. Skip passes it like any page, so the default stands. The Reading page still says who reads; it drops its "yours to choose in Settings" aside when this page follows.
+  - **"Supports" includes Apple Intelligence turned off or still downloading.** The page shows and the choice stays open, and Settings' row says how to turn it on, or that it is downloading.
+    - Still downloading, a document for the device waits for it, as before. That clears by itself.
+    - Turned off, a read on the device fails at once with the way out ("Apple Intelligence is turned off; turn it on to read here.", Retry), since nothing turns it back on by itself. A first draft made it a wait too; the review found that held Siri's Read Document for its full ten minutes, and kept the document off Coverage, which announces only failures and waits for Claude.
+  - **Greyed only where it cannot run:** `SystemLanguageModel`'s `deviceNotEligible`, IngestKit's `DeviceModel.unsupported`. There the device's row is greyed with "This iPhone doesn't support Apple Intelligence." and there is no fifth page. Siri's Read Document (On This Device) and Change Settings say why rather than set a route that cannot read.
+  - **Read on This iPhone… only where it can work** (`DeviceModel.canRead`: ready, or downloading). It goes from Coverage, Documents, and the Mac's table and File menu where Apple Intelligence is unsupported or turned off, and Siri's On This Device says which.
+  - **A document once cleared for the device, where there is no device model,** takes the route Settings gives (`IngestCoordinator.setDeviceReads`). Earlier builds offered Read on This Device… everywhere, and the clearance survives a delete and a share again, so such a document could otherwise never be read. The clearance was the user's permission to use the device instead of waiting for Claude, given while Settings said Claude.
+  - **A document waiting for the device model no longer stops a drain that reads with Claude.** It used to stop every document behind it, Claude's included, until the model was in. The review found it; a test holds it (`aDocumentWaitingForTheDeviceModelHoldsUpNoneOfClaudes`).
+  - **Such a device with no Claude to read with** (no key, no server) sends its documents to wait for Claude ("no API key", with Check Key…), where before they failed on a model that is not there. Nothing is sent, since there is nothing to send with. A route the user chose for the device is never moved to Claude; read where it cannot run, it fails with "Apple Intelligence isn't available here. Choose Claude in Settings to read it."
+  - **Settings, cut.** Kept: what each choice sends (the project's rule). Gone:
+    - the Read Documents footer (Coverage says it when it happens);
+    - App Attest by name;
+    - "Removing the key turns Claude off";
+    - the device's name on iOS (an app is told only "iPhone");
+    - the Reminders footer, except while access has not been asked for.
+  - **Settings, renamed and fixed.** "Small tasks" is "Day plan". The route rows show the route a read would take (`readRoute`), so a route with no key behind it no longer wears a check. A greyed row's check is grey.
+  - **The words.** The device is `AppModel.deviceKind` ("iPhone", "iPad", "Mac") in Settings, onboarding, the Library's dialog, Coverage's and Documents' Read on This iPhone… and its confirmation, and the reading line. Documents names the reader "Apple Intelligence" beside "Claude". Left as they were: the App Intents' "This Device" (static titles and synonyms, one build for every device) and the stored failure reasons ("here").
+  - **Apple Intelligence is named, never drawn.** The name stands only as a fact about the device. The scene draws a generic device and a cloud: no Apple logo, no Apple Intelligence glow.
+- **DEBUG:** `--apple-intelligence off|downloading|unsupported` has Settings, onboarding and the route act as such a device would. The model itself, asked to read, still answers as it is.
+- **Verified.**
+  - 191 IngestKit and 140 HorizonCore tests; the iOS and Mac builds (the Mac's unsigned, a compile check).
+  - On a fresh iPhone 18 Pro Max simulator (iOS 27.2), whose Apple Intelligence reports still downloading:
+    - the page with the device's card ticked (no key, no server), and with Claude ticked through `--show-reading-service`;
+    - the scene recorded and read frame by frame: the device rising dark in front of the sun, its screen coming on, the reading line lighting both dates, the cloud and its way arriving;
+    - both cards tapped, the stage turning each way, and a dot going up to the cloud on choosing Claude;
+    - the exit through Begin, dark mode, and an iPad Air (its own outline, "On This iPad").
+  - With `--apple-intelligence unsupported`: four pages, the Reading page keeping its aside, an out-of-range page landing on the last. Settings with the device's row greyed beside Through Horizon. With `off`: the row open, saying how to turn it on.
+  - The App Intents suite, 10 of 10, on the test simulator with the seed simulator's library copied in.
+  - A reviewer agent read the whole diff. Six findings, all fixed:
+    - a trailing comment that had swallowed the strip hint's style;
+    - Apple Intelligence off as a wait (above), three findings in one;
+    - the onboarding stage reading the choice as it was before the fade (it now starts from the live one);
+    - the device-cleared document that could never be read.
+  - The new test fails without its fix. 141 HorizonCore tests.
+  - Not verified: the haptics (the simulator has none), Reduce Motion, the accessibility text sizes, a real device without Apple Intelligence, and Siri's two refusals.
+
+## 2026-10-25 · Copy says only what the screen does not
+
+- **The owner asked**, after cutting "Choose here" from the new page, for the whole app's copy to stop stating the obvious, with what the HIG says about redundancy.
+- **The HIG's rules applied:**
+  - Writing: every word earns its place, and a setting gets a description only where its label is not enough.
+  - Alerts: the body never explains the buttons.
+  - Offering help: a help tag never repeats its control's name, and standard components are not explained.
+  - Toolbars: a title goes when it is redundant.
+- **What went.** Each one said what was already on screen.
+  - **Onboarding's choice page.** "Choose here" (the owner's cut). The deck's "Or Claude can read it in the cloud": the Claude card is that. The device card's "Private and offline": the deck's "not a word leaves your iPhone" says it.
+  - **Coverage and Horizon (iOS).**
+    - Coverage's empty page no longer says what Horizon does; onboarding has.
+    - The strip's empty page no longer says how the strip works.
+    - At the days, the hint is "Pinch for the semester.", without "Tap a day to read it." The week's tap taught it.
+    - Coverage's failure row no longer says "See them in Documents" or "Retry it from Documents": the row opens Documents, chevron and all.
+  - **Now (iOS).**
+    - The invitation no longer tells the planner what to respect and then plans: that is its two buttons.
+    - "Nothing planned." no longer adds "Add a block, or plan again."
+    - Replace the plan you edited? no longer says the changes are lost (its title); it says why it is asked only when tonight's end moved it. The Mac's dialog too.
+    - Tell the Planner says once that it takes effect the next time you plan, not twice. Its hours keep only the pointer to Tonight Until.
+  - **An item (iOS).** Its page drops "No description yet." and "or write one yourself": Add Description… is under it. Its editor drops "Checked off in Reminders as well." and the Delete Item footer; the confirmation says it.
+  - **The course editor.** The name's footer is "Also shown on each of its reminders." The grade footer no longer explains Count, Drops and Site.
+  - **Recently Deleted.** Its header drops "Tap one to restore it" (as Notes' and Photos' do); its empty page drops "and can be put back until then". The restore dialog no longer counts what comes back: the row it points at counts it. A document's still says that items another document has since updated stay as they are.
+  - **Read on This iPhone's confirmation** (Coverage, Documents, the Mac, and Siri's) drops "Nothing is sent to Anthropic.": on this iPhone says so.
+  - **The Library footer** no longer says what an export is.
+  - **The Mac.**
+    - Review drops "Select several to confirm or discard them together." (a table's own multiple selection) and, for several selected, "Confirm them as they were read, or discard them." (its buttons).
+    - Documents' line drops "Everything Horizon has been given to read.", and its empty page drops "Every document Horizon reads is listed here".
+    - The help tags that repeated their buttons (Confirm, Open Document, Discard, Sync, Add Document, Edit) now say what each does instead.
+- **What stayed, though it explains:**
+  - what each choice sends (the project's rule);
+  - "cannot be undone" on erasing;
+  - the reason in each notice (Reminders off, the list gone, a document waiting);
+  - "Tap a week to look closer" and the Mac chart's pointer line: a novel control, which the HIG says to orient people to;
+  - the Mac's "Double-click one to put it back" (not a Mac table's own) and "press Space to look at it" (also the line that keeps the table off the toolbar);
+  - the Mac's empty Coverage page, the one introduction a Mac gets;
+  - the intents' descriptions, which are Shortcuts' help and what Siri's model reads of each intent.
+- **Siri's words name the device**, as the app's do: "Read it on this iPhone instead of with Claude?", "Documents are read on this iPhone and your iPhone plans your day".
+- **Verified.** iOS and Mac builds. In the simulator: Now's invitation, the item page's description, Recently Deleted's restore dialog, and the choice page. The App Intents suite, 10 of 10. No test held any of the words that went.
+
+## 2026-10-25 · Prominent buttons: the orange, in ink
+
+- **The defect.** At night every prominent button put white words on the tint, the bright orange: about 1.9:1, where the HIG asks 4.5:1 for text. Building the onboarding found it and fixed only the onboarding's own button.
+- **The owner asked**, while this was being built, whether a lighter shade with black words would look better by day: the amber felt too dark. It does, and the colour rules already say so. The orange is for marks and fills; the amber exists so that words set *in* the accent read on the cream paper, and a prominent button's colour is a fill. Shown a comparison before it was built (the Mac's buttons on the paper, both ways).
+- **One look by day and at night: `prominent()`** (Design.swift), on every prominent button in the app: the orange (`Design.accent`) filled, its words `Design.onAccent`, the paper's dark face. Near black on the orange reads at 7 to 11:1 (measured below); white on the amber read at 5.1:1. The amber stays wherever words are set in the tint (links, borderless and bordered buttons, kickers): at 4.7:1 on the paper it is already about as light as words there can be.
+- **What the systems do, measured before deciding** (throwaway harnesses, not kept):
+  - iOS keeps a prominent button's words white whatever the fill. So does a Mac's toolbar, on its glass: Now's Plan Again was white on the orange at night (1.9:1), and would have been by day too once the fill was the orange.
+  - A Mac's page sets dark words on a light fill by itself (black on the orange, 11.3:1).
+  - A Mac greys every prominent button in a window that is not key, with words of its own, toolbar and page alike. Ink set there regardless all but vanished on the grey at night.
+  - So the ink goes on only while the button shows its fill (`OnAccent`): when it is enabled, and on a Mac in the key window. A disabled button keeps the system's look (on iOS a paler orange with dimmed words, seen as the onboarding fades out).
+  - A prominent menu passes its tint to its items: the Add Document menu's icons came up orange on the menu (1.7:1), so `ImportMenu` keeps the app's tint on its items.
+- **Review's keys.** The ⌘↩ beside Confirm (and Edit's ↩, Discard's ⌘⌫) were the secondary style, half the words' colour: 3.5:1 on the orange, 3.3:1 on Edit's grey at night. They are three quarters now, still a step quieter: 7.2:1 and 5.6:1.
+- **The extensions keep copies**, since they do not compile Design.swift. The share sheet's Done was already on the orange, with white words by day and at night (1.9:1; the audit had noted it). The Live Activity's Done had been the deep amber with white since the audit (5.1:1); it is now the orange with dark words, as in the app, on the Lock Screen and in the island alike.
+- **Increase Contrast** needs no faces of its own for these: the fill and the ink do not change with it, and read at about 10:1 either way.
+- **Verified**, every prominent button measured from screenshots (fill against the words' strokes):
+  - iOS 27.2 simulator (its runtime installed for this; the 27.0 one no longer runs under Xcode 27.2), light, dark, and both with Increase Contrast: the onboarding's Continue, Coverage's and the Horizon tab's Add Document, Now's Plan Today, an item's Mark Done, the share sheet's Done, 9.9:1 each; the Live Activity's Done on the Lock Screen 11.0:1, and in the island, which draws the orange a little dimmer, 7.1:1 (white there would be 2.7:1).
+  - The Mac, light and dark, a window that is key and one that is not: Coverage's, Horizon's and Documents' Add Document and Review's Confirm 11.3:1 (the system's black), Plan Again in the toolbar 9.4 to 9.7:1; a window that is not key, and the editors' Save while there is nothing to save, keep the system's grey. Save as the default button was measured in a harness (11.3:1): an editor's Save stays disabled until something is edited. The Mac's Increase Contrast is a system setting and was not switched; its fill and ink are the same colours.
+  - 191 IngestKit and 140 HorizonCore tests; iOS and Mac builds.
+- **Found, not changed:** white words on the orange outside buttons, and the amber words by day on bordered buttons. On the Mac at night the sidebar's selected row is white on the orange (1.9:1) and a table's selected row white on a darker orange (2.9:1), both AppKit's selection from the AccentColor asset. On iOS at night a swipe action's check is white on the orange (1.9:1; a glyph needs 3:1). The Week Ahead widget sets a day's count in the primary colour over its heat, white on the orange on a heavy day at night (the app's strip already chooses black or white by the blend, `countInk`). By day a bordered button's amber words read 4.4:1 on its tinted bezel (Review's Edit…), its keys 2.9:1. Left for a change of their own.
+
+## 2026-10-25 · The accent under words and glyphs
+
+- **The defects**, found by the prominent buttons' change and measured from screenshots: where the system sets words or a glyph on the accent, they were white on the orange at night, and a bordered button's words were the amber on its own tint by day.
+  - The Mac's selection at night: the sidebar's white words on the orange 1.9:1, a table's 2.9:1, its grey column 2.2:1. By day a selected table row's grey column read 4.3:1, and a done item's check vanished on it (the paper's cream on the white disc a selection makes of the primary colour).
+  - iOS swipe actions at night: the check white on the orange, 1.9:1 (a glyph needs 3:1).
+  - The Week Ahead widget: a day's count in the primary colour, white on a heavy day's orange at night (1.9:1 at full heat, 3.8:1 on the test library's own 0.63 day).
+  - Bordered buttons by day, the amber's words on the amber's tint: 3.7:1 on iOS (Review's Confirm and Edit, Coverage's notices, Search's courses, an item's Confirm), 4.4 to 4.7:1 on the Mac (Review's Edit… and Discard, an editor's Cancel, Settings' buttons), Review's keys 2.9:1. A Mac form's pop-up pickers set their value in the amber too, 4.4:1 on the card.
+- **The owner chose**, shown both ways side by side:
+  - the Mac's selection the amber at night as by day, white words (over keeping the bright orange with ink words, which only the rows Horizon draws could have taken);
+  - bordered buttons in ink words on the orange's tint by day, the orange's words at night as before (over a deeper amber, 5.0:1 and browner, or the system's grey).
+- **Built**
+  - The asset's Mac faces (AccentColor, idiom mac): the amber by day and at night, the deeper amber for high contrast. AppKit draws the sidebar's and a table's selection from it, with white words. iOS's faces stay as they were: iOS sets words in the asset's colour on dark backgrounds at night.
+  - `bordered()`: on iOS the orange's tint for a bezel and its words in `Design.onAccentTint` (ink by day, the orange at night) while the button shows its tint, as `prominent()` does (`OnAccent`, which now takes its ink). A Mac sets a bordered button's words in its tint whatever the label is given: with the orange as the tint they read 1.7:1 on the bezel by day. So on a Mac the tint is the words' own colour (`macInk()`), and the bezel it lays, a twentieth of it, is a warm grey near the paper rather than peach. `macBordered()` is `bordered()` where only a Mac draws the button bordered (a form's, a sheet's foot); iOS keeps a form's row. A Mac form's pop-up pickers take `macInk()` too.
+  - `OnSelection` (`.rowSecondary`, `.rowTertiary`, `.rowAccent`): a table's quiet and amber words take a selected row's white, as Finder's columns do. A done item's check is cut out of its disc.
+  - `AccentSwipe`: iOS draws a swipe action's glyph white whatever the tint, and takes no foreground style from the button; a symbol in palette mode keeps its colour. So the circle is the orange with its glyph in ink, as a prominent button is, by day and at night. A Mac sets a swipe action's words white itself: there the fill is `Design.accentDeep`, the amber in both appearances.
+  - The widget's count: the strip's rule moved into HorizonCore (`Strip.mix`, `luminance`, `countInk`), tested at every heat on both papers, and taken by both. A day with work is laid on the paper: at night the system draws the widget's background lighter than the paper ((51,49,48) for (21,20,18)), and a white count worked out on the paper measured 4.3:1. On a tinted or clear Home Screen the system draws fill and figure in one colour, and a heavy day's count vanished into its cell (1:1); there a count past heat 0.375 is cut out of its fill.
+- **What the systems do**, seen while building: a Mac's menus highlight in the system's blue whatever the app's accent (they were never on the orange); a Mac's checkbox takes the tint and AppKit sets its check black or white by the fill (11.6:1 at night, 5.1:1 by day); a window that is not key draws its buttons and its selection in the system's grey, with words of their own, and keeps them.
+- **Verified** from screenshots, the iOS 27.2 simulator and the Mac build on a scratch store:
+  - iOS, light, dark and both with Increase Contrast: the swipe actions (Review's Confirm, a plan block's Done, a course item's Done) 9.9:1 in all four; the bordered buttons (Review's Confirm and Edit, Search's courses, an item's Confirm) 15.5:1 by day, 5.8:1 at night, 6.7:1 at night with Increase Contrast. Coverage's notices and Documents' Retry take the same style and were not captured: they need a failed read in the shared test library.
+  - The widget: heats 0.2 to 1.0, 8.2:1 or better by day and 4.7:1 or better at night, the same with Increase Contrast. On a tinted Home Screen at night, 3.4:1 where the figure and the hole cross, 5 to 11:1 above.
+  - The Mac, a key window, light and dark: the sidebar's selection 5.1:1 both; a selected table row 6.9:1 by day and 8.0:1 at night, every column, the done check through its disc; Review's Edit… and Discard 15.4:1 by day and 9.1:1 at night, their keys 7.4:1 and 5.6:1; an editor's Cancel 16.2:1 and 7.9 to 8.1:1; the item and course editors' pickers 16.0:1 and 9.3:1, their chevrons 10.2:1 and 5.8:1; Settings' Show in Finder, Export and Import 15.6:1 and 7.4:1, its Model picker 17.2:1 by day; Now's Tonight Until and Tell the Planner… 15.4:1 and 9.1:1. A window that is not key keeps the system's grey (11.2:1 on its buttons at night).
+  - 191 IngestKit and 141 HorizonCore tests (one new: a count's ink at every heat); iOS and Mac builds.
+- **Not verified, or left:**
+  - The Mac's Increase Contrast is a system setting and was not switched. A forced high-contrast appearance drew the selection in the ordinary amber (5.1:1), so under the setting it is at least that.
+  - The Mac's swipe action, which needs a trackpad's swipe. A dialog's default button and the date picker's chosen day. Bordered buttons that only show in a state the test library lacks (Remove Key… with a key, Show Coming Up with a day chosen, the block editor's, an import's): they take the same style.
+  - On a tinted Home Screen by day the whole widget is washed out, its own labels too (1.7 to 4.6:1): the system's tinted look over a light wallpaper.
+
 ## 2026-10-25 · iPhone Duo
 
 - **The owner asked** for full support for iPhone Duo (iOS 27.1): interactions designed for the device, layouts, hierarchy and spacing that fit it, checked in the iPhone Duo simulator against the HIG's Duo page and Apple's six Duo tech talks.

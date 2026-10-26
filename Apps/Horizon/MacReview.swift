@@ -45,7 +45,7 @@ struct MacReviewPage: View {
             } else {
                 HStack(alignment: .top, spacing: 0) {
                     VStack(alignment: .leading, spacing: 0) {
-                        PageLine(rows.count == 1 ? "One item the reader was unsure of." : "\(rows.count) items the reader was unsure of. Select several to confirm or discard them together.")
+                        PageLine(rows.count == 1 ? "One item the reader was unsure of." : "\(rows.count) items the reader was unsure of.")
                         table(rows)
                     }
                     .frame(minWidth: 400, maxWidth: .infinity)
@@ -61,13 +61,13 @@ struct MacReviewPage: View {
             ToolbarSpacer(.fixed, placement: .primaryAction)   // the page's own, apart from the window's Add Document and Sync
             ToolbarItemGroup(placement: .primaryAction) {   // each is in the Item menu too
                 Button { confirm(chosenIDs) } label: { Label("Confirm", systemImage: "checkmark") }
-                    .help("Confirm the selection as it was read (⌘↩)").disabled(chosen.isEmpty)
+                    .help("Keep the selection as it was read (⌘↩)").disabled(chosen.isEmpty)
                 Button { editing = chosen.first } label: { Label("Edit", systemImage: "pencil") }
                     .help("Fix the selected item (↩)").disabled(chosen.count != 1)
                 Button { if let chosenDocument { preview = model.previewFile(for: chosenDocument) } } label: { Label("Open Document", systemImage: "doc.text.magnifyingglass") }
-                    .help("Open the document the item was read from").disabled(chosenDocument == nil)
+                    .help("Show the page the item was read from").disabled(chosenDocument == nil)
                 Button { discard(discardable) } label: { Label("Discard", systemImage: "trash") }
-                    .help("Discard the selection: it was never an item (⌘⌫)").disabled(discardable.isEmpty)
+                    .help("Remove the selection: it was never an item (⌘⌫)").disabled(discardable.isEmpty)
             }
         }
         .sheet(item: $editing) { ObligationEditor(mode: .review($0), courses: courses) }
@@ -117,14 +117,14 @@ struct MacReviewPage: View {
         Table(rows, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("Item", value: \.title) { row in Text(row.title).fontWeight(.medium).lineLimit(1).help(row.title) }
                 .width(min: 100, ideal: 120)
-            TableColumn("Course", value: \.course) { row in Text(row.course).foregroundStyle(.secondary).lineLimit(1).help(row.course) }
+            TableColumn("Course", value: \.course) { row in Text(row.course).foregroundStyle(.rowSecondary).lineLimit(1).help(row.course) }
                 .width(min: 60, ideal: 70)
             TableColumn("Due", value: \.due) { row in
                 Text(row.hasDue ? Design.due(row.due, hasTime: row.dueHasTime) : "Date TBA").monospacedDigit().lineLimit(1)
             }
             .width(min: 80, ideal: 90)
             TableColumn("Weight", value: \.weight) { row in
-                Group { if row.weight >= 0 { Design.points(row.weight).fontWeight(.semibold) } else { Text("—").foregroundStyle(.tertiary) } }
+                Group { if row.weight >= 0 { Design.points(row.weight).fontWeight(.semibold) } else { Text("—").foregroundStyle(.rowTertiary) } }
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .width(min: 46, ideal: 50, max: 80)
@@ -206,13 +206,14 @@ private struct ReviewDetail: View {
                 } else if items.count > 1 {
                     let moved = items.filter { $0.otherDate != nil }.count
                     Text("\(items.count) items selected").deck()
-                    Text(moved == 0 ? "Confirm them as they were read, or discard them."
-                         : moved == items.count ? "A later document moved each one's date. Confirm them as they are, or choose one at a time."
-                         : "Confirm them as they were read, or discard them. Discard leaves out the \(moved == 1 ? "one" : "\(moved)") a later document moved.")
-                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
+                    if moved > 0 {   // the buttons say what they do; only what they leave out is said
+                        Text(moved == items.count ? "A later document moved each one's date. To use a new date, choose one at a time."
+                             : "Discard leaves out the \(moved == 1 ? "one" : "\(moved)") a later document moved.")
+                            .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
+                    }
                     actions(several: true, other: nil, discards: moved < items.count).padding(.top, 18)
                 } else {
-                    Text("Select an item to see why it waits and the page it was read from.").foregroundStyle(.secondary)
+                    Text("Select an item to see why it waits.").foregroundStyle(.secondary)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -265,20 +266,23 @@ private struct ReviewDetail: View {
     /// delete the item, and the choice is between the two dates.
     private func actions(several: Bool, other: Obligation?, discards: Bool) -> some View {
         HStack(spacing: 10) {
-            Button(action: confirm) { ShortcutLabel(several ? "Confirm All" : "Confirm", keys: "⌘↩") }.buttonStyle(.borderedProminent)
+            Button(action: confirm) { ShortcutLabel(several ? "Confirm All" : "Confirm", keys: "⌘↩") }.prominent()
             if let other, let date = other.otherDate {
                 Button { useOther(other) } label: { Text("Use \(date.formatted(.dateTime.month(.abbreviated).day()))") }
+                    .bordered()
                     .help("Confirm it due \(date.formatted(.dateTime.weekday(.wide).month(.wide).day())) instead")
             }
-            if !several { Button(action: edit) { ShortcutLabel("Edit…", keys: "↩") } }
+            if !several { Button(action: edit) { ShortcutLabel("Edit…", keys: "↩") }.bordered() }
             Spacer(minLength: 0)
-            if discards { Button(role: .destructive, action: discard) { ShortcutLabel(several ? "Discard All" : "Discard", keys: "⌘⌫") } }
+            if discards { Button(role: .destructive, action: discard) { ShortcutLabel(several ? "Discard All" : "Discard", keys: "⌘⌫") }.bordered() }
         }
     }
 }
 
 /// A button's title with its keyboard shortcut after it, set as the menu bar sets it and a step quieter than the
-/// title. VoiceOver hears the title alone: the menu bar already tells it the shortcut.
+/// title: three quarters of its colour, which still reads at 4.5:1 or better (7.2:1 on Confirm's orange, 7.4:1 on
+/// Edit's bezel by day and 5.6:1 at night; the secondary style's half read at about 3.4:1). VoiceOver hears the title
+/// alone: the menu bar already tells it the shortcut.
 private struct ShortcutLabel: View {
     let title: String
     let keys: String
@@ -286,7 +290,7 @@ private struct ShortcutLabel: View {
     var body: some View {
         HStack(spacing: 5) {
             Text(title)
-            Text(keys).foregroundStyle(.secondary).accessibilityHidden(true)
+            Text(keys).opacity(0.75).accessibilityHidden(true)
         }
     }
 }

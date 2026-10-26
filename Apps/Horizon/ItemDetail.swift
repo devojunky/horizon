@@ -159,9 +159,8 @@ struct ItemDetail: View {
         } else {
             Button(action: mark) {
                 actionLabel(ItemActions.markTitle(done: false), ItemActions.markImage(done: false), whole: whole)
-                    .foregroundStyle(Design.paper)   // cream on the deep amber by day, near black on the orange at night: both read
             }
-            .buttonStyle(.borderedProminent).tint(Design.accentInk)
+            .prominent()
             Button {
                 changed += 1
                 Task { await model.setSkipped(item.id, !skipped) }
@@ -190,12 +189,12 @@ struct ItemDetail: View {
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 10) {
                     Button("Confirm", systemImage: "checkmark") { changed += 1; Task { await model.confirm(item.id) } }
-                        .buttonStyle(.bordered).tint(Design.accentInk).reachable()
+                        .bordered().reachable()
                     if let other = item.otherDate {
                         Button("Use \(other.formatted(.dateTime.month(.abbreviated).day()))") {
                             changed += 1; Task { await model.confirm(item.id, edits: ObligationEdits(due: .some(other))) }
                         }
-                        .buttonStyle(.bordered).reachable()
+                        .bordered().reachable()
                     }
                 }
                 .controlSize(.small)
@@ -229,9 +228,8 @@ struct ItemDetail: View {
                 .padding(.vertical, 6)
             } else {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("No description yet.").foregroundStyle(.secondary)
-                    Text("Ask Siri, “Add a note to this,” while this page is open, or write one yourself.")
-                        .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Text("Ask Siri, “Add a note to this,” while this page is open.")   // the button under it says the rest
+                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     Button("Add Description…") { editing = Editing(item: item, describing: true) }.buttonStyle(.borderless).padding(.top, 4)
                 }
                 .padding(.vertical, 6)

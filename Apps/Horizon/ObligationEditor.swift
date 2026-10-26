@@ -51,11 +51,13 @@ struct ObligationEditor: View {
                         ForEach(courses) { Text($0.displayName).tag(UUID?.some($0.id)) }
                     }
                     .choosesInList(typeSize.isAccessibilitySize)
+                    .macInk()
                     if let course, !course.gradeComponents.isEmpty {
                         Picker("Counts toward", selection: $componentName) {
                             Text("Not stated").tag("")
                             ForEach(course.gradeComponents, id: \.name) { Text($0.name).tag($0.name) }
                         }
+                        .macInk()
                     }
                 }
                 // Under the name, as Reminders keeps a reminder's notes: room for a few lines from the start (Siri's run
@@ -68,7 +70,7 @@ struct ObligationEditor: View {
                     Section {
                         Toggle("Done", isOn: $done)
                     } footer: {
-                        Text(item?.skippedAt != nil && !done ? "Skipped, so it is checked off in Reminders. Turn on Done if you did it after all." : "Checked off in Reminders as well.")
+                        if item?.skippedAt != nil, !done { Text("Skipped: checked off in Reminders, but not done.") }   // why its reminder is checked while Done is off
                     }
                 }
                 Section {
@@ -84,6 +86,7 @@ struct ObligationEditor: View {
                         Text("LMS").tag(Platform.lms); Text("WebAssign").tag(Platform.webAssign)
                         Text("Gradescope").tag(Platform.gradescope); Text("MyLab").tag(Platform.myLab)
                     }
+                    .macInk()
                 }
                 if let item, item.origin == .document {
                     Section {
@@ -96,9 +99,7 @@ struct ObligationEditor: View {
                 }
                 if item != nil {
                     Section {
-                        Button("Delete Item", role: .destructive) { confirmingDelete = true }
-                    } footer: {
-                        Text("Deleting removes it from Reminders as well.")
+                        Button("Delete Item", role: .destructive) { confirmingDelete = true }.macBordered()   // the confirmation says what goes with it
                     }
                 }
             }

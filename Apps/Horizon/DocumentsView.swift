@@ -43,18 +43,18 @@ struct DocumentsView: View {
                         }
                         if doc.status == .parsed {   // each figure kept whole on its line, whatever the text size
                             Text([Self.figure("\(doc.inputTokens) in"), Self.figure("\(doc.outputTokens) out"), Self.figure("\(doc.durationMs / 1000) s"),
-                                  doc.route == "onDevice" ? "on the device" : doc.route == "claude" ? "Claude" : doc.route ?? ""].joined(separator: Self.separator))
+                                  doc.route == "onDevice" ? "Apple Intelligence" : doc.route == "claude" ? "Claude" : doc.route ?? ""].joined(separator: Self.separator))
                                 .font(.footnote).monospacedDigit().foregroundStyle(.secondary)
                         }
                         if let failure = doc.failure { Text(failure).font(.footnote).foregroundStyle(Design.accentInk) }
                         if doc.retryHelps, doc.status == .failed || doc.status == .awaitingCloudParse || doc.status == .cancelled {
                             HStack(spacing: 10) {
                                 Button("Retry", systemImage: "arrow.clockwise") { Task { await model.retry(documentID: doc.id) } }.reachable()
-                                if doc.status == .awaitingCloudParse, !doc.readOnDevice {
-                                    Button("Read on This Device…", systemImage: "iphone") { confirmDevice = doc }.reachable()
+                                if doc.status == .awaitingCloudParse, !doc.readOnDevice, model.deviceModel.canRead {
+                                    Button("Read on This \(AppModel.deviceKind)…", systemImage: AppModel.deviceKind == "iPad" ? "ipad" : "iphone") { confirmDevice = doc }.reachable()
                                 }
                             }
-                            .buttonStyle(.bordered).controlSize(.small).padding(.top, 2)
+                            .bordered().controlSize(.small).padding(.top, 2)
                         }
                         ForEach(doc.warnings, id: \.self) { Text($0).font(.footnote).foregroundStyle(.secondary) }
                     }
@@ -79,11 +79,11 @@ struct DocumentsView: View {
         .listStyle(.plain)
         .paper()
         .refreshable { await model.drainAndSync() }
-        .confirmationDialog("Read on this device instead?", isPresented: Binding(get: { confirmDevice != nil }, set: { if !$0 { confirmDevice = nil } }), titleVisibility: .visible, presenting: confirmDevice) { doc in
-            Button("Read on This Device") { Task { await model.readOnDevice(documentID: doc.id) } }
+        .confirmationDialog("Read on this \(AppModel.deviceKind) instead?", isPresented: Binding(get: { confirmDevice != nil }, set: { if !$0 { confirmDevice = nil } }), titleVisibility: .visible, presenting: confirmDevice) { doc in
+            Button("Read on This \(AppModel.deviceKind)") { Task { await model.readOnDevice(documentID: doc.id) } }
             Button("Cancel", role: .cancel) {}
         } message: { _ in
-            Text("The device model is less sure of tables and pictures than Claude, and it takes minutes on a long document. Nothing is sent to Anthropic.")
+            Text("Your \(AppModel.deviceKind) is less sure of tables and pictures than Claude, and takes minutes on a long document.")
         }
         .animation(.default, value: documents.map(\.id))
         .animation(.default, value: documents.map(\.status))   // a document read, failed or waiting: its row's lines change animated, not in one frame

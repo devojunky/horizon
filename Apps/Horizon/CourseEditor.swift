@@ -48,7 +48,7 @@ struct CourseEditor: View {
                     FieldRow(label: "Instructor", prompt: "Name", text: $instructor).textContentType(.name)
                     FieldRow(label: "Room", prompt: "Rogers Hall 204", text: $room)
                 } footer: {
-                    Text("The name is what Horizon shows for the course and adds to each reminder.")
+                    Text("Also shown on each of its reminders.")
                 }
                 Section {
                     Toggle("Term dates", isOn: $hasTermDates.animation())
@@ -66,6 +66,7 @@ struct CourseEditor: View {
                                 ForEach(1...7, id: \.self) { Text(ClockText.weekdayName($0)).tag($0) }
                             }
                             .labelsHidden()
+                            .macInk()
                             Spacer(minLength: 0)
                             DatePicker("Starts", selection: $meeting.start, displayedComponents: .hourAndMinute).labelsHidden()
                             Text("to").foregroundStyle(.secondary)
@@ -73,7 +74,7 @@ struct CourseEditor: View {
                         }
                     }
                     .onDelete { meetings.remove(atOffsets: $0) }
-                    Button("Add Meeting", systemImage: "plus") { withAnimation { meetings.append(MeetingRow()) } }
+                    Button("Add Meeting", systemImage: "plus") { withAnimation { meetings.append(MeetingRow()) } }.macBordered()
                 } header: { Kicker("Meetings") }
                 Section {
                     ForEach($components) { $component in
@@ -92,6 +93,7 @@ struct CourseEditor: View {
                                     Text("Once").tag(Cadence?.some(.once))
                                 }
                                 .labelsHidden()
+                                .macInk()
                                 Spacer(minLength: 0)
                                 LabeledContent("Count") { TextField("–", value: $component.count, format: .number).multilineTextAlignment(.trailing).promptOnly().frame(width: 36).numberKeyboard() }
                                 LabeledContent("Drops") { TextField("–", value: $component.dropLowest, format: .number).multilineTextAlignment(.trailing).promptOnly().frame(width: 36).numberKeyboard() }
@@ -103,18 +105,19 @@ struct CourseEditor: View {
                                 Text("Gradescope").tag(Platform?.some(.gradescope)); Text("MyLab").tag(Platform?.some(.myLab))
                             }
                             .labelsHidden()
+                            .macInk()
                             .font(.subheadline)
                         }
                         .padding(.vertical, 2)
                     }
                     .onDelete { components.remove(atOffsets: $0) }
-                    Button("Add Component", systemImage: "plus") { withAnimation { components.append(ComponentRow()) } }
+                    Button("Add Component", systemImage: "plus") { withAnimation { components.append(ComponentRow()) } }.macBordered()
                 } header: {
                     Kicker("Grade")
                 } footer: {
                     let total = components.compactMap(\.weight).reduce(0, +)
                     let overflow = total > 100.5 ? "The weights add up to \(total.formatted(.number.precision(.fractionLength(0...1))))%, more than a whole grade. " : ""
-                    Text("\(overflow)Weights set the points at stake on each item and the colour of its mark on the strip. Count is how many of the component there are; Drops is how many lowest scores are dropped. The site is where its work lives; Coverage says when nothing has ever been read from there.")
+                    Text("\(overflow)Weights set each item's points at stake, and the colour of its mark on the strip.")
                 }
                 Section {
                     ForEach($breaks) { $span in
@@ -125,15 +128,15 @@ struct CourseEditor: View {
                         }
                     }
                     .onDelete { breaks.remove(atOffsets: $0) }
-                    Button("Add Break", systemImage: "plus") { withAnimation { breaks.append(BreakRow()) } }
+                    Button("Add Break", systemImage: "plus") { withAnimation { breaks.append(BreakRow()) } }.macBordered()
                 } header: {
                     Kicker("No class")
                 }
                 if let course {
                     Section {
-                        Button("Delete Course", role: .destructive) { Task { await model.deleteCourse(course.id) }; dismiss() }
+                        Button("Delete Course", role: .destructive) { Task { await model.deleteCourse(course.id) }; dismiss() }.macBordered()
                     } footer: {
-                        Text("It goes to Recently Deleted with its items, their reminders, and its documents, and can be restored from there for 30 days.")
+                        Text("It goes to Recently Deleted with its items, reminders and documents, for 30 days.")
                     }
                 }
             }
