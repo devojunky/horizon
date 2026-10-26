@@ -944,6 +944,11 @@ The owner: a tap on an item went straight to its editor. It should open a page o
   - **Propped like a laptop (the table pose):** the arrangements put the chart, the plan or the scene on the raised half, to be read from the desk, and the lists and Continue on the flat half, under the thumbs (HIG: content for a distance on top, controls below). No layout of its own for a pose: it is the same arrangement, given a fold.
   - The panes' shares are preferences only. A minimum the half above a fold could not hold left the second pane out in the table pose, and blanked Now in the book pose.
 - **Fixed on the way:** a row of days made afresh (the page's other layout) opens where the last one was, not at the term's start. A link to an item on a phone pushes its course's page, then the item over it.
+- **Onboarding's choice of reader fits** (the owner's ask, once main's Apple Intelligence page came in): its Claude card had scrolled out of sight on the closed Duo and on the flat half when propped.
+  - **Closed:** where bars stand at the display's edge, Skip leaves its own row for the stage's top corner, as the system moves a page's controls to the side. The stage gives way to what the words and controls need (`wordsRoom`: 538 points measured at the default size, scaled with the text), down to 100 points.
+  - **Propped like a laptop:** the two readers sit side by side on the flat half (each asks 240 points beside the other; one over the other where they have not), and Skip is in the display's top corner.
+  - **Phones:** the 6.1- and 6.3-inch iPhones cut the same card, so their stage gives way too (about 30 points smaller on an iPhone 18 Pro); Skip keeps its row there, and a Pro Max is unchanged. Without Apple Intelligence (no choice page) nothing changes.
+  - Checked by screenshots on the Duo closed, open flat in both orientations, half open as a book and propped, and on a temporary iPhone 18 Pro simulator.
 - **Decided for the owner:**
   - **Split views, not the tab bar as a sidebar.** Horizon has four tabs. A sidebar would add a second way to the same places, and the HIG offers it for information-dense apps (Health).
   - **No hinge effects, scene accessories or extra windows.** Nothing in Horizon calls for them (Apple: hinge data for interactions and effects only).

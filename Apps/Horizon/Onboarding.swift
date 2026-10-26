@@ -21,6 +21,16 @@ struct OnboardingView: View {
     @State private var stageGone = false
     @State private var gone = false
     @State private var begun = 0
+    /// Bars stand at the display's edge here (iPhone Duo closed): the display is short, so Skip leaves its own row for the
+    /// stage's top corner, as the system moves a page's controls to the side to give its content the height.
+    @State private var barsStand = false
+    /// What the words and the controls under the stage need on the page with the most of them, at the text size in use:
+    /// with the choice of reader, its two cards (538 points at the default size, measured on iPhone Duo closed, about a
+    /// 6.1-inch iPhone's width); without it, `cardsRoom` less. On a short display the stage gives way to them, so both
+    /// readers show without a scroll (iPhone Duo closed, the smaller iPhones); on a Pro Max the stage's own proportion is
+    /// the limit, as before.
+    @ScaledMetric(relativeTo: .body) private var wordsRoom: CGFloat = 544   // with a little to spare
+    @ScaledMetric(relativeTo: .body) private var cardsRoom: CGFloat = 184
 
     init(startPage: Int = 0, finish: @escaping () -> Void) {
         _page = State(initialValue: min(max(startPage, 0), Self.offersChoice ? 4 : 3))
@@ -75,21 +85,23 @@ struct OnboardingView: View {
         .tint(Design.accentInk)
         .sensoryFeedback(.selection, trigger: page)
         .sensoryFeedback(.success, trigger: begun)
+        .readsVerticalBar($barsStand)
     }
 
     /// A phone (and iPhone Duo closed): the stage over the words, Continue under them, where the thumb is.
     private var column: some View {
         GeometryReader { proxy in
             VStack(spacing: 0) {
-                skipRow
+                if !barsStand { skipRow }
                 stage
                     .frame(maxWidth: 440)
-                    .frame(height: stageHeight(in: proxy.size))
+                    .frame(height: stageHeight(in: proxy.size, skipRow: !barsStand))
                     .padding(.horizontal, Design.margin)
                 pager
                 footer
             }
             .frame(maxWidth: .infinity)
+            .overlay(alignment: .topTrailing) { if barsStand { skipButton } }
         }
     }
 
@@ -106,7 +118,6 @@ struct OnboardingView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } secondary: {
             VStack(spacing: 0) {
-                skipRow
                 pager
                 footer
             }
@@ -114,19 +125,28 @@ struct OnboardingView: View {
             .frame(maxWidth: .infinity)
         }
         .arrangementViewStyle(.split)
+        // In the display's top corner, not a row of its own: propped like a laptop the words have only the flat half,
+        // and the choice of reader needs all of it.
+        .overlay(alignment: .topTrailing) { skipButton }
     }
 
+    /// Skip in a row of its own over the stage (a phone).
     private var skipRow: some View {
         HStack {
             Spacer()
-            Button("Skip") { close(begin: false) }
-                .foregroundStyle(.secondary)
-                .opacity(page < last ? 1 : 0)
-                .disabled(page >= last || leaving)
-                .reachable()
+            skipButton
         }
-        .frame(height: 44)
-        .padding(.horizontal, Design.margin)
+    }
+
+    /// Skip, at the page's trailing margin, 44 points high: hidden on the last page, where Begin is the way on.
+    private var skipButton: some View {
+        Button("Skip") { close(begin: false) }
+            .foregroundStyle(.secondary)
+            .opacity(page < last ? 1 : 0)
+            .disabled(page >= last || leaving)
+            .reachable()
+            .frame(height: 44)
+            .padding(.horizontal, Design.margin)
     }
 
     private var stage: some View {
@@ -178,12 +198,14 @@ struct OnboardingView: View {
     }
 
     /// The stage's height: its own proportion at the width it has, less on a short screen (landscape) and at the
-    /// accessibility text sizes, where the words need the room.
-    private func stageHeight(in size: CGSize) -> CGFloat {
+    /// accessibility text sizes, where the words need the room, and never more than leaves the words what they need
+    /// (`wordsRoom`).
+    private func stageHeight(in size: CGSize, skipRow: Bool) -> CGFloat {
         let width = min(size.width - 2 * Design.margin, 440)
         let natural = width * OnboardingStage.aspect
         let share: CGFloat = typeSize.isAccessibilitySize ? 0.24 : 0.36
-        return max(120, min(natural, size.height * share))
+        let words = wordsRoom - (Self.offersChoice ? 0 : cardsRoom) + (skipRow ? 44 : 0)
+        return max(100, min(natural, size.height * share, size.height - words))   // never so small the scene cannot be read
     }
 
     /// Begin (or Skip): the words go as the sun lifts, then the stage, then the paper, and the app it was laid over is
@@ -259,15 +281,24 @@ private struct ReaderChoice: View {
     }
 
     var body: some View {
-        VStack(spacing: 10) {
-            option("On This \(device)", detail: deviceDetail, selected: onDevice) { model.readingRoute = .onDevice }
-            option("Claude", detail: claudeDetail, selected: !onDevice, disabled: model.claudeConfiguration == nil) { model.readingRoute = .claude }
+        // Side by side where each has room for its words in a line or two (the flat half of iPhone Duo propped like a
+        // laptop, an iPad), so both show on a short pane; one over the other where they have not (a phone, iPhone Duo
+        // closed). A card asks for 240 points beside the other; given more, it takes it.
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 10) { options(side: true) }
+                .fixedSize(horizontal: false, vertical: true)   // the two as tall as the taller
+            VStack(spacing: 10) { options(side: false) }
         }
         .sensoryFeedback(.selection, trigger: onDevice)
         .animation(.snappy, value: onDevice)
     }
 
-    private func option(_ title: String, detail: String, selected: Bool, disabled: Bool = false, choose: @escaping () -> Void) -> some View {
+    @ViewBuilder private func options(side: Bool) -> some View {
+        option("On This \(device)", detail: deviceDetail, selected: onDevice, side: side) { model.readingRoute = .onDevice }
+        option("Claude", detail: claudeDetail, selected: !onDevice, disabled: model.claudeConfiguration == nil, side: side) { model.readingRoute = .claude }
+    }
+
+    private func option(_ title: String, detail: String, selected: Bool, disabled: Bool = false, side: Bool, choose: @escaping () -> Void) -> some View {
         let shape = RoundedRectangle(cornerRadius: 14)
         return Button(action: choose) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -281,7 +312,8 @@ private struct ReaderChoice: View {
                     .foregroundStyle(selected ? AnyShapeStyle(Design.accent) : AnyShapeStyle(Design.rule))
             }
             .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, maxHeight: side ? .infinity : nil, alignment: .topLeading)
+            .frame(idealWidth: side ? 240 : nil)
             .background(Design.card, in: shape)
             .overlay(shape.strokeBorder(selected ? AnyShapeStyle(Design.accent) : AnyShapeStyle(Design.rule), lineWidth: selected ? 1.5 : 1))
             .contentShape(shape)
