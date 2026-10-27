@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- `xcodebuild -exportArchive` for App Store Connect, from a Mac or an iOS archive (CLAUDE.md, Commands): uploads the
+     build for TestFlight, signed by the team with Xcode's cloud-managed distribution certificates. The build number is
+     Base.xcconfig's (CURRENT_PROJECT_VERSION), raised by hand for every upload, never rewritten on the way. -->
+<dict>
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>destination</key>
+	<string>upload</string>
+	<key>teamID</key>
+	<string>M29Z3F2B5D</string>
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<key>manageAppVersionAndBuildNumber</key>
+	<false/>
+</dict>
+</plist>

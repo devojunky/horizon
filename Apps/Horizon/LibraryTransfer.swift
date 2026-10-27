@@ -46,7 +46,8 @@ extension AppModel {
                                                items: (try? context.fetchCount(FetchDescriptor<Obligation>(predicate: #Predicate { $0.deletedAt == nil }))) ?? 0,
                                                documents: (try? context.fetchCount(FetchDescriptor<SourceDocument>(predicate: #Predicate { $0.deletedAt == nil }))) ?? 0)
         let sync = Self.scratchStore == nil ? UserDefaults.standard.persistentDomain(forName: Identifiers.appGroup) ?? [:] : [:]
-        let settings = UserDefaults.standard.persistentDomain(forName: Self.settingsDomain) ?? [:]
+        // The Mac's Inbox stays on its Mac (`WatchedFolder`): its bookmark opens nothing on another, nor its memory.
+        let settings = (UserDefaults.standard.persistentDomain(forName: Self.settingsDomain) ?? [:]).filter { !$0.key.hasPrefix("inbox") }
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("HorizonLibrary-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let file = folder.appendingPathComponent("Horizon Library \(Date().formatted(.iso8601.year().month().day())).\(LibraryArchive.fileExtension)")

@@ -107,12 +107,16 @@ targets:
         # in Package.swift (swiftSettings: [.define("HORIZON_CLOUDKIT")]; an app target's conditions never reach a package, and the
         # tests have an #if of their own) and add the iCloud entitlements.
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited)
-        # macOS: signed with the team's development identity but without the App Group entitlement (local store fallback),
-        # so the app's identity is stable across builds and the Reminders and Calendar grants it is given persist.
-        # An ad-hoc signature changes with every build, and TCC then treats each build as a new app and denies it unasked.
+        # macOS: sandboxed and hardened in every configuration, for the Mac App Store (DECISIONS 2026-10-26 · The Mac in the
+        # App Store), with no App Group (no extension shares its store). Signed with the team's development identity, so the
+        # app's identity is stable across builds and the Reminders and Calendar grants it is given persist: an ad-hoc
+        # signature changes with every build, and TCC then treats each build as a new app and denies it unasked.
         "CODE_SIGN_IDENTITY[sdk=macosx*]": "Apple Development"
+        "ENABLE_HARDENED_RUNTIME[sdk=macosx*]": YES
         "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": Apps/Horizon/Horizon-macOS.entitlements
       configs:
+        Debug:
+          "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": Apps/Horizon/Horizon-macOS-Debug.entitlements   # the same and /private/tmp, for the DEBUG flags' paths
         Release:
           EXCLUDED_SOURCE_FILE_NAMES: sample-syllabus.pdf   # the sample feeds DEBUG paths only (Settings ▸ Debug, --ingest-sample)
   HorizonShare:

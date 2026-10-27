@@ -235,8 +235,10 @@ final class AppModel {
     }()
 
     /// DEBUG `--scratch-store <dir>`: the app on a copy of a store (`dir/Horizon.store`, copied there first) with its
-    /// files in `dir/Documents`: nothing is read, Reminders is never reached, the inbox folder is not watched, nothing is
-    /// indexed in Spotlight and no glance is written for the widgets. The calendar is the device's own: a plan made in a
+    /// files in `dir/Documents`: nothing is read, Reminders is never reached, the Inbox is only a folder chosen in a scratch
+    /// run (`WatchedFolder` keeps its choice in `defaults`), nothing is indexed in Spotlight and no glance is written for
+    /// the widgets. On a Mac `dir` is under /private/tmp, the one place outside its container a Debug build's sandbox
+    /// reaches (Horizon-macOS-Debug.entitlements). The calendar is the device's own: a plan made in a
     /// scratch run reads it (and sends it to Anthropic with a key and "Plan the day with Claude" on). Every run of the
     /// app on real data for testing goes this way, never on the user's own store (`HorizonContainer.at` refuses theirs).
     /// Nil in a release build.
