@@ -187,15 +187,24 @@ private struct StripGeometry: Equatable {
     // What keeps the names up, each heard on its own, since one ends as another begins in either order (a bar's press
     // is let go the moment the row starts to scroll).
     @ObservationIgnored private var pressedAt: Date?       // a finger resting on a day's bar or on the semester, since
+    @ObservationIgnored private var holding = false        // that press has become a hold: its names are up (the clock alone would call a lift at 0.501 s a hold no one saw)
     @ObservationIgnored private var moving = false         // a scroll or its coast
     @ObservationIgnored private var scrubbing = false      // the term's line dragged: the row moves without a scroll of its own
-    @ObservationIgnored private var heldEnded = Date.distantPast
+    // The lift of a hold is no tap, whichever of the two is heard first, and only that one tap is not: a tap that
+    // follows quickly is a tap.
+    @ObservationIgnored private var holdAnswered = false   // the hold under the finger has already turned its tap away
+    @ObservationIgnored private var heldLift: Date?        // a hold just lifted whose tap has not come yet
     @ObservationIgnored private var names: Task<Void, Never>?
 
     /// A finger resting on a day's bar or on the semester, or lifted (or gone to a scroll).
     func press(_ down: Bool) {
         guard down != (pressedAt != nil) else { return }
-        if !down, pressHeld { heldEnded = Date() }
+        if down {
+            holdAnswered = false; heldLift = nil
+        } else {
+            if holding, !holdAnswered { heldLift = Date() }
+            holding = false
+        }
         pressedAt = down ? Date() : nil
         update()
     }
@@ -204,6 +213,7 @@ private struct StripGeometry: Equatable {
     func move(_ on: Bool) {
         guard on != moving else { return }
         moving = on
+        if on { heldLift = nil }   // a press that ends in a scroll makes no tap
         update()
     }
 
@@ -214,15 +224,20 @@ private struct StripGeometry: Equatable {
         update()
     }
 
-    /// The finger lifting now ends a hold, or did a moment ago: it is no tap, whichever of the two hears of it first.
-    var wasHeld: Bool { pressHeld || Date().timeIntervalSince(heldEnded) < 0.3 }
-    private var pressHeld: Bool { pressedAt.map { Date().timeIntervalSince($0) >= Self.holdTime } ?? false }
+    /// Asked by a tap: whether it is only the lift of a hold (it was there for the names), and so no tap. Once per
+    /// hold: the tap after it is a tap.
+    func tapEndsHold() -> Bool {
+        if holding, !holdAnswered { holdAnswered = true; return true }   // the tap heard before the press's end
+        defer { heldLift = nil }
+        return heldLift.map { Date().timeIntervalSince($0) < 0.3 } ?? false
+    }
 
     /// The names come at once when the strip moves, and for a still finger once it is a hold, never for a tap; they
     /// go a moment after the finger lifts and the strip is still.
     private func update() {
         names?.cancel()
-        if moving || scrubbing || pressHeld {
+        if let pressedAt, Date().timeIntervalSince(pressedAt) >= Self.holdTime { holding = true }
+        if moving || scrubbing || holding {
             if !namesShown { namesShown = true }
         } else if let pressedAt {   // a press not yet a hold: looked at again when it would be one
             let wait = Self.holdTime - Date().timeIntervalSince(pressedAt)
@@ -573,7 +588,7 @@ struct HorizonStripView: View {
             .frame(height: 44)
             .pageRow(top: 0, bottom: 2)
             strip(data, g, width: width) { period in
-                guard Date().timeIntervalSince(motion.pinchedAt) > 0.4, !motion.wasHeld else { return }   // two fingers lifting are not a tap, nor is a hold's finger (it was there for the names)
+                guard Date().timeIntervalSince(motion.pinchedAt) > 0.4, !motion.tapEndsHold() else { return }   // two fingers lifting are not a tap, nor is a hold's finger (it was there for the names)
                 if level == .weeks {   // the overview: look closer here, with the week chosen so the list is its work
                     held = period.start
                     motion.landing = .init(date: period.start, place: .margin)   // the week's first day at the leading margin
@@ -974,7 +989,7 @@ private struct BandLabels: View {
 }
 
 /// A finger resting on the semester, as a day's bar's press says it on the days: held, it shows the bands' names until
-/// it lifts, and its lifting is no tap (`StripMotion.press`, `wasHeld`). Heard by `FingerDown`, which claims nothing.
+/// it lifts, and its lifting is no tap (`StripMotion.press`, `tapEndsHold`). Heard by `FingerDown`, which claims nothing.
 private struct HoldForNames: ViewModifier {
     let motion: StripMotion
 
@@ -989,7 +1004,8 @@ private struct HoldForNames: ViewModifier {
 /// and cannot be prevented, so the semester's tap and pinch and the page's scroll go on as if it were not there. Every
 /// SwiftUI gesture that heard a touch from its first moment took it: a long press (even one meant never to finish)
 /// or a drag took the page's vertical scroll from the strip, and one inside the tap kept every tap from it. Up at the
-/// lift, or once the finger has moved 10 points (the page scrolling: no hold).
+/// lift, or once the finger has moved 10 points before it could be a hold (the page scrolling); a hold that drifts
+/// (under 2 mm is 10 points) stays a hold, as a long press does once it has begun.
 private struct FingerDown: UIGestureRecognizerRepresentable {
     var changed: (Bool) -> Void
 
@@ -999,6 +1015,7 @@ private struct FingerDown: UIGestureRecognizerRepresentable {
     final class Observer: UIGestureRecognizer {
         var changed: (Bool) -> Void = { _ in }
         private var start: CGPoint?
+        private var startTime: TimeInterval = 0
 
         override init(target: Any?, action: Selector?) {
             super.init(target: target, action: action)
@@ -1013,22 +1030,28 @@ private struct FingerDown: UIGestureRecognizerRepresentable {
         override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
             guard start == nil, let touch = touches.first else { return }
             start = touch.location(in: view)
+            startTime = touch.timestamp
             changed(true)
         }
 
         override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
-            guard let start, let point = touches.first?.location(in: view) else { return }
+            guard let start, let touch = touches.first, touch.timestamp - startTime < StripMotion.holdTime else { return }
+            let point = touch.location(in: view)
             if hypot(point.x - start.x, point.y - start.y) > 10 { finish() }
         }
 
         override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) { finish() }
         override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) { finish() }
 
-        override func reset() { start = nil }
+        override func reset() { lifted() }   // however it ends, the finger is said to be up: a press left down would keep the names up and turn the next tap away
 
         private func finish() {
-            if start != nil { start = nil; changed(false) }
+            lifted()
             state = .failed
+        }
+
+        private func lifted() {
+            if start != nil { start = nil; changed(false) }
         }
     }
 }
@@ -1312,6 +1335,7 @@ private struct TermOverview: View {
     let viewport: CGFloat
     let calendar: Calendar
     @State private var scrubbing = false
+    @GestureState private var touching = false   // a finger on the line: back to false however the drag ends, a cancel included
 
     var body: some View {
         let weeks = Strip.periods(in: data.span, level: .weeks, calendar: calendar)
@@ -1325,6 +1349,7 @@ private struct TermOverview: View {
             }
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0)   // a scroll bar: the touch is its own from the first point, as a slider's is
+                .updating($touching) { _, touching, _ in touching = true }
                 .onChanged { value in
                     if abs(value.translation.width) > 3, !scrubbing { scrubbing = true; motion.scrub(true) }   // the days move: their names show, as for a scroll
                     if scrubbing { motion.scroll(to: scale.offset(centring: value.location.x / max(geo.size.width, 1)), animated: false) }
@@ -1336,6 +1361,9 @@ private struct TermOverview: View {
                 })
         }
         .frame(height: 44)
+        .onChange(of: touching) { _, touching in   // a scrub cancelled (Control Center, a call) calls no onEnded: the touch's own state still ends
+            if !touching, scrubbing { scrubbing = false; motion.scrub(false) }
+        }
         .onDisappear { motion.scrub(false) }   // gone mid-scrub (a change of level): its end will not come
         .accessibilityElement()
         .accessibilityLabel("Term")
