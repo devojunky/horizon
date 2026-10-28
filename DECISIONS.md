@@ -1113,6 +1113,8 @@ The owner: a tap on an item went straight to its editor. It should open a page o
 - **Verified:**
   - A spare iPhone Duo simulator (iOS 27.1), closed; the shared Duo had another session's Horizon open. `onHingeChange` fired as the page appeared with "closed, 0°", and the choice page drew the cover (captured).
   - Every shape through `--hinge`, on an iPhone 18 Pro Max simulator (iOS 27.2), at 0, 15, 30, 45, 60, 120 and 180 degrees. On an iPad Air simulator, its stage set apart from the words as on the open Duo, at 120 and 180.
+  - The fixed angles on the spare Duo (closed, its outer display) and an iPhone 18 Pro simulator: 0 draws the cover, 90 and 120 the V, 180 the spread. Without the flag each gives back what `onHingeChange` decides: the cover on the Duo, the slab on the iPhone.
+  - The flag is compiled out of Release. Release defines no `DEBUG`, so the flag's code is not built there, and a Release build launched with `--onboarding-page 4 --hinge 180` took neither.
   - The swing, recorded with `--hinge sweep` and read frame by frame: shut, the cover lifting, edge on, the V, flat, and back.
   - Reduce Motion: shut and open fade through, and the cloud stays.
   - Dark mode.
