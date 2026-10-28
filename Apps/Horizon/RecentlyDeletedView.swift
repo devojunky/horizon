@@ -46,7 +46,7 @@ extension RecentlyDeletedView {
     var body: some View {
         List {
             if courses.isEmpty, documents.isEmpty {
-                EditorialEmpty(title: "Nothing deleted lately.", deck: "A course or document you delete waits here for 30 days.") {}
+                EditorialEmpty(title: "Nothing deleted lately.") {}   // reached from a row counting what is here: empty only once it is all restored or gone
                     .listRowSeparator(.hidden)
                     .onPaper()
                     .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))

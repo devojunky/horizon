@@ -38,7 +38,7 @@ struct MacReviewPage: View {
         Group {
             if rows.isEmpty {
                 ScrollView {   // in a scroll view, as every empty page is: alone, its words set the window's minimum height
-                    EditorialEmpty(title: "Nothing to review.", deck: "Everything the reader found was sure enough to go straight to Reminders.") { EmptyView() }
+                    EditorialEmpty(title: "Nothing to review.", deck: "Items the reader is unsure of wait here.") { EmptyView() }   // a Mac has no onboarding: what the page is for, true once it is cleared too
                         .padding(.horizontal, Design.margin)
                 }
                 .keyboardStaysInSidebar()
@@ -213,7 +213,7 @@ private struct ReviewDetail: View {
                     }
                     actions(several: true, other: nil, discards: moved < items.count).padding(.top, 18)
                 } else {
-                    Text("Select an item to see why it waits.").foregroundStyle(.secondary)
+                    Text("No item selected.").foregroundStyle(.secondary)   // the first is chosen on arrival; this is after a deselection
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

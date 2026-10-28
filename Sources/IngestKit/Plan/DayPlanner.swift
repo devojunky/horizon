@@ -785,7 +785,7 @@ public actor DayPlanner {
     static func fixedBlocks(_ input: PlanInput, open: Set<Int>, planned: [PlanBlock]) -> [PlanBlock] {
         events(in: input).enumerated().compactMap { i, e in
             if open.contains(i + 1), planned.contains(where: { $0.start < e.end && $0.end > e.start }) { return nil }
-            return PlanBlock(start: e.start, end: e.end, title: e.title, reason: "On your calendar.", kind: .fixed)
+            return PlanBlock(start: e.start, end: e.end, title: e.title, reason: "", kind: .fixed)   // no reason: its kind says it is the calendar's
         }
     }
 

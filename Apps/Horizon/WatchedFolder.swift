@@ -57,7 +57,7 @@ final class WatchedFolder {
         panel.canChooseDirectories = true
         panel.canCreateDirectories = true
         panel.prompt = "Choose"
-        panel.message = "Horizon reads what is saved or dropped into this folder from now on. What it holds already is left alone."
+        panel.message = "Horizon reads what is saved or dropped into this folder from now on."   // "from now on": what it holds already is left alone
         panel.directoryURL = url ?? Self.home
         guard panel.runModal() == .OK, let folder = panel.url else { return }
         Task { await choose(folder) }

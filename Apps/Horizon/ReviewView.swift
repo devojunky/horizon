@@ -16,7 +16,7 @@ struct ReviewView: View {
     var body: some View {
         List {
             if pending.isEmpty {
-                EditorialEmpty(title: "Nothing to review.", deck: "Everything the reader found was sure enough to go straight to Reminders.") { EmptyView() }
+                EditorialEmpty(title: "Nothing to review.") { EmptyView() }   // reached from a row counting what waits: empty only once it is all reviewed
                     .listRowSeparator(.hidden)
                     .onPaper()
             }

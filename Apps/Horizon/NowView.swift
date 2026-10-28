@@ -268,7 +268,7 @@ private struct PlanList: View {
                             .listRowSeparator(.hidden)
                     }
                     if stage == .invitation {
-                        EditorialEmpty(title: "Today, planned.", deck: "One plan for the rest of today, around your calendar, with a reason on every block.") {
+                        EditorialEmpty(title: "Today, planned.") {   // no deck (the owner's call): this stands every day until the day is planned, and the buttons say what it does
                             Button("Plan Today", action: planToday).prominent()
                             if !beside {   // with the column beside the page, it is there
                                 Button("Tell the Planner…", action: tell).buttonStyle(.borderless)   // in a list row: its own tap, in the tint, as on any page
@@ -405,6 +405,11 @@ struct BlockRow: View {
     @State private var wordsIn = true     // the time and the words
 
     private enum Phase { case past, current, ahead }
+    /// The kind beside the title, where it adds something: "Rest" needs no "Rest" chip, "Study for Test 1" no "Study"
+    /// one. A calendar event's chip is all that says where it is from (its reason is empty).
+    private var chip: String? {
+        block.kind == .work || block.kind == .study || block.title.caseInsensitiveCompare(Self.kindName(block.kind)) == .orderedSame ? nil : Self.kindName(block.kind)
+    }
     private var phase: Phase { !block.isOpen ? .past : now >= block.end ? .past : now >= block.start ? .current : .ahead }
     private static let dotCentre: CGFloat = 22   // from the row's top
 
@@ -418,7 +423,7 @@ struct BlockRow: View {
             .dynamicTypeSize(...DynamicTypeSize.accessibility1) // the column keeps its measure; the title beside it grows on
             .frame(width: 92, alignment: .trailing)
             .minimumScaleFactor(0.6)
-            .padding(.top, 14)
+            .padding(.vertical, 14)   // below too: a block with no reason (a calendar event's) is no taller than its times
             .opacity(wordsIn ? 1 : 0)
             ZStack(alignment: .top) {
                 VStack(spacing: 0) {
@@ -451,8 +456,8 @@ struct BlockRow: View {
                         .font(.body.weight(block.kind == .work || block.kind == .study ? .semibold : .regular))
                         .foregroundStyle(block.kind == .fixed ? .secondary : .primary)
                         .strikethrough(block.isDone, color: .secondary)
-                    if block.kind != .work, block.kind != .study, block.title.caseInsensitiveCompare(Self.kindName(block.kind)) != .orderedSame {   // "Rest" needs no "Rest" chip, "Study for Test 1" no "Study" one
-                        Text(Self.kindName(block.kind)).font(.caption2).foregroundStyle(.secondary)
+                    if let chip {
+                        Text(chip).font(.caption2).foregroundStyle(.secondary)
                             .padding(.horizontal, 6).padding(.vertical, 2).background(Design.rule, in: Capsule())
                     }
                 }
@@ -476,7 +481,7 @@ struct BlockRow: View {
         // was still growing.
         .contentShape(Rectangle())
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(Self.clock(block.start)) to \(Self.clock(block.end)), \(block.title)\(block.within.map { ", in \($0)" } ?? "")\(block.reason.isEmpty ? "" : ". \(block.reason)")\(block.isDone ? ", done" : block.isSkipped ? (block.wasLeftUnfinished ? ", not finished" : ", skipped") : asking ? ", finished?" : phase == .current ? ", now" : "")")
+        .accessibilityLabel("\(Self.clock(block.start)) to \(Self.clock(block.end)), \(block.title)\(chip.map { ", \($0.lowercased())" } ?? "")\(block.within.map { ", in \($0)" } ?? "")\(block.reason.isEmpty ? "" : ". \(block.reason)")\(block.isDone ? ", done" : block.isSkipped ? (block.wasLeftUnfinished ? ", not finished" : ", skipped") : asking ? ", finished?" : phase == .current ? ", now" : "")")
         .onAppear {
             guard arriving, !reduceMotion else { return }
             headDrawn = false; landed = false; wordsIn = false
@@ -537,14 +542,23 @@ struct BlockRow: View {
 struct TonightUntil: View {
     let end: Int
     let usual: Int
+    /// The words before the time: "Until" under a kicker that already says tonight (the column beside the plan).
+    var lead = "Tonight until"
     var choose: (Int) -> Void
 
     /// The ends still ahead (at 2 AM, 6 PM to 2 AM are over), and the one chosen whatever it is.
     private var choices: [Int] { PlanHours.endsAhead(including: end) }
 
+    /// iOS's pop-up button brings its own inset; a Mac draws it on a bezel, which the words would otherwise touch.
+    #if os(macOS)
+    private static let gap: CGFloat = 6
+    #else
+    private static let gap: CGFloat = 0
+    #endif
+
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 0) {   // the pop-up button brings its own inset
-            Text("Tonight until").foregroundStyle(.secondary).accessibilityHidden(true)   // the pop-up says it
+        HStack(alignment: .firstTextBaseline, spacing: Self.gap) {
+            Text(lead).foregroundStyle(.secondary).accessibilityHidden(true)   // the pop-up says it
             // The system's pop-up button on both platforms: the time alone on the button, the usual end marked in the list.
             Picker(selection: Binding(get: { end }, set: { choose($0) })) {
                 ForEach(choices, id: \.self) { hour in Text(PlanHours.choice(hour, usual: usual)).tag(hour) }
@@ -617,19 +631,17 @@ struct NowRail: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
                 RailSection("Tonight") {
-                    TonightUntil(end: end, usual: usualEnd, choose: chooseEnd)
-                    Text("For tonight only. Your usual hours are in Tell the Planner.").font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    TonightUntil(end: end, usual: usualEnd, lead: "Until", choose: chooseEnd)   // the kicker says tonight; the menu marks the usual end
                 }
                 RailSection("You told the planner") {
-                    Text(model.planInstructions.isEmpty ? "Nothing yet. A shift, practice, a night off: the planner works around what you tell it." : model.planInstructions)
+                    Text(model.planInstructions.isEmpty ? "Nothing yet." : model.planInstructions)
                         .font(.subheadline).foregroundStyle(model.planInstructions.isEmpty ? .secondary : .primary)
                         .lineLimit(10).fixedSize(horizontal: false, vertical: true)
                     Button("Tell the Planner…", action: tell).bordered().controlSize(.small).reachable().padding(.top, 2)   // a page's other action; 44 points to hit on iOS
                 }
                 RailSection("Due this week") {
                     let due = dueSoon
-                    if due.isEmpty { Text("Nothing due in the next seven days.").font(.subheadline).foregroundStyle(.secondary) }
+                    if due.isEmpty { Text("Nothing due.").font(.subheadline).foregroundStyle(.secondary) }
                     VStack(alignment: .leading, spacing: 12) {
                         ForEach(due.prefix(Self.shown)) { item in
                             Button { open(item) } label: { DueRow(item: item) }

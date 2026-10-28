@@ -460,7 +460,7 @@ struct DocumentsTable: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Your Mac is less sure of tables and pictures than Claude, and takes minutes on a long document. Nothing is sent to Anthropic.")
+            Text("Your Mac is less sure of tables and pictures than Claude, and takes minutes on a long document.")   // "on This Mac" says nothing is sent
         }
         .quickLookPreview($preview)
         .navigationTitle("Documents")
@@ -634,7 +634,7 @@ struct RecentlyDeletedTable: View {
                 .keyboardStaysInSidebar()
             } else {
                 VStack(alignment: .leading, spacing: 0) {
-                    PageLine("Kept for 30 days, then removed for good. Double-click one to put it back.")
+                    PageLine("Kept for 30 days, then removed for good.")   // Restore is in the toolbar, the menus and on a double-click
                     table(entries)
                 }
             }
@@ -738,7 +738,7 @@ private struct DropVeil: View {
             VStack(spacing: 12) {
                 Image(systemName: "arrow.down.doc").font(.system(size: 44, weight: .light)).foregroundStyle(Design.accent)
                 Text("Drop to read").deck()
-                Text(course.map { "Filed under \($0)." } ?? "A syllabus, a schedule, a screenshot.").foregroundStyle(.secondary)
+                if let course { Text("Filed under \(course).").foregroundStyle(.secondary) }   // what is being dropped, the one dragging it knows
             }
             RoundedRectangle(cornerRadius: 18).strokeBorder(Design.accent, style: StrokeStyle(lineWidth: 2, dash: [10, 8])).padding(16)
         }
@@ -917,7 +917,7 @@ private struct InboxSettingsSection: View {
         } header: {
             Kicker("Inbox")
         } footer: {
-            Text("Anything saved or dropped into this folder after it is chosen is read as soon as it stops changing. What it held already is left alone.")
+            Text("Anything saved or dropped into this folder after it is chosen is read.")   // "after it is chosen": what it held already is left alone
         }
     }
 }

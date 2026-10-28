@@ -131,7 +131,7 @@ struct IntakeStatus: View {
             }
         case .remindersOff:
             VStack(alignment: .leading, spacing: 8) {
-                Label("Reminders access is off, so deadlines stay in Horizon and never reach your lists.", systemImage: "exclamationmark.triangle").foregroundStyle(Design.accentInk)
+                Label("Reminders access is off, so deadlines stay in Horizon.", systemImage: "exclamationmark.triangle").foregroundStyle(Design.accentInk)
                 #if os(iOS)
                 Button("Open Settings") { if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) } }.bordered().controlSize(.small).reachable()
                 #else
@@ -140,7 +140,7 @@ struct IntakeStatus: View {
             }
         case .listGone:
             VStack(alignment: .leading, spacing: 8) {
-                Label("The Horizon list is gone from Reminders, so deadlines stay in Horizon until it is back.", systemImage: "exclamationmark.triangle").foregroundStyle(Design.accentInk)
+                Label("The Horizon list is gone from Reminders, so deadlines stay in Horizon.", systemImage: "exclamationmark.triangle").foregroundStyle(Design.accentInk)   // Recreate List under it is the way back
                 Button("Recreate List") { Task { await model.recreateRemindersList() } }.bordered().controlSize(.small).reachable()
             }
         case .failed:
