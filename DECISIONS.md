@@ -1017,7 +1017,7 @@ The owner: a tap on an item went straight to its editor. It should open a page o
   - Settings ▸ Reading on the Mac, captured: Through Horizon and With Your Own Key, Test Connection, and the footers naming this Mac.
   - The Worker's tests pass, with one new test for the rule (15), and it typechecks. The Mac and iOS apps build.
 - **Not verified:** an attestation from a Mac that starts up with Full Security, and so which environment its evidence names (the development Worker now takes either); a read through the service from a Mac.
+- **Deployed** at the owner's word, the same day: the development Worker, version `78c6c632-e434-4cc3-8871-6eb74392af5e`, from this branch, whose only Worker change since main is `takesEvidence`. It answered a challenge afterwards. The version before it, to roll back to, is `17f620cb-cde3-4383-955c-4c7cfecb437a`. Production was not redeployed, and needs nothing: it already takes a Mac's evidence.
 - **Left for the owner:**
-  - Deploy the development Worker (`pnpm run deploy:dev` in `Server/`). Until then a Mac's Debug build is refused there if its evidence names production. Production needs no deploy, since it already takes a Mac's evidence.
   - To try it from this Mac, start it up with Full Security (Startup Security Utility, in recoveryOS). Whatever needed Reduced Security would stop loading.
 - **Earlier entries, corrected:** 2026-10-23 «The reading service in the app» offered the service on iOS only, "not the Mac, whose build carries no App Attest entitlement yet": a Mac needs no entitlement, and has the service now. 2026-10-26's review note asked for a Claude key because the Mac had no reading service; App Review's Mac can now read through it, so the key is a fallback only.
