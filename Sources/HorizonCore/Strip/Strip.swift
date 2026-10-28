@@ -83,9 +83,6 @@ public enum Strip {
         min(maximum, max(minimum, (available / Double(max(rows, 1))).rounded(.down)))
     }
 
-    /// Whether a band for everything belongs above the courses' own: only when there are several to add up.
-    public static func showsTotal(bands: Int) -> Bool { bands >= 2 }
-
     // MARK: Levels (one to read, one to work from)
 
     /// Two levels for two intents. `weeks` is the overview: the whole term across the screen, as dense as it needs

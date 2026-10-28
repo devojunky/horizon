@@ -363,9 +363,9 @@ private struct ChartHeader: View {
     }
 }
 
-/// The term, day by day, one band per course (and one for everything above them when there are several). Top to
-/// bottom: the months, the weeks (each week's first date), the bands, and a foot for "Today". Left to right: the
-/// bands' names, then the days, each as wide as the window allows. Load is colour, never size (`Strip.heat`).
+/// The term, day by day, one band per course. Top to bottom: the months, the weeks (each week's first date), the
+/// bands, and a foot for "Today". Left to right: the bands' names, then the days, each as wide as the window allows.
+/// Load is colour, never size (`Strip.heat`).
 private struct TermChart: View {
     let data: StripData
     @Binding var chosen: DateInterval?
@@ -512,7 +512,7 @@ private struct TermChart: View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(data.bands) { band in
                 Text(band.name).font(.caption2.weight(.semibold)).textCase(.uppercase).kerning(0.6)
-                    .foregroundStyle(band.kind == .all ? .primary : .secondary)
+                    .foregroundStyle(.secondary)
                     .lineLimit(2).truncationMode(.tail)   // a long name takes a second line in its band (two fit in a row) rather than lose its middle
                     .frame(width: Geometry.labelWidth - 16, height: Geometry.row, alignment: .leading)
             }
