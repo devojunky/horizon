@@ -22,6 +22,9 @@ struct SettingsView: View {
                     if let sample = Bundle.main.url(forResource: "sample-syllabus", withExtension: "pdf") { Task { await model.importFiles([sample]) } }
                 }
                 .macBordered()
+                #if os(iOS)
+                Button("Show Onboarding", systemImage: "sun.horizon") { model.showsOnboarding = true }   // over the app from its first page; nothing is reset
+                #endif
             } header: {
                 Kicker("Debug")
             }

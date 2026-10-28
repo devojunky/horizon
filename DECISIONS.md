@@ -1099,7 +1099,7 @@ The owner: a tap on an item went straight to its editor. It should open a page o
   - Closed to open, or back, swings the cover all the way over on a slower spring.
   - The hinge moves the drawing only, never the layout (Apple: hinge data for interactions and effects).
 - **Read as the page appears.** `onHingeChange` fires as the view appears, with the hinge as it is: "closed, 0°" on the closed Duo at launch. So the first frame is right, and no shape needs guessing first.
-- **The stage is made again as the Duo opens and closes.** The page's layout changes there (its column, then its stage beside its words), and the stage replays its scene. The last reading outlives it (`lastFold`), so the new stage's device starts from where the old one was, and swings into its new shape as it rises.
+- **The stage is made again as the Duo opens and closes.** The page's layout changes there (its column, then its stage beside its words), and the stage replays its scene. The old stage reads the hinge while it moves, and the last reading outlives it (`lastFold`), so the new stage starts in its new shape and rises in it: opening, the device comes up already open, and the swing from shut to open is not seen across the switch, which the system covers with its own transition. Without `lastFold` the new stage would draw the slab until its first reading.
 - **Decided for the owner:**
   - **One drawing for both half-open poses**, the book's (a V facing the eye, the fold upright), propped like a laptop too, for three reasons. Apple's laptop symbol (`iphone.duo.seated`) is the alternative, if the owner wants it.
     - The stage is a landscape window that draws each device in its own upright shape, as the iPhone and iPad slabs are drawn however the device is turned.
@@ -1110,6 +1110,7 @@ The owner: a tap on an item went straight to its editor. It should open a page o
   - **Reduce Motion:** closed or open, never between, and one fades through to the other: the device and its dotted way, never the cloud. The fade is the whole device's (a compositing group), not its screen over its shell.
   - **No new haptic.** The fold is the user's own hand; nothing lands.
 - **DEBUG:** `--hinge <degrees>` has any device read as iPhone Duo held that far open (0 shut, 180 flat), and `--hinge sweep` opens and shuts it over and over. They show the drawing at any angle without a Duo, and the swing to record.
+- **Settings ▸ Debug ▸ Show Onboarding** (DEBUG, iOS; the owner's ask): the onboarding over the app from its first page, whatever the library holds, resetting nothing. Skip or Begin goes back to where it was shown from.
 - **Verified:**
   - A spare iPhone Duo simulator (iOS 27.1), closed; the shared Duo had another session's Horizon open. `onHingeChange` fired as the page appeared with "closed, 0°", and the choice page drew the cover (captured).
   - Every shape through `--hinge`, on an iPhone 18 Pro Max simulator (iOS 27.2), at 0, 15, 30, 45, 60, 120 and 180 degrees. On an iPad Air simulator, its stage set apart from the words as on the open Duo, at 120 and 180.
@@ -1120,7 +1121,14 @@ The owner: a tap on an item went straight to its editor. It should open a page o
   - Dark mode.
   - **iPhones and iPads unchanged.** Main's build and this one, on an iPhone 18 Pro Max and an iPad Air 11-inch (M4) simulator with Reduce Motion on (so the scene ends still), differ by 0 pixels on the choice page, light and dark.
   - The iOS and Mac builds.
+  - **The real hinge**, on the spare Duo through Device Hub (granted at the owner's word), both displays recorded and read frame by frame:
+    - Closed: the cover on the outer display. Open: the spread on the inner display, the stage beside the words.
+    - Half open like a book: the V, the stage on one half and the words on the other. Propped like a laptop (half open, turned a quarter): the same V on the raised half, the two readers side by side on the flat half.
+    - Half open to open: the V flattens with the hinge as the layout settles. Open to half open: the system blurs the display through the change, and the V stands when it clears.
+    - Shut to open: the inner display wakes and the device rises already open (above). Open to shut: the outer display shows the cover.
+    - With Reduce Motion: shut and open on the real hinge, no rise and no swing; the scene fades in with the device in its shape.
+  - Show Onboarding: tapped in Settings on an iPhone 18 Pro simulator, the onboarding came up from its first page, and Skip went back to Settings.
 - **Not verified:**
-  - The Duo opened, folded like a book, propped like a laptop, and swept with Device Hub's angle slider. This session's access to Device Hub was declined, and no `simctl` verb folds the Duo. So these are untested: the angle the system reports while partly open, the stage made again as the Duo opens (its device swinging as it rises), and the following of a real hinge. The drawing at each angle is tested (`--hinge`).
+  - A continuous sweep of the real hinge. Device Hub's posture control is three buttons, with no angle slider in its accessibility tree, and Option-drags across it moved nothing. Each press takes the hinge straight to its posture, behind the system's transition. The continuous swing is verified with `--hinge sweep` only.
   - Stood on its edge: if the system shows the outer display there while the hinge is partly open, the device is drawn as the V of its inside, not the cover.
   - A physical iPhone Duo.
