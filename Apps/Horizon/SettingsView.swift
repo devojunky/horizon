@@ -24,8 +24,6 @@ struct SettingsView: View {
                 .macBordered()
             } header: {
                 Kicker("Debug")
-            } footer: {
-                Text("Reads the bundled sample with whatever route is chosen above.")
             }
             #endif
         }
@@ -39,7 +37,8 @@ struct SettingsView: View {
 
 /// The reading route as one choice (the device's own greyed where Apple Intelligence is not supported); which Claude
 /// (Horizon's reading service, where it is offered, or the user's own key, with its model); and the day plan, the one
-/// small task Claude may take on. Each row says what it sends, in as few words as that takes.
+/// small task Claude may take on. Each row says what it sends, in as few words as that takes, and nothing a user of a
+/// key already knows (where a key comes from, where it is kept); who pays is said only beside Horizon's allowance.
 struct ReadingSettingsSections: View {
     @Environment(AppModel.self) private var model
     @State private var key = ""
@@ -66,11 +65,12 @@ struct ReadingSettingsSections: View {
         return serviceOffered ? "Needs Horizon's server or a key." : "Needs a key."
     }
 
+    /// "On This iPhone" says that nothing leaves it; the line says what the choice costs, or why it cannot be made.
     private var deviceDetail: String {
         switch model.deviceModel {
-        case .ready: "Nothing leaves your \(here). Slower, and less sure of tables and pictures."
-        case .downloading: "Nothing leaves your \(here). Apple Intelligence is still downloading."
-        case .off: "Turn on Apple Intelligence in \(systemSettings) to read here."
+        case .ready: "Slower, and less sure of tables and pictures."
+        case .downloading: "Apple Intelligence is still downloading."
+        case .off: "Turn on Apple Intelligence in \(systemSettings)."
         case .unsupported: "This \(here) doesn't support Apple Intelligence."
         }
     }
@@ -95,7 +95,7 @@ struct ReadingSettingsSections: View {
         .onChange(of: model.claudeModel) { _, _ in verdict = nil }
         if serviceOffered {
             Section {
-                RouteRow(title: "Through Horizon", detail: "No key needed. Sonnet 5.5, with a daily allowance.", selected: model.usesReadingService) {
+                RouteRow(title: "Through Horizon", detail: "Sonnet 5.5, with a daily allowance.", selected: model.usesReadingService) {   // no key: the row under it is the key's
                     withAnimation { model.claudeAccess = .service; model.readingRoute = .claude; verdict = nil }   // Horizon's Claude chosen is Claude asked for
                 }
                 RouteRow(title: "With Your Own Key", detail: "Any model, billed to your Anthropic account.", selected: !model.usesReadingService) {
@@ -109,7 +109,7 @@ struct ReadingSettingsSections: View {
                 Kicker("Claude")
             } footer: {
                 if model.usesReadingService {
-                    Text("Horizon's server keeps none of what it passes to Anthropic, and knows this \(here) only by a key made for it.")
+                    Text("Horizon's server keeps none of what it passes to Anthropic.")
                 }
             }
             .animation(.default, value: verdict?.text)
@@ -139,9 +139,6 @@ struct ReadingSettingsSections: View {
                 }
             } header: {
                 Kicker(serviceOffered ? "Your key" : "Claude")
-            } footer: {
-                // With the service offered, its row has already said who bills.
-                Text(serviceOffered ? "From the Claude Console, kept only on this \(here)." : "From the Claude Console, kept only on this \(here) and billed to your Anthropic account.")
             }
             .animation(.default, value: hasKey)          // Remove Key comes with a key, animated
             .animation(.default, value: verdict?.text)   // the test's verdict arrives under the button, animated
@@ -151,7 +148,7 @@ struct ReadingSettingsSections: View {
         } header: {
             Kicker("Day plan")
         } footer: {
-            Text("Claude follows your instructions more closely. The day's calendar events, your items and what you told the planner go to Anthropic\(model.usesReadingService ? " through Horizon's server" : "").")
+            Text("The day's calendar events, your items and what you told the planner go to Anthropic\(model.usesReadingService ? " through Horizon's server" : "").")
         }
     }
 

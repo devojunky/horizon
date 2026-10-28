@@ -185,7 +185,8 @@ struct StoreFailure: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             EditorialEmpty(title: "Horizon could not open its library.",
-                           deck: "Nothing in it was changed, and nothing goes to Reminders until it opens. Quit Horizon and open it again; if this keeps happening, update the app.") { EmptyView() }
+                           deck: "Nothing in it was changed, and nothing goes to Reminders until it opens. Quit Horizon and open it again; if this keeps happening, update the app.",
+                           standsAlone: true) { EmptyView() }
             Text(reason).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }

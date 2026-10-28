@@ -385,7 +385,7 @@ struct HorizonStripView: View {
             .overlay {
                 if data.items.isEmpty {
                     ScrollView {
-                        EditorialEmpty(title: "Nothing on the horizon.", deck: "Add a syllabus or a schedule, and its term appears here.") {
+                        EditorialEmpty(title: "Nothing on the horizon.") {   // what comes here, onboarding has said
                             ImportMenu().prominent()
                         }
                         .padding(.horizontal, 20)

@@ -57,7 +57,7 @@ struct MacCoursePage: View {
                 .padding(.horizontal, Design.margin)
                 .padding(.bottom, 6)
                 ItemTable(rows: rows, selection: $selection, sortOrder: $sortOrder, showsCourse: false, compact: true,
-                          emptyText: obligations.isEmpty ? "No items yet. Add a document, or an item by hand (File ▸ Add Item…)." : "Everything on file is done.",
+                          emptyText: obligations.isEmpty ? "No items yet." : "Everything on file is done.",   // Add Document is in the toolbar, Add Item… in File
                           reveal: revealed,
                           mark: { id, done in lingering.mark(id, done: done); Task { await model.setCompleted(id, done) } },
                           skip: { id, skipped in lingering.mark(id, done: skipped); Task { await model.setSkipped(id, skipped) } },

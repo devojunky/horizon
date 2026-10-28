@@ -1021,3 +1021,56 @@ The owner: a tap on an item went straight to its editor. It should open a page o
 - **Left for the owner:**
   - To try it from this Mac, start it up with Full Security (Startup Security Utility, in recoveryOS). Whatever needed Reduced Security would stop loading.
 - **Earlier entries, corrected:** 2026-10-23 «The reading service in the app» offered the service on iOS only, "not the Mac, whose build carries no App Attest entitlement yet": a Mac needs no entitlement, and has the service now. 2026-10-26's review note asked for a Claude key because the Mac had no reading service; App Review's Mac can now read through it, so the key is a fallback only.
+
+## 2026-10-28 · Copy says nothing the user already knows
+
+- **The owner asked** for every string to be gone through again, to a higher bar than 2026-10-25's: not only what the screen already says, but what the user already knows or can take as read. Their examples: Settings' "From the Claude Console, kept only on this iPhone"; the Library's export instructions; Now's "One plan for the rest of today, around your calendar…", which the calendar's permission prompt and onboarding have said; "Standing rules or today's" under Tell the Planner's box. And "Today, planned." set as large as the page's own title.
+- **An empty page's line sits a step under the title (iOS).** `EditorialEmpty` set its line in the display serif, the large title's size and weight, so "Today, planned." read as a second title under "Now". On iOS it is now a deck (title2, serif). A Mac's toolbar title is small, so there the line stays the page's biggest. The deck under it is optional, and an empty state with no actions leaves no gap for them.
+- **What went:**
+  - **Settings.**
+    - The key's footer in both forms: "From the Claude Console, kept only on this iPhone", and the Mac's "…and billed to your Anthropic account".
+    - "Nothing leaves your iPhone." under On This iPhone: the row's name says it, as the confirmation's did on 10-25. "to read here" after "Turn on Apple Intelligence in the Settings app".
+    - "No key needed." under Through Horizon: the row under it is the key's.
+    - The second half of the service's footer, "and knows this iPhone only by a key made for it". "Horizon's server keeps none of what it passes to Anthropic." stays.
+    - "Claude follows your instructions more closely." from the day plan's footer. What it sends stays.
+    - The Debug section's footer.
+  - **The Library.** Its footer: what an export holds (not the key), and where to save it. Horizon has no folder in Files (`UIFileSharingEnabled` is unset), so the file could never have been saved into one by mistake. Also "Close Horizon from the app switcher and open it again." The import waiting says it "replaces this one once Horizon is closed and opened again", not "the next time Horizon opens": coming back to an app left open is not opening it, and the import is applied at launch only. The confirmation keeps the file's device, date and counts, and "This can't be undone."
+  - **Now.**
+    - The invitation's deck, on both platforms. The owner's reasons were that the calendar's prompt and onboarding say it. Neither does before the first plan: onboarding has no page on the plan, and the prompt comes with the first Plan Today. The cut stands as the owner's call: the invitation stands every day until the day is planned, and its buttons say what it does. If a first visit is to be told, onboarding is the place.
+    - In the column beside the plan (the Mac, an iPad, iPhone Duo open): "For tonight only. Your usual hours are in Tell the Planner." The kicker says tonight, so its line now reads "Until 10 PM", not "Tonight" twice. "A shift, practice, a night off: the planner works around what you tell it." after "Nothing yet.". "in the next seven days" after "Nothing due": the kicker says the week.
+    - On a Mac the pop-up's bezel no longer touches the words before it (6 points between them).
+  - **Tell the Planner.**
+    - The box's footer, both sentences. The count near the limit stays.
+    - "Your day" is now **Usual hours**. Its footer ("For one late night, change Tonight Until on Now instead.") is then not needed: the label says usual, and Tonight Until's menu marks that end "(Usual)". Reversible: the label is one string.
+    - A calendar block's editor drops "From your calendar." (its kind reads Calendar) and keeps that changing the block leaves the event alone.
+  - **A calendar block's reason.** Every event on the plan carried "On your calendar." under its name, beside its Calendar chip. Its reason is now empty (`DayPlanner.fixedBlocks`): the row shows the name and the chip, the Lock Screen shows what comes after instead, as it does for any block without a reason, and VoiceOver reads the chip's word, which it never did ("Dinner, meal"). A row with no reason is no taller than its times, so the time column now has the words' 14 points below it as well as above, and such a row keeps the others' rhythm.
+  - **iOS's empty pages.**
+    - Coverage's and Horizon's decks: onboarding said what to add and what comes of it.
+    - Review's and Recently Deleted's. Each is reached from a row counting what waits there, so it is empty only once the user has dealt with all of it. Review's deck was then wrong ("Everything the reader found was sure enough…").
+    - A deleted item's page: "This item was deleted, here or in Reminders."
+  - **Elsewhere.**
+    - A course page with no items says "No items yet.", without where the ways to add them are (the More menu; on a Mac the toolbar and File).
+    - The course editor's footers: "Also shown on each of its reminders." (a reminder's title carries the course's name, as Reminders shows), "Term dates set how far the Horizon strip runs…" and "Weights set each item's points at stake…". The warning for weights over 100% stays.
+    - Coverage's notices end at the consequence, "…so deadlines stay in Horizon.", without "and never reach your lists" or "until it is back": Recreate List under it is the way back.
+    - A cancelled read says "Reading cancelled.", without "Retry it from Documents.": the user cancelled it.
+    - The Mac's Read on This Mac confirmation drops "Nothing is sent to Anthropic.", which 10-25 meant to take out there too.
+    - The Mac's drop veil keeps "Filed under …" and drops "A syllabus, a schedule, a screenshot.": the one dragging knows what it is.
+    - The Mac's Inbox footer is "Anything saved or dropped into this folder after it is chosen is read." "as soon as it stops changing" was a mechanism, and "What it held already is left alone." said again what "after it is chosen" does. The folder's open panel drops the same sentence after "from now on".
+    - Search with an empty library says "Nothing to search yet.", not "Search your items, courses, policies and documents.", which the field's own prompt says.
+    - Documents' rows (iOS) name the device only when the file is on another, as a course's page does: this one's name was on every row.
+    - The Mac's Recently Deleted drops "Double-click one to put it back.": Restore is in the toolbar and the menus. Its empty Review now says "Items the reader is unsure of wait here.", true once the user has cleared it, which "Everything the reader found was sure enough…" was not. Its detail with nothing selected says "No item selected." (the first item is chosen on arrival), not how to select one.
+- **What stayed, and why:**
+  - Each choice's line on what it sends or costs: "Slower, and less sure of tables and pictures.", "Sonnet 5.5, with a daily allowance.", "Any model, billed to your Anthropic account.", the day plan's "…go to Anthropic".
+  - "Horizon's server keeps none of what it passes to Anthropic.": a fact about a server the user cannot see.
+  - "Asked the first time there's a deadline to write." under Reminders access, Not asked: nothing else says when.
+  - The Remove Key and Replace Library confirmations, and Delete Course's footer: it does not ask, so the footer is where it says the bin keeps it.
+  - The Mac's empty-page decks: the Mac has no onboarding. The library that would not open keeps its line at the display size (`EditorialEmpty(standsAlone:)`): no title stands above it.
+  - Documents' "Select a document and press Space to look at it." on the Mac: Space for Quick Look is Finder's, not every table's, and the line keeps the table off the toolbar.
+  - Onboarding itself; the item page's lines about Siri; the intents' descriptions and Siri's spoken answers, which have no screen to lean on.
+- **Reviewed** by a subagent given the diff and the owner's words, not these conclusions. No bugs. Taken: the Library's wording, Search, Documents' rows, the Mac's Recently Deleted, Review and Inbox panel, the store failure's size, and the correction above about the invitation. Left as cut, the owner's bar applied: "It takes effect the next time you plan" (the plan on screen staying as it is shows that), the service's "knows this iPhone only by a key made for it", the plan switch's "Claude follows your instructions more closely", and the course editor's footers on what term dates and weights drive.
+- **Verified.**
+  - The iOS and Mac builds. IngestKitTests (191) and HorizonCoreTests (142) pass; no test held any of the words that went.
+  - Seen on an iPhone 18 Pro Max simulator (iOS 27.2): Now's invitation (light, and dark at an accessibility size, where "Now" stays the larger), Tell the Planner, Settings with a key and with Horizon's service, the course editor, and a calendar block's editor (the streamed demo plan).
+  - On an iPad simulator (iOS 27.2), on a copy of the test library: the column under the plan, Coverage's Reminders-off notice, and Recently Deleted emptied.
+  - On the Mac, a scratch store: Now with its column, and both Settings panes.
+  - Not seen: the Mac's drop veil, a course with no items, and Coverage's and Horizon's empty pages on iOS (an empty library shows onboarding first).

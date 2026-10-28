@@ -78,7 +78,7 @@ struct CourseView: View {
             }
             PageSection("Items") {
                 ForEach(toDo) { row($0) }
-                if obligations.isEmpty { Text("No items yet. Add a document, or an item by hand, from the More menu.").foregroundStyle(.secondary) }
+                if obligations.isEmpty { Text("No items yet.").foregroundStyle(.secondary) }   // the More menu in the bar holds the ways to add them
                 else if toDo.isEmpty { Text("Everything on file is done.").foregroundStyle(.secondary) }
             }
             .onPaper()

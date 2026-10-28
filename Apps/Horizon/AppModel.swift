@@ -164,7 +164,7 @@ final class AppModel {
     var planInstructions: String = AppModel.defaults.string(forKey: "planInstructions") ?? "" {
         didSet { AppModel.defaults.set(planInstructions, forKey: "planInstructions") }
     }
-    /// The hours the planner fills on a usual day (Tell the Planner's "Your day"). Persisted.
+    /// The hours the planner fills on a usual day (Tell the Planner's "Usual hours"). Persisted.
     var usualPlanHours: PlanHours = AppModel.defaults.data(forKey: "planHours").flatMap { try? JSONDecoder().decode(PlanHours.self, from: $0) } ?? PlanHours() {
         didSet { AppModel.defaults.set(try? JSONEncoder().encode(usualPlanHours), forKey: "planHours") }
     }
@@ -531,7 +531,7 @@ final class AppModel {
         if let id = cancelledDocument {
             cancelledDocument = nil
             try? await store.markDocument(id: id, status: .cancelled, failure: nil)   // the status says it
-            cancelNotice = "Reading cancelled. Retry it from Documents."
+            cancelNotice = "Reading cancelled."   // the user's own act; Documents keeps the document, with Retry
             withAnimation { statusLine = cancelNotice }
             rerun = true   // finish the rest (and the Reminders sync) in a task that is not cancelled
             return
@@ -932,7 +932,7 @@ final class AppModel {
             PlanBlock(start: at(95), end: at(185), title: "Study for Midterm 1", reason: "Worth 20%, in six days: work through the practice exam.", kind: .study, within: "Lock in at library"),
             PlanBlock(start: at(190), end: at(200), title: "Walk", reason: "Ten minutes away from the desk.", kind: .rest),
             PlanBlock(start: at(205), end: at(265), title: "Lab Report 2", reason: "Due Monday; the data is in, the write-up is not.", kind: .work),
-            PlanBlock(start: at(270), end: at(330), title: "Organizational Behavior", reason: "On your calendar.", kind: .fixed),
+            PlanBlock(start: at(270), end: at(330), title: "Organizational Behavior", reason: "", kind: .fixed),
             PlanBlock(start: at(335), end: at(395), title: "Dinner", reason: "A real break before the evening.", kind: .meal),
             PlanBlock(start: at(400), end: at(460), title: "Reading for Unit 3", reason: "Two chapters before Tuesday's quiz.", kind: .work),
             PlanBlock(start: at(465), end: at(475), title: "Rest", reason: "Eyes off the screen.", kind: .rest),

@@ -129,8 +129,9 @@ struct SearchPage: View {
             ? SearchSuggestions.queries(policies: livePolicies, items: obligations.map(ObligationSnapshot.init), documents: documents.map(DocumentSnapshot.init),
                                         now: now, calendar: .current)
             : []
-        if block == nil, suggested.isEmpty, courses.isEmpty, model.recentSearches.isEmpty, tries.isEmpty {
-            Text("Search your items, courses, policies and documents.")
+        // An empty library: what can be searched, the field's own prompt says; that there is nothing yet, nothing else does.
+        if block == nil, suggested.isEmpty, courses.isEmpty, obligations.isEmpty, documents.isEmpty, model.recentSearches.isEmpty, tries.isEmpty {
+            Text("Nothing to search yet.")
                 .font(.system(.body, design: .serif)).foregroundStyle(.secondary)
                 .listRowSeparator(.hidden).onPaper().pageRow()
         }

@@ -30,7 +30,10 @@ struct DocumentsView: View {
                         .disabled(!model.hasFile(doc))
                         .accessibilityHint("Opens the document")
                         if doc.displayName != doc.filename { Text(doc.filename).font(.footnote).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }   // the file it came as
-                        Text([status(doc), doc.deviceName, Self.figure(doc.queuedAt.formatted(date: .abbreviated, time: .shortened))].joined(separator: Self.separator)).font(.footnote).foregroundStyle(.secondary)
+                        // The device only when the file is on another (as on a course's page): this one's name was on every row.
+                        Text([status(doc), model.hasFile(doc) ? nil : "the file is on \(doc.deviceName.isEmpty ? "another device" : doc.deviceName)",
+                              Self.figure(doc.queuedAt.formatted(date: .abbreviated, time: .shortened))].compactMap { $0 }.joined(separator: Self.separator))
+                            .font(.footnote).foregroundStyle(.secondary)
                         if let course = doc.course {
                             Text(course.displayName).font(.footnote).foregroundStyle(.secondary)
                         } else if doc.status == .parsed, !courses.isEmpty {
