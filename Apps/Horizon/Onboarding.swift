@@ -342,9 +342,10 @@ struct OnboardingStage: View {
     init(scene: OnboardingScene, replay: Int, leaving: Bool, claude: Bool = false) {
         self.scene = scene; self.replay = replay; self.leaving = leaving; self.claude = claude
         _claudeChosen = State(initialValue: claude)   // right from the first run, before any change has been seen
+        _fold = State(initialValue: Self.lastFold)
     }
 
-    static let top: CGFloat = 150
+    nonisolated static let top: CGFloat = 150
     static let aspect: CGFloat = 620 / 1024
 
     // The horizon, the sun.
@@ -386,6 +387,12 @@ struct OnboardingStage: View {
     @State private var travelShown = false
     @State private var claudeChosen: Bool   // `claude` as it is now: a running choreography sees the view it began with
     @State private var sends = 0
+    /// Where the device has a hinge (iPhone Duo), its opening as drawn, 0 closed to 1 open flat; nil where it has none,
+    /// and the slab is drawn.
+    @State private var fold: Double?
+    /// The last opening read, for a stage made afresh: the page's layout changes as iPhone Duo opens and closes, the
+    /// stage is made again in the new one, and its device swings from where it was rather than starting where it is.
+    private static var lastFold: Double?
     @State private var shown: OnboardingScene?
     @State private var lastReplay = 0
     // Haptics: each a counter, its strength riding with it.
@@ -422,10 +429,10 @@ struct OnboardingStage: View {
     // its Dynamic Island, or an iPad with its camera. The cloud sits up and to the right, clear of the sun.
     private static let isPad = AppModel.deviceKind == "iPad"
     private static let device: CGSize = isPad ? CGSize(width: 290, height: 372) : CGSize(width: 204, height: 372)
-    private static let deviceFoot: CGFloat = 654
+    nonisolated private static let deviceFoot: CGFloat = 654
     private static var deviceTop: CGFloat { deviceFoot - device.height }
     private static let bezel: CGFloat = isPad ? 18 : 14
-    private static let screenLines: [CGFloat] = [0.94, 0.6, 0.8, 0.48, 0.7]   // of the screen's width; the second and fourth are dated
+    nonisolated private static let screenLines: [CGFloat] = [0.94, 0.6, 0.8, 0.48, 0.7]   // of the screen's width; the second and fourth are dated
     private static let cloudFrame = CGRect(x: 724, y: 168, width: 236, height: 128)
     private static var arcFrom: CGPoint { CGPoint(x: 512 + device.width / 2 - 34, y: deviceTop + 40) }
     private static let arcVia = CGPoint(x: 660, y: 176), arcTo = CGPoint(x: 762, y: 262)
@@ -457,6 +464,7 @@ struct OnboardingStage: View {
         .aspectRatio(1 / Self.aspect, contentMode: .fit)
         .task(id: Run(scene: scene, replay: replay)) { await run(scene) }
         .task(id: sends) { if sends > 0 { await send() } }
+        .modifier(FollowsHinge { follow($0) })
         .onChange(of: claude, initial: true) { old, now in
             claudeChosen = now
             // The reader chosen on the page: the stage turns to it, and a page goes up to the cloud when it is Claude.
@@ -609,8 +617,39 @@ struct OnboardingStage: View {
 
     /// The choice: the device the user holds, risen in front of the sun and reading a page on its own screen; the cloud
     /// up and to the right with a dotted way to it. The reader chosen is lit: the screen and the sun behind it, or the
-    /// cloud and its way.
-    private func chooseView(_ s: CGFloat) -> some View {
+    /// cloud and its way. On iPhone Duo the device folds with its hinge (`foldingView`).
+    @ViewBuilder private func chooseView(_ s: CGFloat) -> some View {
+        if let fold { foldingView(s, fold: fold) } else { slabView(s) }
+    }
+
+    /// The dotted way from the device's top right corner up to the cloud.
+    private func way(_ s: CGFloat, from: CGPoint, via: CGPoint) -> some View {
+        Arc(from: Self.at(from.x, from.y, s), via: Self.at(via.x, via.y, s), to: Self.at(Self.arcTo.x, Self.arcTo.y, s))
+            .trim(from: 0, to: arc)
+            .stroke(Design.accent.opacity(0.3 + 0.7 * Double(toCloud)), style: StrokeStyle(lineWidth: 6 * s, lineCap: .round, dash: [0.5, 16 * s]))
+    }
+
+    private func cloud(_ s: CGFloat) -> some View {
+        Cloud().fill(Design.card)
+            .overlay(Cloud().fill(Design.accent.opacity(0.14 * Double(toCloud))))
+            .overlay(Cloud().stroke(Design.rule, lineWidth: 3 * s))
+            .overlay(Cloud().stroke(Design.accent, lineWidth: 4 * s).opacity(Double(toCloud)))
+            .shadow(color: .black.opacity(0.07), radius: 14 * s, y: 6 * s)
+            .frame(width: Self.cloudFrame.width * s, height: Self.cloudFrame.height * s)
+            .position(Self.at(Self.cloudFrame.midX + (1 - cloudShown) * 80, Self.cloudFrame.midY, s))
+            .opacity(Double(cloudShown) * (0.55 + 0.45 * Double(toCloud)))
+    }
+
+    /// A page going up the way to the cloud, and back read, when Claude reads.
+    private func traveler(_ s: CGFloat, from: CGPoint, via: CGPoint) -> some View {
+        Circle().fill(Design.accent)
+            .frame(width: 26 * s, height: 26 * s)
+            .modifier(Along(progress: travel, from: Self.at(from.x, from.y, s), to: Self.at(Self.arcTo.x, Self.arcTo.y, s), via: Self.at(via.x, via.y, s)))
+            .opacity(travelShown ? 1 : 0)
+    }
+
+    /// An iPhone (with its Dynamic Island) or an iPad (with its camera), a slab standing on the horizon.
+    private func slabView(_ s: CGFloat) -> some View {
         let size = Self.device
         let rise = (1 - deviceRise) * (size.height + 24)
         let shell = RoundedRectangle(cornerRadius: (Self.isPad ? 38 : 56) * s)
@@ -620,23 +659,10 @@ struct OnboardingStage: View {
         let margin: CGFloat = Self.isPad ? 30 : 22
         let inner = size.width - 2 * Self.bezel - 2 * margin
         let here = Double(1 - toCloud)
-        let from = Self.at(Self.arcFrom.x, Self.arcFrom.y, s), via = Self.at(Self.arcVia.x, Self.arcVia.y, s), to = Self.at(Self.arcTo.x, Self.arcTo.y, s)
         return ZStack(alignment: .topLeading) {
-            Arc(from: from, via: via, to: to)
-                .trim(from: 0, to: arc)
-                .stroke(Design.accent.opacity(0.3 + 0.7 * Double(toCloud)), style: StrokeStyle(lineWidth: 6 * s, lineCap: .round, dash: [0.5, 16 * s]))
-            Cloud().fill(Design.card)
-                .overlay(Cloud().fill(Design.accent.opacity(0.14 * Double(toCloud))))
-                .overlay(Cloud().stroke(Design.rule, lineWidth: 3 * s))
-                .overlay(Cloud().stroke(Design.accent, lineWidth: 4 * s).opacity(Double(toCloud)))
-                .shadow(color: .black.opacity(0.07), radius: 14 * s, y: 6 * s)
-                .frame(width: Self.cloudFrame.width * s, height: Self.cloudFrame.height * s)
-                .position(Self.at(Self.cloudFrame.midX + (1 - cloudShown) * 80, Self.cloudFrame.midY, s))
-                .opacity(Double(cloudShown) * (0.55 + 0.45 * Double(toCloud)))
-            Circle().fill(Design.accent)
-                .frame(width: 26 * s, height: 26 * s)
-                .modifier(Along(progress: travel, from: from, to: to, via: via))
-                .opacity(travelShown ? 1 : 0)
+            way(s, from: Self.arcFrom, via: Self.arcVia)
+            cloud(s)
+            traveler(s, from: Self.arcFrom, via: Self.arcVia)
             ZStack(alignment: .topLeading) {
                 shell.fill(.primary).frame(width: size.width * s, height: size.height * s)
                 Group {
@@ -679,6 +705,108 @@ struct OnboardingStage: View {
             .position(Self.at(512, Self.deviceFoot - size.height / 2 + rise, s))
         }
         .mask(alignment: .top) { Rectangle().frame(height: (672 - Self.top) * s) }   // risen from behind the horizon, as the sun is
+    }
+
+    /// iPhone Duo as it is held (`Fold`), redrawn every frame of a swing so the way to the cloud keeps to its corner.
+    /// With Reduce Motion it is closed or open, and one gives way to the other by a fade through, the cloud staying put.
+    private func foldingView(_ s: CGFloat, fold: Double) -> some View {
+        ZStack(alignment: .topLeading) {
+            folding(fold) { fold in way(s, from: fold.arcFrom, via: Self.arcVia(from: fold.arcFrom)) }
+            cloud(s)
+            folding(fold) { fold in
+                traveler(s, from: fold.arcFrom, via: Self.arcVia(from: fold.arcFrom))
+                foldingDevice(s, fold)
+                    .compositingGroup()   // so a fade is the whole device's, not its screen over its shell
+                    .offset(y: (1 - deviceRise) * (Fold.panel.height + 40) * s)
+            }
+        }
+        .mask(alignment: .top) { Rectangle().frame(height: (672 - Self.top) * s) }
+    }
+
+    /// What follows the fold, drawn at the opening of each frame; made afresh for each shape with Reduce Motion.
+    private func folding<Content: View>(_ opening: Double, @ViewBuilder _ content: @escaping (Fold) -> Content) -> some View {
+        Folding(opening: opening) { opening in ZStack(alignment: .topLeading) { content(Fold(opening: opening)) } }
+            .id(reduceMotion ? opening : -1)
+            .transition(.fadeThrough)
+    }
+
+    /// The way's bend for a device whose corner is `from`: the slab's, or further right with the device.
+    private static func arcVia(from: CGPoint) -> CGPoint { CGPoint(x: max(arcVia.x, from.x + 40), y: arcVia.y) }
+
+    /// The two halves on their crease, each turned and seen from the eye: the right half, then the cover over it, showing
+    /// its front (the inner display's left half) or its back (the outer display) as it faces the eye.
+    private func foldingDevice(_ s: CGFloat, _ fold: Fold) -> some View {
+        let p = Fold.panel
+        let middle = Self.deviceFoot - p.height / 2
+        let covered = !fold.coverFaces
+        return ZStack(alignment: .topLeading) {
+            panel(.right, s)
+                .position(Self.at(fold.crease + p.width / 2, middle, s))
+                .projectionEffect(fold.turning(cover: false, s))
+            ZStack {
+                panel(.left, s).opacity(covered ? 0 : 1)
+                panel(.outer, s).scaleEffect(x: -1).opacity(covered ? 1 : 0)   // seen from behind, so drawn mirrored
+            }
+            .animation(nil, value: covered)   // it turns over edge on, at once
+            .position(Self.at(fold.crease - p.width / 2, middle, s))
+            .projectionEffect(fold.turning(cover: true, s))
+        }
+    }
+
+    /// One face of a half, flat: the shell, the screen (lit, glowing while the device is the reader), the page on it with
+    /// its dates lit as the line passes them, the line reading it, and on the outer display its camera. The inner
+    /// display's halves meet at the crease with no bezel and a hairline between them; the spine side of the outer one is
+    /// square, as Apple draws it.
+    private func panel(_ face: Fold.Face, _ s: CGFloat) -> some View {
+        let p = Fold.panel, rect = face.screen
+        let shell = UnevenRoundedRectangle(cornerRadii: face.radii(Fold.corner * s, spine: 0))
+        let screen = UnevenRoundedRectangle(cornerRadii: face.radii(Fold.screenCorner * s, spine: (face == .outer ? 4 : 0) * s))
+        let here = Double(1 - toCloud)
+        let beamFrom = Fold.lineY(rect, page: 50), beamTo = Fold.lineY(rect, page: 304)
+        let lit = ZStack {
+            screen.fill(Design.card)
+            screen.fill(RadialGradient(colors: [Design.accent.opacity(0.45), Design.accent.opacity(0)], center: face.glow, startRadius: 0, endRadius: rect.height * 0.9 * s))
+                .opacity(0.3 + 0.7 * here)
+        }
+        return ZStack(alignment: .topLeading) {
+            shell.fill(.primary).frame(width: p.width * s, height: p.height * s)
+            lit.frame(width: rect.width * s, height: rect.height * s)
+                .position(x: rect.midX * s, y: rect.midY * s)
+                .opacity(screenLit)
+            if face != .outer {
+                Rectangle().fill(Design.rule)
+                    .frame(width: 1.5 * s, height: rect.height * s)
+                    .position(x: (face == .left ? rect.maxX - 0.75 : rect.minX + 0.75) * s, y: rect.midY * s)
+                    .opacity(screenLit)
+            }
+            ForEach(0..<5, id: \.self) { k in
+                let chip = face.chip(k)
+                let start = rect.minX + face.margins.leading + (chip == nil ? 0 : 40)
+                let width = (rect.width - face.margins.leading - face.margins.trailing - (chip == nil ? 0 : 40)) * face.lines[k]
+                let y = Fold.lineY(rect, page: 70 + 52 * CGFloat(k))
+                Capsule().fill(Color.primary.opacity(0.14))
+                    .frame(width: width * s, height: 14 * s)
+                    .position(x: (start + width / 2) * s, y: y * s)
+                    .opacity(screenLit)
+                if let chip {
+                    Capsule().fill(Design.accent.opacity(screenChips[chip] ? 1 : 0.3))
+                        .frame(width: 30 * s, height: 18 * s)
+                        .scaleEffect(screenChips[chip] ? 1.14 : 1)
+                        .position(x: (rect.minX + face.margins.leading + 15) * s, y: y * s)
+                        .opacity(screenLit)
+                }
+            }
+            LinearGradient(colors: [Design.accent.opacity(0), Design.accent.opacity(0.22)], startPoint: .top, endPoint: .bottom)
+                .frame(width: rect.width * s, height: 54 * s)
+                .overlay(alignment: .bottom) { Rectangle().fill(Design.accent).frame(height: 4 * s) }
+                .position(x: rect.midX * s, y: (beamFrom + (beamTo - beamFrom) * screenBeam - 27) * s)
+                .opacity(screenBeamShown)
+                .mask { screen.frame(width: rect.width * s, height: rect.height * s).position(x: rect.midX * s, y: rect.midY * s) }
+            if face == .outer {
+                Circle().fill(.primary).frame(width: 18 * s, height: 18 * s).position(x: (rect.maxX - 24) * s, y: (rect.minY + 24) * s)
+            }
+        }
+        .frame(width: p.width * s, height: p.height * s, alignment: .topLeading)
     }
 
     // MARK: Choreography
@@ -885,6 +1013,21 @@ struct OnboardingStage: View {
         if shown == .choose { tap.fire(0.35) }   // and is back, read
     }
 
+    /// The hinge moved, or was read for the first time. The device follows it live: hinge data for an effect, never for
+    /// layout (Apple), and nothing here lays anything out. From closed to open, or back, the cover swings all the way
+    /// over. With Reduce Motion the device is closed or open, never between (`foldingView` fades one into the other).
+    private func follow(_ opening: Double?) {
+        guard var opening else { return }   // no hinge: the slab, as on every other device
+        if reduceMotion { opening = opening > 0 ? 1 : 0 }
+        Self.lastFold = opening
+        guard let drawn = fold else { quietly { fold = opening }; return }
+        guard drawn != opening else { return }
+        let over = (drawn == 0) != (opening == 0)
+        withAnimation(reduceMotion ? .easeInOut(duration: 0.3) : over ? .spring(duration: 0.9, bounce: 0.12) : .interactiveSpring(response: 0.22, dampingFraction: 0.9)) {
+            fold = opening
+        }
+    }
+
     private func pause(_ seconds: Double) async -> Bool {
         guard seconds > 0 else { return !Task.isCancelled }
         do { try await Task.sleep(for: .seconds(seconds)); return true } catch { return false }
@@ -894,6 +1037,202 @@ struct OnboardingStage: View {
         var quiet = Transaction()
         quiet.disablesAnimations = true
         withTransaction(quiet, change)
+    }
+}
+
+extension OnboardingStage {
+    /// iPhone Duo as it is held (DECISIONS 2026-10-28 · The device folds on iPhone Duo): two halves on a crease, each in
+    /// the outer display's proportions (466 by 678 points), side by side open (951 by 669), in the stage's units and seen
+    /// from an eye in front of the stage's middle. Apple's own symbols are the model. Closed, the cover faces the eye,
+    /// its spine square on the left and its camera in the top right corner (`iphone.duo`). Opening, the cover lifts
+    /// toward the eye and swings out to the left; from 60 degrees the halves stand in a V facing the eye
+    /// (`iphone.duo.open.partial.landscape`), flat once fully open.
+    private struct Fold {
+        /// 0 closed to 1 open flat: the hinge's angle over 180 degrees.
+        var opening: Double
+
+        static let panel = CGSize(width: 200, height: 286)
+        static let bezel: CGFloat = 14, spine: CGFloat = 7
+        static let corner: CGFloat = 52, screenCorner: CGFloat = 38
+        /// How far the eye is from the stage: near enough that a half turned toward it reads as nearer.
+        static let distance: CGFloat = 1100
+        private static let eye = CGPoint(x: 512, y: OnboardingStage.deviceFoot - panel.height / 2)
+
+        /// How far the halves are from flat, in radians.
+        private var bend: Double { (1 - opening) * .pi }
+        /// How far the view has turned toward the cover: none in the V (60 degrees open or more), all of it shut.
+        private var toCover: Double {
+            let t = max(0, 1 - opening * 3)
+            return t * t * (3 - 2 * t)
+        }
+        /// Each half's turn about the crease, its free edge toward the eye: the right half's, and the cover's.
+        private var turnRight: Double { bend / 2 * (1 - toCover) }
+        private var turnCover: Double { bend / 2 * (1 + toCover) }
+        /// Where the crease stands, so the device is centred under the eye however it is folded.
+        var crease: CGFloat { 512 - Self.panel.width / 2 * CGFloat(cos(turnRight) - max(0, cos(turnCover))) }
+
+        /// A point `along` a half from the crease, at the height `y`, as the eye sees it.
+        private func seen(along: CGFloat, y: CGFloat, cover: Bool) -> CGPoint {
+            let turn = cover ? turnCover : turnRight
+            let x = crease + (cover ? -along : along) * CGFloat(cos(turn)), z = along * CGFloat(sin(turn))
+            let k = Self.distance / (Self.distance - z)
+            return CGPoint(x: Self.eye.x + (x - Self.eye.x) * k, y: Self.eye.y + (y - Self.eye.y) * k)
+        }
+
+        /// Whether the cover shows the eye its front, the inner display's left half; else its back, the outer display.
+        var coverFaces: Bool { seen(along: Self.panel.width, y: Self.eye.y, cover: true).x < crease }
+
+        /// Where the way to the cloud starts, under the right half's top right corner (the cover's, closed).
+        var arcFrom: CGPoint { seen(along: Self.panel.width - 34, y: OnboardingStage.deviceFoot - Self.panel.height + 40, cover: false) }
+
+        /// A half turned about the crease and seen from the eye, for `projectionEffect` on the half laid flat in the
+        /// stage's points at the scale `s`.
+        func turning(cover: Bool, _ s: CGFloat) -> ProjectionTransform {
+            // A point x of the half goes to cx + (x - cx) cos θ and comes (cx - x) sin θ toward the eye, which, d away,
+            // sees it larger by d / (d - z): a projective map of the plane.
+            let theta = cover ? turnCover : -turnRight
+            let d = Self.distance * s, cx = crease * s
+            let ex = Self.eye.x * s, ey = (Self.eye.y - OnboardingStage.top) * s
+            let sine = CGFloat(sin(theta)) / d, cosine = CGFloat(cos(theta))
+            var m = ProjectionTransform()
+            m.m11 = cosine + ex * sine; m.m12 = ey * sine; m.m13 = sine
+            m.m31 = cx * (1 - cosine - ex * sine); m.m32 = -cx * ey * sine; m.m33 = 1 - cx * sine
+            return m
+        }
+
+        /// A line of the page `page` points down the iPhone's 344-point screen, on this one: the same share of it, so
+        /// the reading line passes the dates at the moments `passes` gives the iPhone.
+        static func lineY(_ screen: CGRect, page: CGFloat) -> CGFloat { screen.minY + page / 344 * screen.height }
+
+        /// A half's face, each as seen flat with its crease side where it is open: the inner display's left half (the
+        /// cover's front) or right half, or the outer display (the cover's back, its spine on the left, as closed).
+        enum Face {
+            case left, right, outer
+
+            var screen: CGRect {
+                let p = Fold.panel, b = Fold.bezel
+                return switch self {
+                case .left: CGRect(x: b, y: b, width: p.width - b, height: p.height - 2 * b)
+                case .right: CGRect(x: 0, y: b, width: p.width - b, height: p.height - 2 * b)
+                case .outer: CGRect(x: Fold.spine, y: b, width: p.width - Fold.spine - b, height: p.height - 2 * b)
+                }
+            }
+
+            /// Rounded on the free side, `spine` on the crease's.
+            func radii(_ corner: CGFloat, spine: CGFloat) -> RectangleCornerRadii {
+                self == .left
+                    ? RectangleCornerRadii(topLeading: corner, bottomLeading: corner, bottomTrailing: spine, topTrailing: spine)
+                    : RectangleCornerRadii(topLeading: spine, bottomLeading: spine, bottomTrailing: corner, topTrailing: corner)
+            }
+
+            /// The glow's centre, at the top of the whole screen: open, the crease.
+            var glow: UnitPoint {
+                switch self {
+                case .left: UnitPoint(x: 1, y: 0.08)
+                case .right: UnitPoint(x: 0, y: 0.08)
+                case .outer: UnitPoint(x: 0.5, y: 0.08)
+                }
+            }
+
+            /// The text's margins in the screen: a gutter at the crease; the outer display's text as far from the edge
+            /// as the iPhone's.
+            var margins: (leading: CGFloat, trailing: CGFloat) {
+                switch self {
+                case .left: (22, 18)
+                case .right: (18, 22)
+                case .outer: (29, 22)
+                }
+            }
+
+            /// Its five lines, each a share of the text's width. Open, the page is a spread, a date on each side, lit in
+            /// the order the closed screen lights its two.
+            var lines: [CGFloat] {
+                switch self {
+                case .left: [0.94, 0.6, 0.8, 0.66, 0.5]
+                case .right: [0.78, 0.92, 0.62, 0.5, 0.86]
+                case .outer: OnboardingStage.screenLines
+                }
+            }
+
+            /// Which of the two date chips is on line `k`, if one is.
+            func chip(_ k: Int) -> Int? {
+                switch self {
+                case .left: k == 1 ? 0 : nil
+                case .right: k == 3 ? 1 : nil
+                case .outer: k == 1 ? 0 : k == 3 ? 1 : nil
+                }
+            }
+        }
+    }
+
+    /// Calls its content with the opening as drawn this frame, so a change of the hinge, animated, swings the device
+    /// (and the way to the cloud with it) rather than jumping it.
+    private struct Folding<Content: View>: View, @MainActor Animatable {
+        var opening: Double
+        @ViewBuilder let content: (Double) -> Content
+        var animatableData: Double {
+            get { opening }
+            set { opening = newValue }
+        }
+        var body: some View { content(opening) }
+    }
+
+    /// The hinge, where the device has one (iPhone Duo, iOS 27.1): its opening each time it moves, 0 closed to 1 open
+    /// flat, from its status where it is shut or fully open and from its angle between; nil where there is none. It is
+    /// read as the view appears, too. `--hinge <degrees>` (DEBUG) has any device read as iPhone Duo held that far open
+    /// (0 shut, 180 flat), and `--hinge sweep` opens and shuts it over and over, a reading every frame or so.
+    private struct FollowsHinge: ViewModifier {
+        let changed: @MainActor (Double?) -> Void
+
+        func body(content: Content) -> some View {
+            #if DEBUG
+            if let pretend = MainTabs.debugValue("--hinge") {
+                content.task { await Self.pretend(pretend, changed) }
+            } else {
+                reading(content)
+            }
+            #else
+            reading(content)
+            #endif
+        }
+
+        @ViewBuilder private func reading(_ content: Content) -> some View {
+            if #available(iOS 27.1, *) {
+                content.onHingeChange { _, now in changed(now.hinge.map(Self.opening)) }
+            } else {
+                content
+            }
+        }
+
+        @available(iOS 27.1, *)
+        private static func opening(_ hinge: DeviceHinge) -> Double {
+            switch hinge.status {
+            case .closed: 0
+            case .fullyOpen: 1
+            default: opening(degrees: hinge.angle.degrees)
+            }
+        }
+
+        private static func opening(degrees: Double) -> Double { min(max(degrees / 180, 0.01), 0.99) }
+
+        #if DEBUG
+        private static func pretend(_ value: String, _ changed: @MainActor (Double?) -> Void) async {
+            func read(_ degrees: Double) { changed(degrees <= 0 ? 0 : degrees >= 180 ? 1 : opening(degrees: degrees)) }
+            guard value == "sweep" else {
+                if let degrees = Double(value) { read(degrees) }
+                return
+            }
+            while !Task.isCancelled {
+                // Shut for a second, opened over three, open for a second, shut again over three.
+                for step in 0..<240 {
+                    let t = Double(step) / 30
+                    read(t < 1 ? 0 : t < 4 ? (1 - cos((t - 1) / 3 * .pi)) * 90 : t < 5 ? 180 : (1 + cos((t - 5) / 3 * .pi)) * 90)
+                    try? await Task.sleep(for: .milliseconds(33))
+                    if Task.isCancelled { return }
+                }
+            }
+        }
+        #endif
     }
 }
 
