@@ -86,7 +86,12 @@ struct HorizonApp: App {
                         if CommandLine.arguments.contains("--forget-reading-service-key") { await service.renew() }
                         do { print("horizon: reading service: \(try await Ingestor.probe(claude: ClaudeConfiguration(service: service)))") }
                         catch { print("horizon: reading service: \(error.localizedDescription)") }
+                        fflush(stdout)   // a Mac's `open --stdout` file is block-buffered; devicectl's console is not
                         return
+                    }
+                    if CommandLine.arguments.contains("--probe-app-attest") {   // `DeviceAttester.probe`: App Attest here, and its evidence's environment
+                        print("horizon: app attest: \(await DeviceAttester.probe())")
+                        fflush(stdout)
                     }
                     // `--probe-eventkit`: whether this build reaches EventKit (a Mac's sandbox and hardened runtime let it in
                     // through the calendars entitlement, Reminders and Calendar alike): each one's access and how many lists

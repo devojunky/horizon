@@ -26,6 +26,15 @@ const aaguids: Record<AttestEnvironment, Uint8Array> = {
   production: concat(new TextEncoder().encode("appattest"), new Uint8Array(7)),
 };
 
+/** Whether a service in `environment` takes evidence with this AAGUID: production takes production's alone; development
+ * takes production's too, because a Mac's evidence names production whatever its build (macOS 27 has no development
+ * environment for App Attest, and Xcode signs the Mac without the entitlement for one), and a Mac's Debug build talks to
+ * the development service. Production evidence comes from a genuine build of this app as surely as development's does. */
+export function takesEvidence(environment: AttestEnvironment, aaguid: Uint8Array): boolean {
+  const taken: AttestEnvironment[] = environment === "development" ? ["development", "production"] : ["production"];
+  return taken.some((each) => equal(aaguid, aaguids[each]));
+}
+
 /** The fields of authenticator data App Attest uses: rpIdHash 32, flags 1, counter 4, then for an attestation the
  * AAGUID 16, the credential id's length 2 and the credential id. */
 function authenticatorData(data: Uint8Array, withCredential: boolean) {
@@ -96,7 +105,7 @@ export async function verifyAttestation(attestation: Uint8Array, keyId: Uint8Arr
   const data = authenticatorData(object.authData, true);
   if (!equal(data.rpIdHash, await sha256(appId))) throw new AttestError("attested for another app");
   if (data.counter !== 0) throw new AttestError("counter is not 0");
-  if (!equal(data.aaguid, aaguids[environment])) throw new AttestError(`not a ${environment} attestation`);
+  if (!takesEvidence(environment, data.aaguid)) throw new AttestError(`not a ${environment} attestation`);
   if (!equal(data.credentialId, keyId)) throw new AttestError("credential id does not match the key id");
 
   return { publicKey, receipt: object.attStmt.receipt ?? new Uint8Array() };

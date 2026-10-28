@@ -878,8 +878,11 @@ struct HorizonCommands: Commands {
 
 /// The Settings window (⌘,): General and Reading as toolbar panes, the way a Mac keeps its settings.
 struct MacSettingsView: View {
+    /// DEBUG `--settings-reading` opens the window on Reading, to look at it without a click.
+    @State private var pane = MainTabs.debugFlag("--settings-reading") ? 1 : 0
+
     var body: some View {
-        TabView {
+        TabView(selection: $pane) {
             Form {
                 DeviceSettingsSections()
                 InboxSettingsSection()
@@ -888,10 +891,12 @@ struct MacSettingsView: View {
             .formStyle(.grouped)
             .frame(width: 580, height: 600)   // each pane its own height; the window follows the pane
             .tabItem { Label("General", systemImage: "gearshape") }
+            .tag(0)
             Form { ReadingSettingsSections() }
                 .formStyle(.grouped)
                 .frame(width: 580, height: 640)
                 .tabItem { Label("Reading", systemImage: "doc.text.magnifyingglass") }
+                .tag(1)
         }
     }
 }

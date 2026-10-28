@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { encode } from "cbor-x";
-import { AttestError, rawSignature, verifyAssertion, verifyAttestation } from "../src/appattest";
-import { fromBase64, toBase64 } from "../src/bytes";
+import { AttestError, rawSignature, takesEvidence, verifyAssertion, verifyAttestation } from "../src/appattest";
+import { concat, fromBase64, toBase64 } from "../src/bytes";
 import { checkChallenge, issueChallenge } from "../src/challenge";
 import { shape } from "../src/shape";
 import { UsageMeter } from "../src/usage";
@@ -41,6 +41,15 @@ describe("attestations", () => {
     await expect(verifyAttestation(new TextEncoder().encode("hello"), new Uint8Array(32), challenge, appId, "development")).rejects.toBeInstanceOf(AttestError);
     await expect(verifyAttestation(encode({ fmt: "packed", attStmt: {}, authData: new Uint8Array(40) }), new Uint8Array(32), challenge, appId, "development"))
       .rejects.toThrow("not an App Attest attestation");
+  });
+
+  it("take production's evidence in development too, as a Mac's always is, and never development's in production", () => {
+    const development = new TextEncoder().encode("appattestdevelop"), production = concat(new TextEncoder().encode("appattest"), new Uint8Array(7));
+    expect(takesEvidence("development", development)).toBe(true);
+    expect(takesEvidence("development", production)).toBe(true);
+    expect(takesEvidence("production", production)).toBe(true);
+    expect(takesEvidence("production", development)).toBe(false);
+    expect(takesEvidence("development", new Uint8Array(16))).toBe(false);
   });
 });
 
