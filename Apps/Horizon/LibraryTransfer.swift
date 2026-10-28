@@ -97,11 +97,10 @@ struct LibrarySettingsSection: View {
             if let pending = model.pendingImport {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Ready to import").font(.headline)
-                    Text("The library exported from \(pending.deviceName) on \(pending.exportedAt.formatted(date: .abbreviated, time: .shortened)) replaces this one the next time Horizon opens.")
+                    // Coming back to an app left open is not opening it: the import is applied at launch only. How to close
+                    // an app, the user knows.
+                    Text("The library exported from \(pending.deviceName) on \(pending.exportedAt.formatted(date: .abbreviated, time: .shortened)) replaces this one once Horizon is closed and opened again.")
                         .font(.subheadline).foregroundStyle(.secondary)
-                    #if os(iOS)
-                    Text("Close Horizon from the app switcher and open it again.").font(.subheadline).foregroundStyle(.secondary)
-                    #endif
                 }
                 #if os(macOS)
                 Button("Quit Horizon") { NSApp.terminate(nil) }.bordered()
@@ -149,13 +148,7 @@ struct LibrarySettingsSection: View {
             }
             if let failure { Text(failure).font(.subheadline).foregroundStyle(Design.accentInk) }
         } header: {
-            Kicker("Library")
-        } footer: {
-            #if os(iOS)
-            Text("Includes your documents and settings, not your Claude key. Save it outside Horizon's own folder, which goes with the app.")
-            #else
-            Text("Includes your documents and settings, not your Claude key.")
-            #endif
+            Kicker("Library")   // what a library holds and where to save it, the user can take as read
         }
         .onAppear { model.loadPendingImport() }
     }

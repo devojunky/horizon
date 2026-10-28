@@ -47,17 +47,13 @@ struct CourseEditor: View {
                     FieldRow(label: "Term", prompt: "Fall 2026", text: $term)
                     FieldRow(label: "Instructor", prompt: "Name", text: $instructor).textContentType(.name)
                     FieldRow(label: "Room", prompt: "Rogers Hall 204", text: $room)
-                } footer: {
-                    Text("Also shown on each of its reminders.")
-                }
+                }   // the name on each of its reminders ("Quiz 3 · Calculus II") follows a rename, as the user sees in Reminders
                 Section {
                     Toggle("Term dates", isOn: $hasTermDates.animation())
                     if hasTermDates {
                         DatePicker("Starts", selection: $termStart, displayedComponents: .date)
                         DatePicker("Ends", selection: $termEnd, in: termStart..., displayedComponents: .date)
                     }
-                } footer: {
-                    Text("Term dates set how far the Horizon strip runs and when weekly work is expected.")
                 }
                 Section {
                     ForEach($meetings) { $meeting in
@@ -116,8 +112,7 @@ struct CourseEditor: View {
                     Kicker("Grade")
                 } footer: {
                     let total = components.compactMap(\.weight).reduce(0, +)
-                    let overflow = total > 100.5 ? "The weights add up to \(total.formatted(.number.precision(.fractionLength(0...1))))%, more than a whole grade. " : ""
-                    Text("\(overflow)Weights set each item's points at stake, and the colour of its mark on the strip.")
+                    if total > 100.5 { Text("The weights add up to \(total.formatted(.number.precision(.fractionLength(0...1))))%, more than a whole grade.") }
                 }
                 Section {
                     ForEach($breaks) { $span in

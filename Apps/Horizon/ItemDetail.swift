@@ -48,7 +48,7 @@ struct ItemDetail: View {
         Group {
             if let item { page(item) } else {
                 List {
-                    EditorialEmpty(title: "Not in Horizon any more.", deck: "This item was deleted, here or in Reminders.") { EmptyView() }
+                    EditorialEmpty(title: "Not in Horizon any more.") { EmptyView() }
                         .listRowSeparator(.hidden).onPaper()
                 }
                 .listStyle(.plain)

@@ -377,17 +377,26 @@ struct Hairline: View {
     var body: some View { Rectangle().fill(Design.rule).frame(height: 0.5) }
 }
 
-/// An empty state set like a page: a serif line, a deck, and the actions that lead out of it.
+/// An empty state set like a page: a serif line, a deck where there is something the page does not say, and the
+/// actions that lead out of it. On iOS the line is a step under the page's large title, not a second title of the same
+/// size; a Mac's toolbar title is small, so there the line is the page's biggest, as it is on a page with no title
+/// above it (`standsAlone`: the library that would not open).
 struct EditorialEmpty<Actions: View>: View {
     let title: String
-    let deck: String
+    var deck: String? = nil
+    var standsAlone = false
     @ViewBuilder var actions: Actions
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            #if os(macOS)
             Text(title).display().fixedSize(horizontal: false, vertical: true)
-            Text(deck).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 14) { actions }.padding(.top, 6)
+            #else
+            if standsAlone { Text(title).display().fixedSize(horizontal: false, vertical: true) }
+            else { Text(title).deck().fixedSize(horizontal: false, vertical: true) }
+            #endif
+            if let deck { Text(deck).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+            if Actions.self != EmptyView.self { HStack(spacing: 14) { actions }.padding(.top, 6) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 24)

@@ -1,6 +1,9 @@
 import SwiftUI
 import SwiftData
 import HorizonCore
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// The app's screens (SPEC §6): Coverage, the Horizon strip, and Now; on iOS, Search as the tab bar's search tab
 /// (HIG: one place to search the whole app, at the bar's trailing end).
@@ -65,7 +68,7 @@ struct MainTabs: View {
     private static var spentFlags: Set<String> = []
 }
 
-/// A band of the strip: everything together, a course, or the items filed under none.
+/// A band of the strip: a course, or the items filed under none. (`all` is no band: it is the filter's "every course".)
 struct Band: Identifiable, Equatable {
     enum Kind: Hashable { case all, course(UUID), unfiled }
     var kind: Kind
@@ -154,8 +157,9 @@ private struct StripGeometry: Equatable {
 }
 
 /// What moves while the strip is touched: how far it has scrolled (for the overview's window and for keeping a date
-/// under the fingers) and a pinch in progress. Kept out of the page's state on purpose: a scroll or a pinch touches
-/// only the two small views that read these, never the page, its list, or the bars.
+/// under the fingers), a pinch in progress, and whether the bands' names show. Kept out of the page's state on
+/// purpose: a scroll, a pinch or a hold touches only the small views that read these, never the page, its list, or
+/// the bars.
 @MainActor @Observable private final class StripMotion {
     var offset: CGFloat = 0
     var pinch: CGFloat = 1
@@ -175,6 +179,73 @@ private struct StripGeometry: Equatable {
     /// with no landing asked for opens there: the page's other layout (iPhone Duo opened or closed) makes a new row,
     /// and the days in view stay in view. (A landing asked for at the change was spent by the row on its way out.)
     var leadingDay: Date?
+    /// Whether the bands' names show (`BandLabels`, alone in reading it): while a finger holds the strip or the strip
+    /// moves, and for a moment after. At rest the strip is its cells alone.
+    private(set) var namesShown = false
+    /// How long a still finger is down before it is a hold, not a tap: the system's long press.
+    static let holdTime: TimeInterval = 0.5
+    // What keeps the names up, each heard on its own, since one ends as another begins in either order (a bar's press
+    // is let go the moment the row starts to scroll).
+    @ObservationIgnored private var pressedAt: Date?       // a finger resting on a day's bar or on the semester, since
+    @ObservationIgnored private var holding = false        // that press has become a hold: its names are up (the clock alone would call a lift at 0.501 s a hold no one saw)
+    @ObservationIgnored private var moving = false         // a scroll or its coast
+    @ObservationIgnored private var scrubbing = false      // the term's line dragged: the row moves without a scroll of its own
+    // The lift of a hold is no tap, whichever of the two is heard first, and only that one tap is not: a tap that
+    // follows quickly is a tap.
+    @ObservationIgnored private var holdAnswered = false   // the hold under the finger has already turned its tap away
+    @ObservationIgnored private var heldLift: Date?        // a hold just lifted whose tap has not come yet
+    @ObservationIgnored private var names: Task<Void, Never>?
+
+    /// A finger resting on a day's bar or on the semester, or lifted (or gone to a scroll).
+    func press(_ down: Bool) {
+        guard down != (pressedAt != nil) else { return }
+        if down {
+            holdAnswered = false; heldLift = nil
+        } else {
+            if holding, !holdAnswered { heldLift = Date() }
+            holding = false
+        }
+        pressedAt = down ? Date() : nil
+        update()
+    }
+
+    /// The row scrolling under a finger or coasting, or still again.
+    func move(_ on: Bool) {
+        guard on != moving else { return }
+        moving = on
+        if on { heldLift = nil }   // a press that ends in a scroll makes no tap
+        update()
+    }
+
+    /// The term's line dragged, or let go.
+    func scrub(_ on: Bool) {
+        guard on != scrubbing else { return }
+        scrubbing = on
+        update()
+    }
+
+    /// Asked by a tap: whether it is only the lift of a hold (it was there for the names), and so no tap. Once per
+    /// hold: the tap after it is a tap.
+    func tapEndsHold() -> Bool {
+        if holding, !holdAnswered { holdAnswered = true; return true }   // the tap heard before the press's end
+        defer { heldLift = nil }
+        return heldLift.map { Date().timeIntervalSince($0) < 0.3 } ?? false
+    }
+
+    /// The names come at once when the strip moves, and for a still finger once it is a hold, never for a tap; they
+    /// go a moment after the finger lifts and the strip is still.
+    private func update() {
+        names?.cancel()
+        if let pressedAt, Date().timeIntervalSince(pressedAt) >= Self.holdTime { holding = true }
+        if moving || scrubbing || holding {
+            if !namesShown { namesShown = true }
+        } else if let pressedAt {   // a press not yet a hold: looked at again when it would be one
+            let wait = Self.holdTime - Date().timeIntervalSince(pressedAt)
+            names = Task { try? await Task.sleep(for: .seconds(max(wait, 0) + 0.01)); if !Task.isCancelled { self.update() } }
+        } else if namesShown {
+            names = Task { try? await Task.sleep(for: .milliseconds(900)); if !Task.isCancelled { self.namesShown = false } }
+        }
+    }
 
     struct ScrollRequest: Equatable {
         var x: CGFloat
@@ -249,7 +320,7 @@ struct StripData {
             return StripItem(id: o.id, title: o.title, courseID: o.course?.id, courseCode: o.course?.code ?? "", courseName: o.course?.title, due: due, dueHasTime: o.dueHasTime,
                              points: o.pointsAtStake, state: o.state, completed: o.completedAt != nil)
         }
-        // A band for everything when there are several to add up, one per course with items, one for items filed under no course.
+        // A band per course with items, and one for items filed under no course. None adds them up: the courses' own say it.
         let known = Set(courses.map(\.id))
         let byCourse = Dictionary(grouping: items) { $0.courseID.flatMap { known.contains($0) ? $0 : nil } }
         bands = courses.filter { byCourse[$0.id] != nil }.map { Band(kind: .course($0.id), name: $0.displayName) }
@@ -263,7 +334,6 @@ struct StripData {
             items = bandItems[index]
             bands = [bands[index]]; bandItems = [items]
         }
-        if Strip.showsTotal(bands: bands.count) { bands.insert(Band(kind: .all, name: "All courses"), at: 0); bandItems.insert(items, at: 0) }
         collisions = Strip.collisions(items, calendar: calendar)
         periods = Strip.periods(in: span, level: level, calendar: calendar)
         weeks = level == .weeks ? periods.count : Strip.periods(in: span, level: .weeks, calendar: calendar).count
@@ -282,9 +352,9 @@ struct StripData {
 }
 
 #if os(iOS)
-/// SPEC §6.2: one continuous strip of the term, one band per course, and above them (when there are several) a band
-/// for everything, where the shape of the term shows. Load is colour, not size: the accent deepens with the points
-/// at stake, and a cell carries its count. Days where heavy items pile up are called out.
+/// SPEC §6.2: one continuous strip of the term, one band per course. Load is colour, not size: the accent deepens
+/// with the points at stake, and a cell carries its count. Days where heavy items pile up are called out. The bands'
+/// names show only while the strip is held or moving (`BandLabels`): at rest it is its cells alone.
 ///
 /// Two levels for two intents. The semester is for reading: the whole term across the screen, as dense as that
 /// makes it, drawn once. Its bars are not controls; the whole of it is one, and a touch means "look closer here": the
@@ -317,7 +387,7 @@ struct HorizonStripView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.horizontalSizeClass) private var sizeClass
     @ScaledMetric(relativeTo: .caption2) private var labelHeight: CGFloat = 16
-    /// A band's name grows with the text size as far as the first accessibility size (`bandLabels` stops there), so
+    /// A band's name grows with the text size as far as the first accessibility size (`BandLabels` stops there), so
     /// the strip stays a chart; its line is as tall as the name.
     private var bandLabelHeight: CGFloat { min(labelHeight, 29) }
     private let calendar = Calendar.current
@@ -385,7 +455,7 @@ struct HorizonStripView: View {
             .overlay {
                 if data.items.isEmpty {
                     ScrollView {
-                        EditorialEmpty(title: "Nothing on the horizon.", deck: "Add a syllabus or a schedule, and its term appears here.") {
+                        EditorialEmpty(title: "Nothing on the horizon.") {   // what comes here, onboarding has said
                             ImportMenu().prominent()
                         }
                         .padding(.horizontal, 20)
@@ -518,7 +588,7 @@ struct HorizonStripView: View {
             .frame(height: 44)
             .pageRow(top: 0, bottom: 2)
             strip(data, g, width: width) { period in
-                guard Date().timeIntervalSince(motion.pinchedAt) > 0.4 else { return }   // two fingers lifting are not a tap
+                guard Date().timeIntervalSince(motion.pinchedAt) > 0.4, !motion.tapEndsHold() else { return }   // two fingers lifting are not a tap, nor is a hold's finger (it was there for the names)
                 if level == .weeks {   // the overview: look closer here, with the week chosen so the list is its work
                     held = period.start
                     motion.landing = .init(date: period.start, place: .margin)   // the week's first day at the leading margin
@@ -561,8 +631,9 @@ struct HorizonStripView: View {
         go(model.destination, data: data)   // asked for before the strip was laid out (the tab's first showing)
     }
 
-    /// The strip at either level, and over it the bands' names, which stay put. A name has its own line above its
-    /// band's cells, so it never covers a cell; beside it, while a period is chosen, what that course has in it.
+    /// The strip at either level, and over it the bands' names, which stay put while the days scroll under them. A
+    /// name has its own line above its band's cells, so it never covers a cell; at the line's end, while a period is
+    /// chosen, what that course has in it.
     private func strip(_ data: StripData, _ g: StripGeometry, width: CGFloat, choose: @escaping (DateInterval) -> Void) -> some View {
         ZStack(alignment: .topLeading) {   // the two levels in one place: the old goes before the new comes, so they never show through each other
             if level == .weeks { overview(data, g, width: width, choose: choose).transition(.fadeThrough) }
@@ -576,7 +647,13 @@ struct HorizonStripView: View {
                 withAnimation(.spring(duration: 0.4)) { motion.pinch = 1 }
             }
         }
-        .overlay(alignment: .topLeading) { bandLabels(data, g) }
+        .overlay(alignment: .topLeading) {
+            BandLabels(lines: data.bands.indices.map { index in
+                let cell = cell(for: chosen, among: data.bandItems[index])
+                let figure = cell.flatMap { $0.count == 0 ? nil : $0.points > 0 ? "\($0.count) · \($0.points.formatted(.number.precision(.fractionLength(0...1))))%" : "\($0.count)" }
+                return BandLabels.Line(id: data.bands[index].kind, name: data.bands[index].name, figure: figure)
+            }, g: g, motion: motion)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilitySummary(data))
     }
@@ -584,7 +661,8 @@ struct HorizonStripView: View {
     /// The semester, to read: the whole term across the screen in one canvas, drawn when the term changes and not
     /// otherwise. It does not scroll, and its bars are not controls: the whole of it is one, and a touch means "look
     /// closer here" (`Strip.week(at:)` forgives a miss toward a week with something in it). A pinch out does the same
-    /// where the fingers are, choosing nothing.
+    /// where the fingers are, choosing nothing. A finger held still on it shows the bands' names until it lifts, and
+    /// is no tap (`HoldForNames`).
     private func overview(_ data: StripData, _ g: StripGeometry, width: CGFloat, choose: @escaping (DateInterval) -> Void) -> some View {
         let week: (CGFloat) -> DateInterval? = { x in
             Strip.week(at: Double(x - g.inset), barWidth: Double(g.barWidth), weeks: data.periods.count,
@@ -598,6 +676,7 @@ struct HorizonStripView: View {
         }
         .contentShape(Rectangle())
         .onTapGesture { location in if let period = week(location.x) { choose(period) } }
+        .modifier(HoldForNames(motion: motion))
         .simultaneousGesture(MagnifyGesture()
             .onChanged { value in
                 motion.pinchedAt = Date()
@@ -630,38 +709,10 @@ struct HorizonStripView: View {
 
     /// The days, to work from (`DaysStrip`).
     private func days(_ data: StripData, _ g: StripGeometry, width: CGFloat, choose: @escaping (DateInterval) -> Void) -> some View {
-        DaysStrip(bars: data.bars, totalFirst: data.bands.first?.kind == .all, g: g, motion: motion, lit: chosen, calendar: calendar,
+        DaysStrip(bars: data.bars, g: g, motion: motion, lit: chosen, calendar: calendar,
                   choose: choose,
                   pinchedIn: { anchorX in setLevel(.weeks, data: data, g: g, width: width, anchorX: anchorX) })
             .dynamicTypeSize(...DynamicTypeSize.large)   // the chart's own words: a bar is 44 points, its tiers sized for them
-    }
-
-    /// The bands' names, in the page's margin, each on the line above its cells; while a bar is chosen, a course's
-    /// line ends with what it has there. The paper behind the words lets the strip's rules pass under them.
-    private func bandLabels(_ data: StripData, _ g: StripGeometry) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(data.bands.enumerated()), id: \.element.id) { index, band in
-                HStack(spacing: 8) {
-                    Text(band.name).lineLimit(1).truncationMode(.middle)
-                        .foregroundStyle(band.kind == .all ? .primary : .secondary)
-                        .padding(.trailing, 6).background(Design.paper)
-                    Spacer(minLength: 0)
-                    if band.kind != .all, let cell = cell(for: chosen, among: data.bandItems[index]), cell.count > 0 {
-                        Text(cell.points > 0 ? "\(cell.count) · \(cell.points.formatted(.number.precision(.fractionLength(0...1))))%" : "\(cell.count)").monospacedDigit()
-                            .foregroundStyle(.secondary).padding(.leading, 6).background(Design.paper).transition(.opacity)
-                    }
-                }
-                .font(.caption2.weight(.semibold)).textCase(.uppercase).kerning(0.6)
-                .frame(height: g.labelHeight)
-                .padding(.top, g.labelOffset)
-                .frame(height: g.rowHeight, alignment: .top)
-            }
-        }
-        .padding(.horizontal, g.inset)
-        .padding(.top, g.axisHeight)
-        .dynamicTypeSize(...DynamicTypeSize.accessibility1)   // as far as `bandLabelHeight` grows
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 
     /// Under the strip: the chosen period's items, else what is coming up.
@@ -785,7 +836,7 @@ struct HorizonStripView: View {
     }
 
     private func accessibilitySummary(_ data: StripData) -> String {
-        let names = data.bands.filter { $0.kind != .all }.map(\.name).joined(separator: ", ")
+        let names = data.bands.map(\.name).joined(separator: ", ")
         let items = data.items.count == 1 ? "1 item" : "\(data.items.count) items"
         let pileups = data.collisions.isEmpty ? "No pileups." : data.collisions.count == 1 ? "1 pileup." : "\(data.collisions.count) pileups."
         return "Semester strip by \(level == .weeks ? "week" : "day"), \(items) across \(names). \(pileups)"
@@ -799,10 +850,9 @@ struct HorizonStripView: View {
 /// rewritten bar by bar as the strip moved; each write re-ran the page and stopped the scroll's inertia dead.)
 private struct DaysStrip: View {
     let bars: [StripData.Bar]
-    let totalFirst: Bool
     let g: StripGeometry
     let motion: StripMotion
-    /// The period chosen: its days' bars stand on a soft ground.
+    /// The period chosen: its days stand in one soft column.
     let lit: DateInterval?
     let calendar: Calendar
     var choose: (DateInterval) -> Void
@@ -822,8 +872,8 @@ private struct DaysStrip: View {
             Stretch(motion: motion) {
                 LazyHStack(spacing: 0) {
                     ForEach(bars) { bar in
-                        StripBar(bar: bar, totalFirst: totalFirst, g: g, chosen: lit.map { $0.holds(bar.period.start) } ?? false,
-                                 choose: { choose(bar.period) })
+                        StripBar(bar: bar, g: g, ground: lit.flatMap { StripBar.Ground(bar.period, of: $0) }, choose: { choose(bar.period) },
+                                 pressed: { motion.press($0) })
                             .equatable()
                     }
                 }
@@ -843,6 +893,9 @@ private struct DaysStrip: View {
                 })
         }
         .scrollPosition($position)
+        // The bands' names while the row moves (a finger resting on it is its bars' press: the scroll does not report one).
+        .onScrollPhaseChange { _, phase in motion.move(phase != .idle && phase != .tracking) }
+        .onDisappear { motion.move(false); motion.press(false) }   // gone mid-scroll or mid-press (a pinch to the semester): no end will come
         .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.x } action: { _, offset in
             motion.offset = offset
             if landed, !bars.isEmpty { motion.leadingDay = bars[min(max(Int((offset / g.barWidth).rounded()), 0), bars.count - 1)].period.start }
@@ -879,6 +932,128 @@ private struct DaysStrip: View {
     @State private var laid = Frame(viewport: 0, content: 0)
     /// This row has been placed (on a landing, or where the last row was): from then on it says where it is.
     @State private var landed = false
+}
+
+/// The bands' names, in the page's margin, each on the line above its cells, and at a course's line's end, while a
+/// period is chosen, what it has there. They show only while the strip is held or moving (`StripMotion.namesShown`):
+/// at rest the strip is its cells alone, and a name's line is air between the bands. The paper behind the words lets
+/// the strip's rules pass under them. Alone in reading `namesShown`, so a touch redraws this and nothing else.
+private struct BandLabels: View {
+    struct Line: Identifiable, Equatable {
+        var id: Band.Kind
+        var name: String
+        /// What the band has in the chosen period ("1 · 20%"), when it has anything there.
+        var figure: String?
+    }
+    let lines: [Line]
+    let g: StripGeometry
+    let motion: StripMotion
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(lines) { line in
+                HStack(spacing: 8) {
+                    Text(line.name).lineLimit(1).truncationMode(.middle)
+                        .modifier(Chip(edge: .leading))
+                    Spacer(minLength: 0)
+                    if let figure = line.figure {
+                        Text(figure).monospacedDigit().modifier(Chip(edge: .trailing)).transition(.opacity)
+                    }
+                }
+                .font(.caption2.weight(.semibold)).textCase(.uppercase).kerning(0.6).foregroundStyle(.secondary)
+                .frame(height: g.labelHeight)
+                .padding(.top, g.labelOffset)
+                .frame(height: g.rowHeight, alignment: .top)
+            }
+        }
+        .padding(.horizontal, g.inset)
+        .padding(.top, g.axisHeight)
+        .opacity(motion.namesShown ? 1 : 0)
+        .animation(motion.namesShown ? .easeOut(duration: 0.15) : .easeInOut(duration: 0.4), value: motion.namesShown)   // in as the finger moves; out unhurried
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)   // as far as `bandLabelHeight` grows
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    /// The paper behind a label's words, a little past them either way and rounded, so over a chosen period's column it
+    /// reads as a label laid on the strip, not a box cut out of it; the words keep the page's margin (`edge`).
+    private struct Chip: ViewModifier {
+        let edge: HorizontalEdge
+        func body(content: Content) -> some View {
+            content
+                .padding(.horizontal, 5)
+                .background(Design.paper, in: .rect(cornerRadius: 4))
+                .padding(edge == .leading ? .leading : .trailing, -5)
+        }
+    }
+}
+
+/// A finger resting on the semester, as a day's bar's press says it on the days: held, it shows the bands' names until
+/// it lifts, and its lifting is no tap (`StripMotion.press`, `tapEndsHold`). Heard by `FingerDown`, which claims nothing.
+private struct HoldForNames: ViewModifier {
+    let motion: StripMotion
+
+    func body(content: Content) -> some View {
+        content
+            .gesture(FingerDown { motion.press($0) })
+            .onDisappear { motion.press(false) }   // gone while held (a pinch to the days): the lift will not come here
+    }
+}
+
+/// A finger down, and up again, heard without being taken: a UIKit recognizer that never recognizes, prevents nothing
+/// and cannot be prevented, so the semester's tap and pinch and the page's scroll go on as if it were not there. Every
+/// SwiftUI gesture that heard a touch from its first moment took it: a long press (even one meant never to finish)
+/// or a drag took the page's vertical scroll from the strip, and one inside the tap kept every tap from it. Up at the
+/// lift, or once the finger has moved 10 points before it could be a hold (the page scrolling); a hold that drifts
+/// (under 2 mm is 10 points) stays a hold, as a long press does once it has begun.
+private struct FingerDown: UIGestureRecognizerRepresentable {
+    var changed: (Bool) -> Void
+
+    func makeUIGestureRecognizer(context: Context) -> Observer { Observer() }
+    func updateUIGestureRecognizer(_ recognizer: Observer, context: Context) { recognizer.changed = changed }
+
+    final class Observer: UIGestureRecognizer {
+        var changed: (Bool) -> Void = { _ in }
+        private var start: CGPoint?
+        private var startTime: TimeInterval = 0
+
+        override init(target: Any?, action: Selector?) {
+            super.init(target: target, action: action)
+            cancelsTouchesInView = false
+            delaysTouchesBegan = false
+            delaysTouchesEnded = false
+        }
+
+        override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+        override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+
+        override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+            guard start == nil, let touch = touches.first else { return }
+            start = touch.location(in: view)
+            startTime = touch.timestamp
+            changed(true)
+        }
+
+        override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+            guard let start, let touch = touches.first, touch.timestamp - startTime < StripMotion.holdTime else { return }
+            let point = touch.location(in: view)
+            if hypot(point.x - start.x, point.y - start.y) > 10 { finish() }
+        }
+
+        override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) { finish() }
+        override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) { finish() }
+
+        override func reset() { lifted() }   // however it ends, the finger is said to be up: a press left down would keep the names up and turn the next tap away
+
+        private func finish() {
+            lifted()
+            state = .failed
+        }
+
+        private func lifted() {
+            if start != nil { start = nil; changed(false) }
+        }
+    }
 }
 
 /// Applies a pinch in progress to the row of bars: a stretch of the layer, nothing redrawn. Alone in reading
@@ -993,23 +1168,35 @@ private struct OverviewCanvas: View, Equatable {
 /// Drawn once and then only moved by the scroll; equal inputs mean it is not drawn again.
 private struct StripBar: View, Equatable {
     let bar: StripData.Bar
-    let totalFirst: Bool
     let g: StripGeometry
-    let chosen: Bool
+    /// The chosen period's ground in this bar, when the bar is one of its days.
+    let ground: Ground?
     var choose: () -> Void
+    /// A finger down on the bar, or up: held, it shows the bands' names (`StripMotion.press`).
+    var pressed: (Bool) -> Void
+
+    /// A chosen day, or a day of a chosen week: the column its ground fills, rounded where the period opens and
+    /// closes, so a day is one rounded column and a week's seven are one with square seams.
+    struct Ground: Equatable {
+        var opens: Bool
+        var closes: Bool
+        init?(_ day: DateInterval, of chosen: DateInterval) {
+            guard chosen.holds(day.start) else { return nil }
+            opens = day.start <= chosen.start
+            closes = day.end >= chosen.end
+        }
+    }
 
     /// A Wednesday the 28th: the widest date a bar shows, which decides the form every bar takes.
     static let widestDay = Calendar.current.date(from: DateComponents(year: 2026, month: 10, day: 28)) ?? .now
 
     nonisolated static func == (a: StripBar, b: StripBar) -> Bool {
-        a.bar == b.bar && a.totalFirst == b.totalFirst && a.g == b.g && a.chosen == b.chosen
+        a.bar == b.bar && a.g == b.g && a.ground == b.ground
     }
 
     private var summary: String {
-        let cells = bar.cells
-        let cell = totalFirst ? cells.first ?? nil : cells.compactMap { $0 }.first
-        let count = totalFirst ? cell?.count ?? 0 : cells.compactMap { $0?.count }.reduce(0, +)
-        let points = totalFirst ? cell?.points ?? 0 : cells.compactMap { $0?.points }.reduce(0, +)
+        let count = bar.cells.compactMap { $0?.count }.reduce(0, +)
+        let points = bar.cells.compactMap { $0?.points }.reduce(0, +)
         return count == 0 ? "Nothing due" : "\(count) item\(count == 1 ? "" : "s"), \(points.formatted(.number.precision(.fractionLength(0...1)))) percent of grades at stake\(bar.pileupDate == nil ? "" : ", a pileup")"
     }
 
@@ -1025,12 +1212,23 @@ private struct StripBar: View, Equatable {
                 }
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(Press(pressed: pressed))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(bar.period.start.formatted(.dateTime.weekday(.wide).month(.wide).day()))
         .accessibilityValue(summary)
-        .accessibilityAddTraits(chosen ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAddTraits(ground != nil ? [.isButton, .isSelected] : .isButton)
         .accessibilityHidden(bar.cells.allSatisfy { $0 == nil })   // VoiceOver steps through the days with something in them
+    }
+
+    /// The plain button's look, saying when a finger is down: the only word of one resting on the row, since its
+    /// scroll reports nothing until it moves (and lets the press go when it does).
+    private struct Press: ButtonStyle {
+        var pressed: (Bool) -> Void
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .opacity(configuration.isPressed ? 0.7 : 1)
+                .onChange(of: configuration.isPressed) { _, down in pressed(down) }
+        }
     }
 
     private func vertical(_ x: CGFloat, from y0: CGFloat, to y1: CGFloat) -> Path {
@@ -1038,12 +1236,14 @@ private struct StripBar: View, Equatable {
     }
 
     private func draw(_ context: inout GraphicsContext, _ size: CGSize) {
-        // Chosen: a soft ground behind each band's cells, edge to edge, so the days of a chosen week read as one stretch
-        // and the bands' names, on their own lines, stay on plain paper.
-        if chosen {
-            for band in 0..<max(bar.cells.count, 1) {
-                context.fill(Path(CGRect(x: 0, y: g.baseline(band) - g.cellsHeight, width: size.width, height: g.cellsHeight)), with: .color(.primary.opacity(0.1)))   // the cells' own room: a name's line above it is not touched
-            }
+        // Chosen: one soft column from the day's date down past the last band, behind everything, edge to edge so the
+        // days of a chosen week read as one stretch, and rounded where the period begins and ends.
+        if let ground {
+            let r: CGFloat = 8
+            let column = CGRect(x: 0, y: g.monthTier, width: size.width, height: g.bottom - g.gap + 4 - g.monthTier)
+            let corners = RectangleCornerRadii(topLeading: ground.opens ? r : 0, bottomLeading: ground.opens ? r : 0,
+                                               bottomTrailing: ground.closes ? r : 0, topTrailing: ground.closes ? r : 0)
+            context.fill(Path(roundedRect: column, cornerRadii: corners), with: .color(.primary.opacity(0.08)))
         }
         // Rules: the day's own leading edge, a month's beginning, a pileup. All behind the cells.
         context.stroke(vertical(0, from: g.axisHeight - 6, to: g.bottom), with: .color(.secondary.opacity(0.12)), lineWidth: 1)
@@ -1071,8 +1271,7 @@ private struct StripBar: View, Equatable {
             context.stroke(Path { p in p.move(to: CGPoint(x: 0, y: base)); p.addLine(to: CGPoint(x: size.width, y: base)) }, with: .color(.secondary.opacity(0.3)), lineWidth: 1)
             guard let cell else { continue }
             let rect = CGRect(x: 1.5, y: base - g.cellsHeight, width: size.width - 3, height: g.cellsHeight)
-            let count = totalFirst && band == 0 ? drawCell(cell, in: rect, &context) : drawItems(cell, in: rect, &context)
-            if let count { counts.addRect(count) }
+            if let count = drawItems(cell, in: rect, &context) { counts.addRect(count) }
         }
         // Today: a dashed line with its name at the foot, in the primary colour so it reads over the cells, broken
         // where it would cross a count.
@@ -1091,17 +1290,6 @@ private struct StripBar: View, Equatable {
         let size = resolved.measure(in: CGSize(width: 100, height: 40))
         context.draw(resolved, at: point)
         return CGRect(x: point.x - size.width / 2, y: point.y - size.height / 2, width: size.width, height: size.height).insetBy(dx: -4, dy: -1)
-    }
-
-    /// One block for the period: the accent at the load's intensity, on the paper (so no rule shows through a pale
-    /// cell), its count inside. Returns where the count is.
-    private func drawCell(_ cell: Strip.Cell, in rect: CGRect, _ context: inout GraphicsContext) -> CGRect? {
-        let shape = Path(roundedRect: rect, cornerRadius: 5)
-        let heat = Strip.heat(points: cell.points)
-        context.fill(shape, with: .color(Design.paper))
-        context.fill(shape, with: .color(Design.accent.opacity(heat)))
-        return drawCount(Text("\(cell.count)").font(.caption.weight(.semibold)).foregroundStyle(countInk(heat: heat, in: context.environment)),
-                         at: CGPoint(x: rect.midX, y: rect.midY), &context)
     }
 
     /// A day in a course's band: its cell divided among its items, each part its own item's weight; a review item is
@@ -1147,6 +1335,7 @@ private struct TermOverview: View {
     let viewport: CGFloat
     let calendar: Calendar
     @State private var scrubbing = false
+    @GestureState private var touching = false   // a finger on the line: back to false however the drag ends, a cancel included
 
     var body: some View {
         let weeks = Strip.periods(in: data.span, level: .weeks, calendar: calendar)
@@ -1160,16 +1349,22 @@ private struct TermOverview: View {
             }
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0)   // a scroll bar: the touch is its own from the first point, as a slider's is
+                .updating($touching) { _, touching, _ in touching = true }
                 .onChanged { value in
-                    if abs(value.translation.width) > 3 { scrubbing = true }
+                    if abs(value.translation.width) > 3, !scrubbing { scrubbing = true; motion.scrub(true) }   // the days move: their names show, as for a scroll
                     if scrubbing { motion.scroll(to: scale.offset(centring: value.location.x / max(geo.size.width, 1)), animated: false) }
                 }
                 .onEnded { value in
                     if !scrubbing { motion.scroll(to: scale.offset(centring: value.location.x / max(geo.size.width, 1)), animated: true) }   // a tap: there at once
+                    else { motion.scrub(false) }
                     scrubbing = false
                 })
         }
         .frame(height: 44)
+        .onChange(of: touching) { _, touching in   // a scrub cancelled (Control Center, a call) calls no onEnded: the touch's own state still ends
+            if !touching, scrubbing { scrubbing = false; motion.scrub(false) }
+        }
+        .onDisappear { motion.scrub(false) }   // gone mid-scrub (a change of level): its end will not come
         .accessibilityElement()
         .accessibilityLabel("Term")
         .accessibilityHint("Moves the days along the term")

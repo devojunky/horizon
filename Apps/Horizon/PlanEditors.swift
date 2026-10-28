@@ -61,7 +61,7 @@ struct PlanBlockEditor: View {
                     DatePicker("Ends", selection: $end, displayedComponents: .hourAndMinute)
                 } footer: {
                     if span == nil { Text("It ends before it starts.") }
-                    else if block?.kind == .fixed { Text("From your calendar. Changing it here does not change the event.") }
+                    else if block?.kind == .fixed { Text("Changing it here does not change the event.") }   // its kind, Calendar, says where it is from
                 }
                 Section {
                     TextField("Why this, why now", text: $reason, axis: .vertical).lineLimit(2...6)
@@ -149,18 +149,13 @@ struct PlannerNotesEditor: View {
                 } header: {
                     Text("What the planner should respect")
                 } footer: {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Standing rules or today's, in your words. It takes effect the next time you plan; calendar events stay fixed either way.")
-                        if text.count > limit - 300 { Text("\(text.count) of \(limit) characters").monospacedDigit() }
-                    }
+                    if text.count > limit - 300 { Text("\(text.count) of \(limit) characters").monospacedDigit() }   // what it is for, the user knows
                 }
                 Section {
                     Picker("Starts", selection: $hours.start) { ForEach(PlanHours.starts, id: \.self) { Text(PlanHours.label($0)).tag($0) } }.macInk()
                     Picker("Ends", selection: $hours.end) { ForEach(PlanHours.ends, id: \.self) { Text(PlanHours.label($0)).tag($0) } }.macInk()
                 } header: {
-                    Text("Your day")
-                } footer: {
-                    Text("For one late night, change Tonight Until on Now instead.")
+                    Text("Usual hours")   // usual, so a late night is Now's Tonight Until, whose menu marks this end "(Usual)"
                 }
             }
             .paper()
@@ -172,7 +167,7 @@ struct PlannerNotesEditor: View {
             .onAppear { text = model.planInstructions; hours = model.usualPlanHours; focused = text.isEmpty }
         }
         #if os(macOS)
-        .frame(minWidth: 480, idealWidth: 540, maxWidth: 680, minHeight: 420, idealHeight: 560, maxHeight: 680)   // "Your day" in view under the instructions, not below the fold
+        .frame(minWidth: 480, idealWidth: 540, maxWidth: 680, minHeight: 420, idealHeight: 560, maxHeight: 680)   // "Usual hours" in view under the instructions, not below the fold
         #endif
     }
 }
