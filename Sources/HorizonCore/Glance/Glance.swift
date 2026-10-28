@@ -94,10 +94,15 @@ public struct Glance: Codable, Sendable, Equatable {
 
     // MARK: The file
 
-    /// Where the app leaves it for the widgets: the App Group's container (nil without one, as on a Mac).
+    /// Where the app leaves it for the widgets: the App Group's container (nil without one, as on a Mac, which has no
+    /// widgets and whose sandbox would refuse the group's folder that macOS hands back anyway).
     public static var sharedURL: URL? {
+        #if os(macOS)
+        nil
+        #else
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Identifiers.appGroup)?
             .appendingPathComponent("Library/Application Support", isDirectory: true).appendingPathComponent("Glance.json")
+        #endif
     }
 
     public func write(to url: URL) throws {

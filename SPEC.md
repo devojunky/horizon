@@ -62,7 +62,7 @@ Horizon        → SwiftUI app + widgets + App Intents
 Entry points:
 
 - **iOS Share extension** — accepts PDF, image, plain text, URL. *(Superseded: PDF, image and plain text, no web URL; a Word document is turned away with the reason; DECISIONS 2026-10-05 «The audit», «Documentation checked against the code».)*
-- **macOS Quick Action / Services** + a watched folder (`~/Horizon Inbox`) via `FSEvents`. *(Superseded: no Quick Action or Services; the folder is watched with a dispatch source on it, not FSEvents; recorded in DECISIONS 2026-10-05 «Documentation checked against the code».)*
+- **macOS Quick Action / Services** + a watched folder (`~/Horizon Inbox`) via `FSEvents`. *(Superseded: no Quick Action or Services; the folder is watched with a dispatch source on it, not FSEvents; recorded in DECISIONS 2026-10-05 «Documentation checked against the code». Under the App Sandbox the folder is the one the user chooses, not a fixed `~/Horizon Inbox`; DECISIONS 2026-10-26 «The Mac in the App Store».)*
 - **Shortcuts action** via App Intents so a screenshot can trigger ingest automatically.
 - **ICS subscription** for any LMS that exposes a calendar feed. This path skips the model entirely — prefer it whenever available.
 
@@ -161,7 +161,7 @@ Read this section twice. There are **two independent sync systems** operating ov
 
 #### The store
 
-SwiftData, in an **App Group container** so the share extension and the macOS folder watcher write to the same store as the app: *(Superseded on the Mac: no App Group; the store is in Application Support and the Inbox folder is read by the app itself; DECISIONS 2026-09-08 «The Mac gets a Mac».)*
+SwiftData, in an **App Group container** so the share extension and the macOS folder watcher write to the same store as the app: *(Superseded on the Mac: no App Group; the store is in Application Support, inside the sandbox's container, and the Inbox folder is read by the app itself; DECISIONS 2026-09-08 «The Mac gets a Mac», 2026-10-26 «The Mac in the App Store».)*
 
 ```swift
 let config = ModelConfiguration(

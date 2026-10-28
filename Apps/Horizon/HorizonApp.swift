@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import AppIntents
+import EventKit
 import HorizonCore
 import IngestKit
 import os
@@ -85,9 +86,33 @@ struct HorizonApp: App {
                         if CommandLine.arguments.contains("--forget-reading-service-key") { await service.renew() }
                         do { print("horizon: reading service: \(try await Ingestor.probe(claude: ClaudeConfiguration(service: service)))") }
                         catch { print("horizon: reading service: \(error.localizedDescription)") }
+                        fflush(stdout)   // a Mac's `open --stdout` file is block-buffered; devicectl's console is not
                         return
                     }
-                    // `--ingest-file <path>` reads any file the simulator can see: unreadable ones, duplicates, and so on.
+                    if CommandLine.arguments.contains("--probe-app-attest") {   // `DeviceAttester.probe`: App Attest here, and its evidence's environment
+                        print("horizon: app attest: \(await DeviceAttester.probe())")
+                        fflush(stdout)
+                    }
+                    // `--probe-eventkit`: whether this build reaches EventKit (a Mac's sandbox and hardened runtime let it in
+                    // through the calendars entitlement, Reminders and Calendar alike): each one's access and how many lists
+                    // or calendars it shows, printed. Nothing is asked for, and nothing in them is read.
+                    if CommandLine.arguments.contains("--probe-eventkit") {
+                        let events = EKEventStore()
+                        for (name, type) in [("reminders", EKEntityType.reminder), ("calendar", EKEntityType.event)] {
+                            let access = switch EKEventStore.authorizationStatus(for: type) {
+                                case .fullAccess: "full access"
+                                case .writeOnly: "write only"
+                                case .denied: "denied"
+                                case .restricted: "restricted"
+                                case .notDetermined: "not asked"
+                                @unknown default: "unknown"
+                            }
+                            print("horizon: eventkit: \(name) \(access), \(events.calendars(for: type).count) lists")
+                        }
+                        fflush(stdout)
+                    }
+                    // `--ingest-file <path>` reads any file the simulator can see: unreadable ones, duplicates, and so on (a
+                    // Mac Debug build's sandbox reaches one under /private/tmp only).
                     if let i = CommandLine.arguments.firstIndex(of: "--ingest-file"), i + 1 < CommandLine.arguments.count {
                         await model.importFiles([URL(fileURLWithPath: CommandLine.arguments[i + 1])]); return
                     }
@@ -104,7 +129,17 @@ struct HorizonApp: App {
                 .onReceive(NotificationCenter.default.publisher(for: .EKEventStoreChanged)) { _ in Task { await model.drainAndSync() } }
                 .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in Task { await model.drainAndSync() } }   // date-only deadlines keep their day (`DayAnchor`)
                 #if os(macOS)
-                .task { if AppModel.scratchStore == nil, model.storeFailure == nil { await WatchedFolder.start(model: model) } }
+                .task {
+                    guard model.storeFailure == nil else { return }
+                    WatchedFolder.shared.start(model: model)
+                    #if DEBUG
+                    // `--inbox <dir>`: choose this folder as Settings' Choose… does, what it holds now left alone (a Debug
+                    // build's sandbox reaches it under /private/tmp only).
+                    if let i = CommandLine.arguments.firstIndex(of: "--inbox"), i + 1 < CommandLine.arguments.count {
+                        await WatchedFolder.shared.choose(URL(fileURLWithPath: CommandLine.arguments[i + 1], isDirectory: true))
+                    }
+                    #endif
+                }
                 #if DEBUG
                 .task { await WindowSnapshot.writeIfAsked() }
                 #endif

@@ -2,5 +2,20 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- The Mac App Store's sandbox (DECISIONS 2026-10-26 · The Mac in the App Store). Horizon-macOS-Debug.entitlements is this and one exception. -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!-- The Inbox: a folder the user chose, opened again at every launch (`WatchedFolder`). -->
+	<key>com.apple.security.files.bookmarks.app-scope</key>
+	<true/>
+	<!-- Add Document, Import Library and the Inbox's open panel; Export Library's save panel. -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<!-- Claude, with the user's key or through Horizon's reading service. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- EventKit, Reminders and Calendar alike: the sandbox and the hardened runtime both ask for it. -->
+	<key>com.apple.security.personal-information.calendars</key>
+	<true/>
 </dict>
 </plist>

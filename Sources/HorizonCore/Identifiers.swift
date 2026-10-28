@@ -7,7 +7,8 @@ public enum Identifiers {
     /// not the bundle id, which is the paid team's `com.daniel.horizon.app` (project.yml; DECISIONS 2026-10-23).
     public static let bundlePrefix = "com.daniel.horizon"
     /// iOS's App Group, on the paid team (DECISIONS 2026-10-23). The Mac has no App Group: there the name only labels the
-    /// preferences suite that holds the sync's memory, so it keeps the old one and remembers what it has seen.
+    /// preferences suite that holds the sync's memory (in the sandbox, an ordinary suite in the app's container), so it
+    /// keeps the old one, which Export Library and Import Library carry across.
     #if os(macOS)
     public static let appGroup = "group.com.daniel.horizon"
     #else

@@ -27,7 +27,7 @@ Two environments, each its own Worker with its own domain, secrets, devices and 
 
 | Environment | Domain | For | App Attest |
 |---|---|---|---|
-| `development` | `horizon-reading-dev.danielliang.dev` | builds run from Xcode | development |
+| `development` | `horizon-reading-dev.danielliang.dev` | builds run from Xcode | development, and production's too: a Mac's evidence always names production (`takesEvidence`) |
 | `production` | `horizon-reading.danielliang.dev` | TestFlight and the App Store | production |
 
 1. Wait until danielliang.dev shows **Active** in the Cloudflare dashboard (after the nameservers change). No DNS

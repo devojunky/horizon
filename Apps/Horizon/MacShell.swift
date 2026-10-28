@@ -782,7 +782,11 @@ struct HorizonCommands: Commands {
             Divider()
             Button("Sync with Reminders") { Task { await model.drainAndSync() } }.keyboardShortcut("r")
             Button("Recreate Horizon List in Reminders") { Task { await model.recreateRemindersList() } }.disabled(!model.remindersListGone)
-            Button("Show Inbox Folder in Finder") { NSWorkspace.shared.activateFileViewerSelecting([WatchedFolder.url]) }
+            if let inbox = WatchedFolder.shared.url {
+                Button("Show Inbox Folder in Finder") { NSWorkspace.shared.activateFileViewerSelecting([inbox]) }
+            } else {
+                Button("Choose Inbox Folder…") { WatchedFolder.shared.choose() }
+            }
         }
         CommandGroup(after: .textEditing) {
             Menu("Find") {   // HIG: Edit ▸ Find ▸ Find… (⌘F); the app's one search is the sidebar's field
@@ -874,27 +878,46 @@ struct HorizonCommands: Commands {
 
 /// The Settings window (⌘,): General and Reading as toolbar panes, the way a Mac keeps its settings.
 struct MacSettingsView: View {
+    /// DEBUG `--settings-reading` opens the window on Reading, to look at it without a click.
+    @State private var pane = MainTabs.debugFlag("--settings-reading") ? 1 : 0
+
     var body: some View {
-        TabView {
+        TabView(selection: $pane) {
             Form {
                 DeviceSettingsSections()
-                Section {
-                    LabeledContent("Folder") { Text(WatchedFolder.url.path(percentEncoded: false)).foregroundStyle(.secondary).textSelection(.enabled) }
-                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([WatchedFolder.url]) }.bordered()
-                } header: {
-                    Kicker("Inbox")
-                } footer: {
-                    Text("Anything saved or dropped into this folder is read as soon as it stops changing.")
-                }
+                InboxSettingsSection()
                 LibrarySettingsSection()
             }
             .formStyle(.grouped)
             .frame(width: 580, height: 600)   // each pane its own height; the window follows the pane
             .tabItem { Label("General", systemImage: "gearshape") }
+            .tag(0)
             Form { ReadingSettingsSections() }
                 .formStyle(.grouped)
                 .frame(width: 580, height: 640)
                 .tabItem { Label("Reading", systemImage: "doc.text.magnifyingglass") }
+                .tag(1)
+        }
+    }
+}
+
+/// Settings' Inbox: the folder chosen (`WatchedFolder`), Choose…, and while one is watched Show in Finder and Stop Watching.
+private struct InboxSettingsSection: View {
+    private let inbox = WatchedFolder.shared
+
+    var body: some View {
+        Section {
+            LabeledContent("Folder") { Text(inbox.path ?? "None").foregroundStyle(.secondary).textSelection(.enabled) }
+            if let problem = inbox.problem { Text(problem).foregroundStyle(.secondary) }
+            HStack {
+                Button("Choose…") { inbox.choose() }.bordered()
+                if let url = inbox.url { Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }.bordered() }
+                if inbox.url != nil || inbox.problem != nil { Button("Stop Watching") { inbox.stop() }.bordered() }   // a folder that went is forgotten here too
+            }
+        } header: {
+            Kicker("Inbox")
+        } footer: {
+            Text("Anything saved or dropped into this folder after it is chosen is read as soon as it stops changing. What it held already is left alone.")
         }
     }
 }

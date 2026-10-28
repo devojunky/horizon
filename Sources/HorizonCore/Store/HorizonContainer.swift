@@ -15,7 +15,9 @@ public enum HorizonContainer {
 
     /// The shared store: on iOS in the App Group container, so the share extension writes to the same database as the
     /// app; on a Mac, which has no App Group (its Inbox folder is read by the app itself), a store of its own in
-    /// Application Support/Horizon. CloudKit mirroring is compiled in with `HORIZON_CLOUDKIT` (needs a paid team). Throws
+    /// Application Support/Horizon, which the App Sandbox keeps in the app's container
+    /// (`~/Library/Containers/com.daniel.horizon.app/Data/Library/Application Support/Horizon`). CloudKit mirroring is
+    /// compiled in with `HORIZON_CLOUDKIT` (needs a paid team). Throws
     /// `StoreTooNew` when a newer build has opened the store: nothing is opened, and the app must say so, never fall
     /// back to an empty store.
     public static func shared() throws -> ModelContainer {
@@ -30,21 +32,33 @@ public enum HorizonContainer {
     }
 
     static func sharedConfiguration(_ schema: Schema) throws -> ModelConfiguration {
-        // macOS hands back a group container path even without the entitlement but never creates it; make sure the
-        // store's directory exists, and fall back to a private store in Application Support when it cannot.
+        #if os(macOS)
+        // No group's folder is asked for on a Mac: macOS hands back its path without the entitlement, and the sandbox
+        // refuses anything made there.
+        return ModelConfiguration(schema: schema, url: try ownFolder().appendingPathComponent("Horizon.store"), cloudKitDatabase: .none)
+        #else
+        // Make sure the store's directory exists, and fall back to a private store in Application Support when it cannot
+        // be made (a build signed without the App Group).
         let groupReady = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Identifiers.appGroup).map { group in
             (try? FileManager.default.createDirectory(at: group.appendingPathComponent("Library/Application Support", isDirectory: true), withIntermediateDirectories: true)) != nil
         } ?? false
         guard groupReady else {
-            let dir = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("Horizon", isDirectory: true)
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            return ModelConfiguration(schema: schema, url: dir.appendingPathComponent("Horizon.store"), cloudKitDatabase: .none)
+            return ModelConfiguration(schema: schema, url: try ownFolder().appendingPathComponent("Horizon.store"), cloudKitDatabase: .none)
         }
         #if HORIZON_CLOUDKIT
         return ModelConfiguration(schema: schema, groupContainer: .identifier(Identifiers.appGroup), cloudKitDatabase: .private(Identifiers.cloudKitContainer))
         #else
         return ModelConfiguration(schema: schema, groupContainer: .identifier(Identifiers.appGroup), cloudKitDatabase: .none)
         #endif
+        #endif
+    }
+
+    /// Application Support/Horizon, made if need be: where a store with no App Group lives (a Mac's, in its sandbox's
+    /// container).
+    static func ownFolder() throws -> URL {
+        let dir = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("Horizon", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
     }
 
     /// Opens a store on disk unless a newer build has opened it, then records this build's generation beside it (the
@@ -83,10 +97,15 @@ public enum HorizonContainer {
         return try open(schema, ModelConfiguration(schema: schema, url: url, cloudKitDatabase: .none))
     }
 
-    /// Where the user's store can be: the App Group's container, or Application Support when a build has no App Group.
+    /// Where the user's store can be: the App Group's container, or Application Support when a build has no App Group
+    /// (a Mac's, in its sandbox's container).
     static var userStoreFolders: [URL] {
-        [FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Identifiers.appGroup),
-         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("Horizon", isDirectory: true)].compactMap { $0 }
+        let own = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("Horizon", isDirectory: true)
+        #if os(macOS)
+        return [own].compactMap { $0 }
+        #else
+        return [FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Identifiers.appGroup), own].compactMap { $0 }
+        #endif
     }
 
     /// Whether `url` is in (or is) one of `folders`, symbolic links resolved.
@@ -114,14 +133,15 @@ public struct DocumentStorage: Sendable {
 
     public init(root: URL) { self.root = root }
 
-    /// The App Group's Documents folder, or Application Support when the build has no App Group entitlement. macOS
-    /// hands back a group path either way but lets only an entitled app create anything there, so the folder is made
-    /// here, and the fallback taken when it cannot be (the same rule the database follows).
+    /// The App Group's Documents folder, or Application Support when the build has no App Group entitlement: always on a
+    /// Mac (in its sandbox's container), and on iOS when the folder cannot be made (the same rule the database follows).
     public static func appGroup() -> DocumentStorage? {
+        #if !os(macOS)
         if let group = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Identifiers.appGroup) {
             let root = group.appendingPathComponent("Documents", isDirectory: true)
             if (try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)) != nil { return DocumentStorage(root: root) }
         }
+        #endif
         return (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
             .map { DocumentStorage(root: $0.appendingPathComponent("Horizon/Documents", isDirectory: true)) }
     }
